@@ -9,6 +9,7 @@ rust-version.workspace = true
 [features]
 default = ["console_error_panic_hook"]
 time = ["dep:futures-util"]
+macros = ["web-sys/console"]
 
 [dependencies]
 console_error_panic_hook = { version = "0.1.7", optional = true}

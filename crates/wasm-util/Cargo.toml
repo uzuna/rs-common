@@ -10,6 +10,7 @@ rust-version.workspace = true
 default = ["console_error_panic_hook"]
 time = ["dep:futures-util"]
 macros = ["web-sys/console"]
+image = ["web-sys/HtmlImageElement"]
 
 [dependencies]
 console_error_panic_hook = { version = "0.1.7", optional = true}

@@ -10,3 +10,6 @@ pub mod __reexport;
 #[cfg(feature = "macros")]
 #[doc(hidden)]
 pub mod macros;
+
+#[cfg(feature = "image")]
+pub mod image;

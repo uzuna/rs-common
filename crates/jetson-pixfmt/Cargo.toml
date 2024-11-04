@@ -1,0 +1,25 @@
+[package]
+name = "jetson-pixfmt"
+version = "0.2.0"
+description = "JetsonのNVCSIのPIXFMTデータを有効なRAWデータに変換する"
+publish = false
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+# バイト列の長さが16byteで割り切れない場合に、より短い単位でフォーマットする関数を有効にする
+as-short = []
+
+[dependencies]
+byteorder.workspace = true
+cfg-if.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+rand.workspace = true
+
+[[bench]]
+name = "format_bench"
+harness = false

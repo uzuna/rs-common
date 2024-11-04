@@ -11,4 +11,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 wasm-bindgen.workspace = true
-wasm-util = { workspace = true, features = ["macros"] }
+wasm-bindgen-futures.workspace = true
+wasm-util = { workspace = true, features = ["macros", "image"] }
+
+[dependencies.web-sys]
+workspace = true

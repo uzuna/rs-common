@@ -1,9 +1,20 @@
 use std::path::PathBuf;
 
-use axum::{extract::Path, response::IntoResponse, Json};
+use axum::{
+    body::Body,
+    extract::{Path, Query, State},
+    http::HeaderMap,
+    response::IntoResponse,
+    Json,
+};
 use v4l::video::Capture;
 
-use crate::error::AppError;
+use crate::{
+    capture::{self, CaptureQuery},
+    error::AppError,
+    util::open_device,
+    Context,
+};
 
 /// V4l2 deviceの情報を格納する構造体
 #[derive(Debug, serde::Serialize, PartialEq)]
@@ -38,7 +49,7 @@ impl From<v4l::Capabilities> for Capabilities {
 #[derive(Debug, PartialEq, serde::Serialize)]
 pub struct DeviceDetail {
     pub controls: Vec<Description>,
-    pub formats: Vec<Format>,
+    pub formats: Vec<FormatDesc>,
 }
 
 #[derive(Debug, PartialEq, serde::Serialize)]
@@ -77,16 +88,16 @@ impl From<v4l::control::Description> for Description {
 }
 
 #[derive(Debug, PartialEq, serde::Serialize)]
-pub struct Format {
+pub struct FormatDesc {
     pub index: u32,
     pub description: String,
     pub fourcc: String,
     pub framesizes: Vec<Discrete>,
 }
 
-impl Format {
+impl FormatDesc {
     fn with_fmt_disc(fmt: v4l::format::Description, framesizes: Vec<Discrete>) -> Self {
-        Format {
+        FormatDesc {
             index: fmt.index,
             description: fmt.description,
             fourcc: fmt.fourcc.to_string(),
@@ -153,13 +164,43 @@ pub async fn device(Path(index): Path<usize>) -> Result<impl IntoResponse, AppEr
                 dics.push(discrete.into());
             }
         }
-        formats.push(Format::with_fmt_disc(fmt, dics));
+        formats.push(FormatDesc::with_fmt_disc(fmt, dics));
     }
     Ok(Json(DeviceDetail { controls, formats }))
 }
 
-fn open_device(index: usize) -> Result<v4l::Device, AppError> {
-    Ok(v4l::Device::new(index).inspect_err(|e| {
-        tracing::error!("Failed to open device: {:?}", e);
-    })?)
+/// Capture image from device
+pub async fn capture(
+    State(context): State<Context>,
+    Path(index): Path<usize>,
+    query: Query<CaptureQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    tracing::info!("Capture: {:?}", query);
+    query.validate()?;
+    let format = query.format();
+
+    // デバイスを開く操作は1つだけしか許されないため
+    // Captureは別の単一フローのルーチンで取得する
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let req = capture::Request::Capture {
+        tx,
+        format,
+        device_index: index,
+        buffer_count: query.buffer_count,
+    };
+    context.capture_tx.send(req).await.inspect_err(|e| {
+        tracing::error!("Failed to send capture request: {:?}", e);
+    })?;
+    let res = rx.await.inspect_err(|e| {
+        tracing::error!("Failed to receive capture response: {:?}", e);
+    })??;
+
+    let mut headers = HeaderMap::new();
+    if res.format.fourcc == "MJPG" {
+        headers.insert("Content-Type", "image/jpeg".parse().unwrap());
+    } else {
+        headers.insert("Content-Type", "image/raw".parse().unwrap());
+    }
+
+    Ok((headers, Body::from(res.buffer)))
 }

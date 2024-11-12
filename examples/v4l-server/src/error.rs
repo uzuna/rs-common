@@ -4,6 +4,7 @@ use axum::{
 };
 
 /// Application error type
+#[derive(Debug)]
 pub struct AppError(anyhow::Error);
 
 impl IntoResponse for AppError {

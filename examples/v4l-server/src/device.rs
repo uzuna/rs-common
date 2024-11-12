@@ -7,10 +7,10 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use v4l::video::Capture;
+use v4l::{util::control::ControlTable, video::Capture};
 
 use crate::{
-    capture::{self, CaptureQuery},
+    capture::{self, CaptureQuery, Controls},
     error::AppError,
     util::open_device,
     Context,
@@ -175,13 +175,26 @@ pub async fn capture(
     Path(index): Path<usize>,
     query: Query<CaptureQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let default_format = {
+    let (default_format, ctrls) = {
         let dev = open_device(index)?;
-        dev.format().inspect_err(|e| {
+        let format = dev.format().inspect_err(|e| {
             tracing::error!("Failed to get format: {:?}", e);
-        })?
+        })?;
+
+        let ctrls = if let Some(ctrl_str) = query.0.control.as_ref() {
+            let req = v4l::util::control::Requests::try_from(ctrl_str.as_str())
+                .map_err(|e| anyhow::anyhow!("Failed to create control requests: {:?}", e))?;
+            let ctrlmap = ControlTable::from(dev.query_controls()?.as_slice());
+            let def = ctrlmap.get_default(&req);
+            let target = ctrlmap.get_control(&req);
+            Some(Controls::new(def, target))
+        } else {
+            None
+        };
+        (format, ctrls)
     };
-    let prop = query.0.to_prop(default_format);
+
+    let prop = query.0.to_prop(default_format, ctrls);
     prop.validate()?;
     tracing::info!("Capture: {:?}", prop);
     let format = prop.format();
@@ -194,6 +207,7 @@ pub async fn capture(
         format,
         device_index: index,
         buffer_count: prop.buffer_count,
+        controls: prop.controls,
     };
     context.capture_tx.send(req).await.inspect_err(|e| {
         tracing::error!("Failed to send capture request: {:?}", e);

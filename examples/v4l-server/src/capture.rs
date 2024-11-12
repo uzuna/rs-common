@@ -5,7 +5,7 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 use tokio_util::sync::CancellationToken;
-use v4l::{prelude::UserptrStream, video::Capture};
+use v4l::{prelude::UserptrStream, video::Capture, Control};
 
 use crate::{error::AppError, util::open_device};
 
@@ -15,7 +15,21 @@ pub enum Request {
         device_index: usize,
         format: v4l::Format,
         buffer_count: u32,
+        controls: Option<Controls>,
     },
+}
+
+/// カメラのコントロールの設定
+#[derive(Debug)]
+pub struct Controls {
+    pub def: Vec<Control>,
+    pub target: Vec<Control>,
+}
+
+impl Controls {
+    pub fn new(def: Vec<Control>, target: Vec<Control>) -> Self {
+        Controls { def, target }
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -23,6 +37,7 @@ pub struct CaptureQuery {
     pub fourcc: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub control: Option<String>,
     /// カメラの安定を待つバッファ数
     #[serde(default = "CaptureQuery::buffer_count_default")]
     pub buffer_count: u32,
@@ -34,11 +49,12 @@ impl CaptureQuery {
     }
 
     /// クエリの他、未入力の場合はデバイスデフォルトの値を使用してCapturePropを生成する
-    pub fn to_prop(&self, format: v4l::format::Format) -> CaptureProp {
+    pub fn to_prop(&self, format: v4l::format::Format, ctrls: Option<Controls>) -> CaptureProp {
         CaptureProp {
             fourcc: self.fourcc.clone().unwrap_or(format.fourcc.to_string()),
             width: self.width.unwrap_or(format.width),
             height: self.height.unwrap_or(format.height),
+            controls: ctrls,
             buffer_count: self.buffer_count,
         }
     }
@@ -50,6 +66,7 @@ pub struct CaptureProp {
     pub fourcc: String,
     pub width: u32,
     pub height: u32,
+    pub controls: Option<Controls>,
     /// カメラの安定を待つバッファ数
     pub buffer_count: u32,
 }
@@ -121,8 +138,9 @@ impl CaptureRoutine {
                             format,
                             device_index,
                             buffer_count,
+                            controls,
                         } => {
-                            let res = match capture_inner(format, device_index, buffer_count).await{
+                            let res = match capture_inner(format, device_index, buffer_count, controls).await{
                                 Ok(res) => res,
                                 Err(e) => {
                                     tracing::error!("Failed to capture: {:?}", e);
@@ -149,6 +167,7 @@ async fn capture_inner(
     format: v4l::format::Format,
     device_index: usize,
     buffer_count: u32,
+    controls: Option<Controls>,
 ) -> anyhow::Result<CaptureResponse> {
     use v4l::io::traits::{AsyncCaptureStream, Stream};
     let dev = open_device(device_index)?;
@@ -158,9 +177,12 @@ async fn capture_inner(
     let actual_format = dev.format().inspect_err(|e| {
         tracing::error!("Failed to get format: {:?}", e);
     })?;
+    let Controls { def, target } = controls.unwrap_or(Controls::new(vec![], vec![]));
+    dev.set_controls(def)?;
     let mut stream =
         UserptrStream::with_buffers(&dev, v4l::buffer::Type::VideoCapture, buffer_count)?;
     stream.poll_next().await?;
+    dev.set_controls(target)?;
     if buffer_count > 2 {
         for _ in 0..buffer_count - 1 {
             let (_buf, _meta) = stream.poll_next().await?;

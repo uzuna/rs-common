@@ -175,9 +175,16 @@ pub async fn capture(
     Path(index): Path<usize>,
     query: Query<CaptureQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    tracing::info!("Capture: {:?}", query);
-    query.validate()?;
-    let format = query.format();
+    let default_format = {
+        let dev = open_device(index)?;
+        dev.format().inspect_err(|e| {
+            tracing::error!("Failed to get format: {:?}", e);
+        })?
+    };
+    let prop = query.0.to_prop(default_format);
+    prop.validate()?;
+    tracing::info!("Capture: {:?}", prop);
+    let format = prop.format();
 
     // デバイスを開く操作は1つだけしか許されないため
     // Captureは別の単一フローのルーチンで取得する
@@ -186,7 +193,7 @@ pub async fn capture(
         tx,
         format,
         device_index: index,
-        buffer_count: query.buffer_count,
+        buffer_count: prop.buffer_count,
     };
     context.capture_tx.send(req).await.inspect_err(|e| {
         tracing::error!("Failed to send capture request: {:?}", e);

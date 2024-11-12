@@ -20,15 +20,41 @@ pub enum Request {
 
 #[derive(Debug, serde::Deserialize)]
 pub struct CaptureQuery {
-    pub fourcc: String,
-    pub width: u32,
-    pub height: u32,
+    pub fourcc: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
     /// カメラの安定を待つバッファ数
     #[serde(default = "CaptureQuery::buffer_count_default")]
     pub buffer_count: u32,
 }
 
 impl CaptureQuery {
+    fn buffer_count_default() -> u32 {
+        4
+    }
+
+    /// クエリの他、未入力の場合はデバイスデフォルトの値を使用してCapturePropを生成する
+    pub fn to_prop(&self, format: v4l::format::Format) -> CaptureProp {
+        CaptureProp {
+            fourcc: self.fourcc.clone().unwrap_or(format.fourcc.to_string()),
+            width: self.width.unwrap_or(format.width),
+            height: self.height.unwrap_or(format.height),
+            buffer_count: self.buffer_count,
+        }
+    }
+}
+
+/// キャプチャのパラメータ
+#[derive(Debug)]
+pub struct CaptureProp {
+    pub fourcc: String,
+    pub width: u32,
+    pub height: u32,
+    /// カメラの安定を待つバッファ数
+    pub buffer_count: u32,
+}
+
+impl CaptureProp {
     /// パラメータが有効な範囲内かどうかを検証する
     pub fn validate(&self) -> Result<(), AppError> {
         if self.fourcc.len() != 4 {
@@ -53,11 +79,6 @@ impl CaptureQuery {
                 fourcc[i] = b;
             });
         v4l::Format::new(self.width, self.height, v4l::FourCC::new(&fourcc))
-    }
-
-    // 一般的には4バッファぐらい待つと自動露光などの結果が安定する
-    fn buffer_count_default() -> u32 {
-        4
     }
 }
 

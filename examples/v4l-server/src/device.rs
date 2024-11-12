@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use axum::{extract::Path, response::IntoResponse, Json};
+use v4l::video::Capture;
 
 use crate::error::AppError;
 
@@ -32,6 +33,12 @@ impl From<v4l::Capabilities> for Capabilities {
             capabilities: caps.capabilities.to_string(),
         }
     }
+}
+
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct DeviceDetail {
+    pub controls: Vec<Description>,
+    pub formats: Vec<Format>,
 }
 
 #[derive(Debug, PartialEq, serde::Serialize)]
@@ -69,6 +76,40 @@ impl From<v4l::control::Description> for Description {
     }
 }
 
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct Format {
+    pub index: u32,
+    pub description: String,
+    pub fourcc: String,
+    pub framesizes: Vec<Discrete>,
+}
+
+impl Format {
+    fn with_fmt_disc(fmt: v4l::format::Description, framesizes: Vec<Discrete>) -> Self {
+        Format {
+            index: fmt.index,
+            description: fmt.description,
+            fourcc: fmt.fourcc.to_string(),
+            framesizes,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct Discrete {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl From<v4l::framesize::Discrete> for Discrete {
+    fn from(fmt: v4l::framesize::Discrete) -> Self {
+        Discrete {
+            width: fmt.width,
+            height: fmt.height,
+        }
+    }
+}
+
 /// List all v4l2 devices
 pub async fn list() -> Result<impl IntoResponse, AppError> {
     use v4l::context;
@@ -92,16 +133,33 @@ pub async fn list() -> Result<impl IntoResponse, AppError> {
 
 // get device and show controls
 pub async fn device(Path(index): Path<usize>) -> Result<impl IntoResponse, AppError> {
-    let dev = v4l::Device::new(index).inspect_err(|e| {
-        tracing::error!("Failed to open device: {:?}", e);
-    })?;
+    let dev = open_device(index)?;
     let cap = dev.query_controls().inspect_err(|e| {
         tracing::error!("Failed to query controls: {:?}", e);
     })?;
 
-    let mut res = vec![];
+    let mut controls = vec![];
     for ctrl in cap {
-        res.push(Description::from(ctrl));
+        controls.push(Description::from(ctrl));
     }
-    Ok(Json(res))
+
+    let mut formats = vec![];
+    for fmt in dev.enum_formats().inspect_err(|e| {
+        tracing::error!("Failed to query format: {:?}", e);
+    })? {
+        let mut dics = vec![];
+        for framesize in dev.enum_framesizes(fmt.fourcc)? {
+            for discrete in framesize.size.to_discrete() {
+                dics.push(discrete.into());
+            }
+        }
+        formats.push(Format::with_fmt_disc(fmt, dics));
+    }
+    Ok(Json(DeviceDetail { controls, formats }))
+}
+
+fn open_device(index: usize) -> Result<v4l::Device, AppError> {
+    Ok(v4l::Device::new(index).inspect_err(|e| {
+        tracing::error!("Failed to open device: {:?}", e);
+    })?)
 }

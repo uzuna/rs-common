@@ -18,3 +18,4 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tracing.workspace = true
 v4l = { workspace = true, features = ["tokio", "aligned-alloc"] }
 yuvutils-rs = "0.5.1"
+jetson-pixfmt.workspace = true

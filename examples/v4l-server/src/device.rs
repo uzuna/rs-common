@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{io::BufWriter, path::PathBuf};
 
 use axum::{
     body::Body,
@@ -131,6 +131,7 @@ pub struct CaptureQuery {
     /// カメラの安定を待つバッファ数
     #[serde(default = "CaptureQuery::buffer_count_default")]
     pub buffer_count: u32,
+    #[serde(default = "OutFmt::default")]
     pub outfmt: OutFmt,
 }
 
@@ -264,19 +265,16 @@ pub async fn capture(
         match res.format.fourcc.as_str() {
             "YUYV" => {
                 headers.insert("Content-Type", "image/png".parse().unwrap());
-                let rgb = crate::imgfmt::yuyv422_to_rgb(
-                    &res.buffer,
-                    res.format.width,
-                    res.format.height,
-                )
-                .inspect_err(|e| {
-                    tracing::error!("Failed to convert YUYV to RGB: {:?}", e);
-                })?;
-                let img = image::RgbImage::from_raw(res.format.width, res.format.height, rgb)
-                    .unwrap();
+                let rgb =
+                    crate::imgfmt::yuyv422_to_rgb(&res.buffer, res.format.width, res.format.height)
+                        .inspect_err(|e| {
+                            tracing::error!("Failed to convert YUYV to RGB: {:?}", e);
+                        })?;
+                let img =
+                    image::RgbImage::from_raw(res.format.width, res.format.height, rgb).unwrap();
                 // clear buffer and encode PNG
                 res.buffer.clear();
-                let writer = std::io::BufWriter::new(&mut res.buffer);
+                let writer = BufWriter::new(&mut res.buffer);
                 let enc = image::codecs::png::PngEncoder::new(writer);
                 enc.write_image(
                     img.as_raw(),
@@ -287,6 +285,28 @@ pub async fn capture(
                 .inspect_err(|e| {
                     tracing::error!("Failed to encode PNG: {:?}", e);
                 })?;
+            }
+            "RG12" => {
+                headers.insert("Content-Type", "image/png".parse().unwrap());
+                // 16bit空間に12bitを展開するため左シフトして16bit領域全体を使う
+                // jetsonのRG12は左詰めされているので下位をマスクする
+                jetson_pixfmt::t16::mask(
+                    &mut res.buffer,
+                    jetson_pixfmt::pixfmt::CsiPixelFormat::Raw12,
+                );
+                let mut out = vec![];
+                let writer = BufWriter::new(&mut out);
+
+                image::codecs::png::PngEncoder::new(writer)
+                    .write_image(
+                        &res.buffer,
+                        res.format.width,
+                        res.format.height,
+                        image::ExtendedColorType::L16,
+                    )
+                    .inspect_err(|e| tracing::error!("Failed to encode PNG: {:?}", e))?;
+                res.buffer.clear();
+                res.buffer = out;
             }
             _ => {
                 headers.insert("Content-Type", "image/raw".parse().unwrap());

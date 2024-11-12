@@ -1464,6 +1464,7 @@ dependencies = [
  "anyhow",
  "axum",
  "image",
+ "jetson-pixfmt",
  "serde",
  "tokio",
  "tokio-util",

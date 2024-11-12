@@ -259,6 +259,15 @@ pub async fn capture(
     })??;
 
     let mut headers = HeaderMap::new();
+    headers.insert("X-FourCC", res.format.fourcc.to_string().parse().unwrap());
+    headers.insert(
+        "X-ImageWidth",
+        res.format.width.to_string().parse().unwrap(),
+    );
+    headers.insert(
+        "X-ImageHeight",
+        res.format.height.to_string().parse().unwrap(),
+    );
     if res.format.fourcc == "MJPG" {
         headers.insert("Content-Type", "image/jpeg".parse().unwrap());
     } else if query.0.outfmt == OutFmt::Png {

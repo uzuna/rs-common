@@ -6,6 +6,7 @@ use tower_http::trace::TraceLayer;
 use tracing_subscriber::prelude::*;
 
 mod device;
+mod error;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -20,6 +21,7 @@ async fn main() {
 
     let router = Router::new()
         .route("/devices", get(device::list))
+        .route("/device/:index", get(device::device))
         .layer(TraceLayer::new_for_http());
 
     let port = 8080;

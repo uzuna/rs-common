@@ -1,6 +1,6 @@
 [package]
-name = "preview-server"
-version = "0.0.0"
+name = "v4l-server"
+version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -8,7 +8,9 @@ rust-version.workspace = true
 
 [dependencies]
 axum.workspace = true
+serde = { version = "1.0.215", features = ["derive"] }
 tokio = { workspace = true, features = ["macros"] }
 tower-http = { workspace = true,  features = ["fs", "trace"]  }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+v4l = { workspace = true, features = ["tokio", "aligned-alloc"] }

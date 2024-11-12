@@ -9,10 +9,12 @@ rust-version.workspace = true
 [dependencies]
 anyhow = "1.0.93"
 axum.workspace = true
+image = { version = "0.25", features = ["png"], default-features = false }
 serde = { version = "1.0.215", features = ["derive"] }
 tokio = { workspace = true, features = ["macros"] }
 tokio-util = "0.7.12"
 tower-http = { workspace = true,  features = ["fs", "trace"]  }
-tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing.workspace = true
 v4l = { workspace = true, features = ["tokio", "aligned-alloc"] }
+yuvutils-rs = "0.5.1"

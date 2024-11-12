@@ -10,6 +10,7 @@ use tracing_subscriber::prelude::*;
 mod capture;
 mod device;
 mod error;
+mod imgfmt;
 mod util;
 
 #[derive(Clone)]

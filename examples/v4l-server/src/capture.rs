@@ -31,35 +31,6 @@ impl Controls {
         Controls { def, target }
     }
 }
-
-#[derive(Debug, serde::Deserialize)]
-pub struct CaptureQuery {
-    pub fourcc: Option<String>,
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-    pub control: Option<String>,
-    /// カメラの安定を待つバッファ数
-    #[serde(default = "CaptureQuery::buffer_count_default")]
-    pub buffer_count: u32,
-}
-
-impl CaptureQuery {
-    fn buffer_count_default() -> u32 {
-        4
-    }
-
-    /// クエリの他、未入力の場合はデバイスデフォルトの値を使用してCapturePropを生成する
-    pub fn to_prop(&self, format: v4l::format::Format, ctrls: Option<Controls>) -> CaptureProp {
-        CaptureProp {
-            fourcc: self.fourcc.clone().unwrap_or(format.fourcc.to_string()),
-            width: self.width.unwrap_or(format.width),
-            height: self.height.unwrap_or(format.height),
-            controls: ctrls,
-            buffer_count: self.buffer_count,
-        }
-    }
-}
-
 /// キャプチャのパラメータ
 #[derive(Debug)]
 pub struct CaptureProp {
@@ -178,11 +149,15 @@ async fn capture_inner(
         tracing::error!("Failed to get format: {:?}", e);
     })?;
     let Controls { def, target } = controls.unwrap_or(Controls::new(vec![], vec![]));
-    dev.set_controls(def)?;
+    if !def.is_empty() {
+        dev.set_controls(def)?;
+    }
     let mut stream =
         UserptrStream::with_buffers(&dev, v4l::buffer::Type::VideoCapture, buffer_count)?;
     stream.poll_next().await?;
-    dev.set_controls(target)?;
+    if !target.is_empty() {
+        dev.set_controls(target)?;
+    }
     if buffer_count > 2 {
         for _ in 0..buffer_count - 1 {
             let (_buf, _meta) = stream.poll_next().await?;

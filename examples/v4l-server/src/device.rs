@@ -7,10 +7,11 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use image::ImageEncoder;
 use v4l::{util::control::ControlTable, video::Capture};
 
 use crate::{
-    capture::{self, CaptureQuery, Controls},
+    capture::{self, CaptureProp, Controls},
     error::AppError,
     util::open_device,
     Context,
@@ -121,6 +122,46 @@ impl From<v4l::framesize::Discrete> for Discrete {
     }
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct CaptureQuery {
+    pub fourcc: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub control: Option<String>,
+    /// カメラの安定を待つバッファ数
+    #[serde(default = "CaptureQuery::buffer_count_default")]
+    pub buffer_count: u32,
+    pub outfmt: OutFmt,
+}
+
+impl CaptureQuery {
+    fn buffer_count_default() -> u32 {
+        4
+    }
+
+    /// クエリの他、未入力の場合はデバイスデフォルトの値を使用してCapturePropを生成する
+    pub fn to_prop(&self, format: v4l::format::Format, ctrls: Option<Controls>) -> CaptureProp {
+        CaptureProp {
+            fourcc: self.fourcc.clone().unwrap_or(format.fourcc.to_string()),
+            width: self.width.unwrap_or(format.width),
+            height: self.height.unwrap_or(format.height),
+            controls: ctrls,
+            buffer_count: self.buffer_count,
+        }
+    }
+}
+
+/// RAW画像の出力フォーマット
+#[derive(Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutFmt {
+    /// 変換なし
+    #[default]
+    Default,
+    /// Png変換
+    Png,
+}
+
 /// List all v4l2 devices
 pub async fn list() -> Result<impl IntoResponse, AppError> {
     use v4l::context;
@@ -212,13 +253,45 @@ pub async fn capture(
     context.capture_tx.send(req).await.inspect_err(|e| {
         tracing::error!("Failed to send capture request: {:?}", e);
     })?;
-    let res = rx.await.inspect_err(|e| {
+    let mut res = rx.await.inspect_err(|e| {
         tracing::error!("Failed to receive capture response: {:?}", e);
     })??;
 
     let mut headers = HeaderMap::new();
     if res.format.fourcc == "MJPG" {
         headers.insert("Content-Type", "image/jpeg".parse().unwrap());
+    } else if query.0.outfmt == OutFmt::Png {
+        match res.format.fourcc.as_str() {
+            "YUYV" => {
+                headers.insert("Content-Type", "image/png".parse().unwrap());
+                let rgb = crate::imgfmt::yuyv422_to_rgb(
+                    &res.buffer,
+                    res.format.width,
+                    res.format.height,
+                )
+                .inspect_err(|e| {
+                    tracing::error!("Failed to convert YUYV to RGB: {:?}", e);
+                })?;
+                let img = image::RgbImage::from_raw(res.format.width, res.format.height, rgb)
+                    .unwrap();
+                // clear buffer and encode PNG
+                res.buffer.clear();
+                let writer = std::io::BufWriter::new(&mut res.buffer);
+                let enc = image::codecs::png::PngEncoder::new(writer);
+                enc.write_image(
+                    img.as_raw(),
+                    img.width(),
+                    img.height(),
+                    image::ExtendedColorType::Rgb8,
+                )
+                .inspect_err(|e| {
+                    tracing::error!("Failed to encode PNG: {:?}", e);
+                })?;
+            }
+            _ => {
+                headers.insert("Content-Type", "image/raw".parse().unwrap());
+            }
+        }
     } else {
         headers.insert("Content-Type", "image/raw".parse().unwrap());
     }

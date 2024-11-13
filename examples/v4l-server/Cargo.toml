@@ -20,3 +20,18 @@ v4l = { workspace = true, features = ["tokio", "aligned-alloc"] }
 yuvutils-rs = "0.5.1"
 jetson-pixfmt.workspace = true
 clap = { version = "4.5.20", features = ["derive"] }
+
+[package.metadata.deb]
+maintainer = "FUJIANKA Fumiya <uzuna.kf@gmail.com>"
+copyright = "2024, FUJIANKA Fumiya <uzuna.kf@gmail.com>"
+license-file = ["../../LICENSE"]
+section = "utility"
+priority = "optional"
+assets = [
+    ["target/release/v4l-server", "usr/bin/", "755"],
+]
+
+maintainer-scripts = "debian/"
+systemd-units = [
+    { unit-name = "v4l-server" },
+]

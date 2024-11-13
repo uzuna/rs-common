@@ -13,6 +13,21 @@ mod error;
 mod imgfmt;
 mod util;
 
+#[derive(Debug, clap::Parser)]
+struct Opt {
+    #[arg(short, long, default_value = "0.0.0.0")]
+    addr: String,
+    #[arg(short, long, default_value = "8080")]
+    port: u16,
+}
+
+impl Opt {
+    fn addr(&self) -> anyhow::Result<SocketAddr> {
+        let addr: SocketAddr = format!("{}:{}", self.addr, self.port).parse()?;
+        Ok(addr)
+    }
+}
+
 #[derive(Clone)]
 struct Context {
     capture_tx: mpsc::Sender<capture::Request>,
@@ -22,12 +37,12 @@ struct Context {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                "example_static_file_server=debug,tower_http=debug,info".into()
-            }),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
+
+    let opt = <Opt as clap::Parser>::parse();
 
     let (mut cap_handle, capture_tx) = capture::CaptureRoutine::new();
     let token = CancellationToken::new();
@@ -39,10 +54,8 @@ async fn main() -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http())
         .with_state(Context { capture_tx });
 
-    let port = 8080;
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    tracing::info!("listening on {}", listener.local_addr().unwrap());
+    let listener = tokio::net::TcpListener::bind(opt.addr()?).await?;
+    tracing::info!("listening on {}", listener.local_addr()?);
     let token_clone = token.clone();
     tokio::try_join!(
         async {

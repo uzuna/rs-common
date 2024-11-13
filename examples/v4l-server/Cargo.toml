@@ -19,3 +19,4 @@ tracing.workspace = true
 v4l = { workspace = true, features = ["tokio", "aligned-alloc"] }
 yuvutils-rs = "0.5.1"
 jetson-pixfmt.workspace = true
+clap = { version = "4.5.20", features = ["derive"] }

@@ -8,10 +8,11 @@ use axum::{
     Json,
 };
 use image::ImageEncoder;
+use jetson_pixfmt::pixfmt::CsiPixelFormat;
 use v4l::{util::control::ControlTable, video::Capture};
 
 use crate::{
-    capture::{self, CaptureProp, Controls},
+    capture::{self, CaptureProp, CaptureResponse, Controls},
     error::AppError,
     util::open_device,
     Context,
@@ -295,27 +296,11 @@ pub async fn capture(
                     tracing::error!("Failed to encode PNG: {:?}", e);
                 })?;
             }
-            "RG12" => {
+            "RG10" | "RG12" => {
                 headers.insert("Content-Type", "image/png".parse().unwrap());
-                // 16bit空間に12bitを展開するため左シフトして16bit領域全体を使う
-                // jetsonのRG12は左詰めされているので下位をマスクする
-                jetson_pixfmt::t16::mask(
-                    &mut res.buffer,
-                    jetson_pixfmt::pixfmt::CsiPixelFormat::Raw12,
-                );
-                let mut out = vec![];
-                let writer = BufWriter::new(&mut out);
-
-                image::codecs::png::PngEncoder::new(writer)
-                    .write_image(
-                        &res.buffer,
-                        res.format.width,
-                        res.format.height,
-                        image::ExtendedColorType::L16,
-                    )
-                    .inspect_err(|e| tracing::error!("Failed to encode PNG: {:?}", e))?;
-                res.buffer.clear();
-                res.buffer = out;
+                format_raw(&mut res).inspect_err(|e| {
+                    tracing::error!("Failed to format raw: {:?}", e);
+                })?;
             }
             _ => {
                 headers.insert("Content-Type", "image/raw".parse().unwrap());
@@ -326,4 +311,29 @@ pub async fn capture(
     }
 
     Ok((headers, Body::from(res.buffer)))
+}
+
+fn format_raw(res: &mut CaptureResponse) -> anyhow::Result<()> {
+    let pixfmt = match res.format.fourcc.as_str() {
+        "RG10" => CsiPixelFormat::Raw10,
+        "RG12" => CsiPixelFormat::Raw12,
+        _ => return Err(anyhow::anyhow!("Unsupported fourcc: {}", res.format.fourcc)),
+    };
+    // 16bit空間に12bitを展開するため左シフトして16bit領域全体を使う
+    // jetsonのRG12は左詰めされているので下位をマスクする
+    jetson_pixfmt::t16::mask(&mut res.buffer, pixfmt);
+    let mut out = vec![];
+    let writer = BufWriter::new(&mut out);
+
+    image::codecs::png::PngEncoder::new(writer)
+        .write_image(
+            &res.buffer,
+            res.format.width,
+            res.format.height,
+            image::ExtendedColorType::L16,
+        )
+        .inspect_err(|e| tracing::error!("Failed to encode PNG: {:?}", e))?;
+    res.buffer.clear();
+    res.buffer = out;
+    Ok(())
 }

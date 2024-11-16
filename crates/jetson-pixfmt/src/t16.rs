@@ -90,6 +90,29 @@ pub unsafe fn format_as_u128_simd(buf: &mut [u8], csi_format: CsiPixelFormat) {
     }
 }
 
+/// SSE2を使って128bit幅単位でフォーマット。16byteの倍数のデータに対応
+///
+/// # Safety
+///
+/// 128bit幅単位でフォーマットするため。余った部分は変換されない。
+#[target_feature(enable = "sse2")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub unsafe fn format_copy_as_u128_simd(src: &[u8], dst: &mut [u8], csi_format: CsiPixelFormat) {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+    #[allow(overflowing_literals)]
+    let shift4 = _mm_setr_epi16(csi_format.bitshift() as i16, 0, 0, 0, 0, 0, 0, 0);
+
+    for i in 0..src.len() / 16 {
+        let i: usize = i * 16;
+        let invec = _mm_loadu_si128(src.as_ptr().add(i) as *const _);
+        let shifted = _mm_srl_epi16(invec, shift4); // 論理右シフト
+        _mm_storeu_si128(dst.as_mut_ptr().add(i) as *mut _, shifted);
+    }
+}
+
 /// AVX2を使って256bit幅単位でフォーマット。32byteの倍数のデータに対応
 ///
 /// # Safety
@@ -440,6 +463,21 @@ mod tests {
         for (src, expect) in td {
             let n = to_le_bytes(src, 16);
             buf.copy_from_slice_with_format(n.as_slice(), format_copy_as_u128);
+            buf.assert(expect);
+        }
+    }
+
+    #[test]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn test_raw_buffer_copy_with_format_simd() {
+        let mut buf = RawBuffer::new(0, 16, CsiPixelFormat::Raw12);
+        let td = vec![(0x800f_u16, 0x0800_u16), (0x1f0f, 0x01f0), (0x084f, 0x0084)];
+
+        for (src, expect) in td {
+            let n = to_le_bytes(src, 16);
+            buf.copy_from_slice_with_format(n.as_slice(), |s, d, f| unsafe {
+                format_copy_as_u128_simd(s, d, f)
+            });
             buf.assert(expect);
         }
     }

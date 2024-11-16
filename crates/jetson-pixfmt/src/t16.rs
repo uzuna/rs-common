@@ -70,13 +70,23 @@ impl RawBuffer {
 }
 
 impl AddAssign<&Self> for RawBuffer {
-    #[allow(unreachable_code)]
     fn add_assign(&mut self, rhs: &Self) {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        {
+        if std::arch::is_x86_feature_detected!("sse2") {
             return unsafe { calc::add_assign_simd(&mut self.buf, &rhs.buf) };
         }
         calc::add_assign(&mut self.buf, &rhs.buf);
+    }
+}
+
+impl AddAssign<&RawSlice<'_>> for RawBuffer {
+    fn add_assign(&mut self, rhs: &RawSlice) {
+        let rhs = rhs.buf;
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if std::arch::is_x86_feature_detected!("sse2") {
+            return unsafe { calc::add_assign_simd(&mut self.buf, rhs) };
+        }
+        calc::add_assign(&mut self.buf, rhs);
     }
 }
 
@@ -85,6 +95,19 @@ impl DivAssign<u16> for RawBuffer {
         for i in self.buf.iter_mut() {
             *i /= rhs;
         }
+    }
+}
+
+pub struct RawSlice<'d> {
+    pub buf: &'d [u16],
+    pub format: CsiPixelFormat,
+}
+
+impl<'d> RawSlice<'d> {
+    pub fn from_slice(src: &'d [u8], format: CsiPixelFormat) -> Self {
+        let len = src.len() / 2;
+        let buf = unsafe { slice::from_raw_parts(src.as_ptr() as *const u16, len) };
+        Self { buf, format }
     }
 }
 
@@ -418,6 +441,8 @@ cfg_if::cfg_if!(
 
 #[cfg(test)]
 mod tests {
+    use std::vec;
+
     use super::*;
 
     fn to_le_bytes(data: u16, len: usize) -> Vec<u8> {
@@ -561,14 +586,26 @@ mod tests {
 
     #[test]
     fn test_raw_buffer_add_assign() {
-        let one = RawBuffer::new(1, 16, CsiPixelFormat::Raw12);
         let mut buf = RawBuffer::new(0, 16, CsiPixelFormat::Raw12);
 
+        // Use RawBuffer
+        let one = RawBuffer::new(1, 16, CsiPixelFormat::Raw12);
         for i in 1..=16 {
             buf += &one;
             buf.assert(i as u16);
         }
         buf /= 2;
         buf.assert(8);
+
+        // Use RawSlice
+        let eight = unsafe {
+            #[allow(clippy::unsound_collection_transmute)]
+            let mut buf = std::mem::transmute::<Vec<u16>, Vec<u8>>(vec![8_u16; 16]);
+            buf.set_len(16 * 2);
+            buf
+        };
+        let eight_slice = RawSlice::from_slice(eight.as_slice(), CsiPixelFormat::Raw12);
+        buf += &eight_slice;
+        buf.assert(16);
     }
 }

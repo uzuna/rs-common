@@ -1,12 +1,14 @@
 //! JetsonのT_R16をフォーマットするモジュール
 
 use core::slice;
+use std::ops::AddAssign;
 
 use byteorder::{ByteOrder, LittleEndian};
 
 use crate::pixfmt::CsiPixelFormat;
 
 /// バッファの生データの保持
+#[derive(Clone)]
 pub struct RawBuffer {
     pub buf: Vec<u16>,
     pub format: CsiPixelFormat,
@@ -64,6 +66,72 @@ impl RawBuffer {
             slice::from_raw_parts_mut(self.buf.as_mut_ptr() as *mut u8, self.buf.len() * 2)
         };
         f(src, buf, self.format);
+    }
+}
+
+impl AddAssign<&Self> for RawBuffer {
+    fn add_assign(&mut self, rhs: &Self) {
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            unsafe { calc::add_assign_simd(&mut self.buf, &rhs.buf) };
+        }
+        calc::add_assign(&mut self.buf, &rhs.buf);
+    }
+}
+
+mod calc {
+    //! RawBufferの計算関数
+
+    /// u16の配列を加算
+    pub fn add_assign(src: &mut [u16], rhs: &[u16]) {
+        for (l, r) in src.iter_mut().zip(rhs.iter()) {
+            *l += *r;
+        }
+    }
+
+    /// SSE2を使ったu16の配列を加算
+    #[target_feature(enable = "sse2")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    pub unsafe fn add_assign_simd(src: &mut [u16], rhs: &[u16]) {
+        #[cfg(target_arch = "x86")]
+        use std::arch::x86::*;
+        #[cfg(target_arch = "x86_64")]
+        use std::arch::x86_64::*;
+
+        for i in 0..src.len() / 8 {
+            let i: usize = i * 8;
+            let lvec = _mm_loadu_si128(src.as_ptr().add(i) as *const _);
+            let rvec = _mm_loadu_si128(rhs.as_ptr().add(i) as *const _);
+            let res = _mm_add_epi16(lvec, rvec);
+            _mm_storeu_si128(src.as_mut_ptr().add(i) as *mut _, res);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        // テスト用のヘルパー関数
+        fn assert_v(v: &[u16], expect: u16) {
+            for &i in v.iter() {
+                assert_eq!(i, expect);
+            }
+        }
+
+        #[test]
+        fn test_add_assign() {
+            let mut src = vec![1; 16];
+            let rhs = vec![9; 16];
+            super::add_assign(&mut src, &rhs);
+            assert_v(&src, 10);
+        }
+
+        #[test]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        fn test_add_assign_simd() {
+            let mut src = vec![1; 16];
+            let rhs = vec![9; 16];
+            unsafe { super::add_assign_simd(&mut src, &rhs) };
+            assert_v(&src, 10);
+        }
     }
 }
 
@@ -479,6 +547,17 @@ mod tests {
                 format_copy_as_u128_simd(s, d, f)
             });
             buf.assert(expect);
+        }
+    }
+
+    #[test]
+    fn test_raw_buffer_add_assign() {
+        let one = RawBuffer::new(1, 16, CsiPixelFormat::Raw12);
+        let mut buf = RawBuffer::new(0, 16, CsiPixelFormat::Raw12);
+
+        for i in 1..16 {
+            buf += &one;
+            buf.assert(i as u16);
         }
     }
 }

@@ -7,19 +7,15 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-anyhow = "1.0.93"
+anyhow.workspace = true
 axum.workspace = true
-image = { version = "0.25", features = ["png"], default-features = false }
-serde = { version = "1.0.215", features = ["derive"] }
+clap = { version = "4.5.20", features = ["derive"] }
 tokio = { workspace = true, features = ["macros"] }
-tokio-util = "0.7.12"
+tokio-util.workspace = true
 tower-http = { workspace = true,  features = ["fs", "trace"]  }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tracing.workspace = true
-v4l = { workspace = true, features = ["tokio", "aligned-alloc"] }
-yuvutils-rs = "0.5.1"
-jetson-pixfmt.workspace = true
-clap = { version = "4.5.20", features = ["derive"] }
+v4l-serve.workspace = true
 
 [package.metadata.deb]
 maintainer = "FUJIANKA Fumiya <uzuna.kf@gmail.com>"

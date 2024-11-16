@@ -1,36 +1,15 @@
 //! captureはサーバーに対して1つの実行フロー歯科持つことができない
 
-use tokio::{
-    select,
-    sync::{mpsc, oneshot},
-};
+use tokio::{select, sync::mpsc};
 use tokio_util::sync::CancellationToken;
-use v4l::{prelude::UserptrStream, video::Capture, Control};
+use v4l::{prelude::UserptrStream, video::Capture};
 
-use crate::{error::AppError, util::open_device};
+use crate::{
+    context::{Controls, Request},
+    error::AppError,
+    util::open_device,
+};
 
-pub enum Request {
-    Capture {
-        tx: oneshot::Sender<Result<CaptureResponse, anyhow::Error>>,
-        device_index: usize,
-        format: v4l::Format,
-        buffer_count: u32,
-        controls: Option<Controls>,
-    },
-}
-
-/// カメラのコントロールの設定
-#[derive(Debug)]
-pub struct Controls {
-    pub def: Vec<Control>,
-    pub target: Vec<Control>,
-}
-
-impl Controls {
-    pub fn new(def: Vec<Control>, target: Vec<Control>) -> Self {
-        Controls { def, target }
-    }
-}
 /// キャプチャのパラメータ
 #[derive(Debug)]
 pub struct CaptureProp {

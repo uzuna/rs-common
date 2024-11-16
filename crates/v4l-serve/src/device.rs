@@ -12,10 +12,10 @@ use jetson_pixfmt::pixfmt::CsiPixelFormat;
 use v4l::{util::control::ControlTable, video::Capture};
 
 use crate::{
-    capture::{self, CaptureProp, CaptureResponse, Controls},
+    capture::{CaptureProp, CaptureResponse},
+    context::{Context, Controls, Request},
     error::AppError,
     util::open_device,
-    Context,
 };
 
 /// V4l2 deviceの情報を格納する構造体
@@ -213,11 +213,14 @@ pub async fn device(Path(index): Path<usize>) -> Result<impl IntoResponse, AppEr
 }
 
 /// Capture image from device
-pub async fn capture(
-    State(context): State<Context>,
+pub async fn capture<C>(
+    State(context): State<C>,
     Path(index): Path<usize>,
     query: Query<CaptureQuery>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<impl IntoResponse, AppError>
+where
+    C: Context,
+{
     let (default_format, ctrls) = {
         let dev = open_device(index)?;
         let format = dev.format().inspect_err(|e| {
@@ -245,14 +248,14 @@ pub async fn capture(
     // デバイスを開く操作は1つだけしか許されないため
     // Captureは別の単一フローのルーチンで取得する
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let req = capture::Request::Capture {
+    let req = Request::Capture {
         tx,
         format,
         device_index: index,
         buffer_count: prop.buffer_count,
         controls: prop.controls,
     };
-    context.capture_tx.send(req).await.inspect_err(|e| {
+    context.capture_tx().send(req).await.inspect_err(|e| {
         tracing::error!("Failed to send capture request: {:?}", e);
     })?;
     let mut res = rx.await.inspect_err(|e| {

@@ -12,22 +12,26 @@ repository = "https://github.com/uzuna/rs-common"
 rust-version = "1.76"
 
 [workspace.dependencies]
+anyhow = "1.0.93"
 axum = "0.7.5"
 byteorder = "1.5"
 cfg-if = "1.0.0"
 criterion = "0.5.1"
+image = { version = "0.25", default-features = false }
+jetson-pixfmt = { path = "crates/jetson-pixfmt" }
 rand = "0.8.5"
+serde = "1.0.215"
 tokio = "1.41.1"
+tokio-util = "0.7.12"
 tower-http = "0.5.0"
 tracing = "0.1"
 tracing-subscriber = "0.3.18"
 v4l = { git = "ssh://git@github.com/uzuna/libv4l-rs.git", rev = "791ec17" }
-jetson-pixfmt = { path = "crates/jetson-pixfmt" }
+v4l-serve = { path = "crates/v4l-serve" }
 wasm-bindgen = "0.2.95"
 wasm-bindgen-futures = "0.4.45"
 wasm-util = { path = "crates/wasm-util" }
 web-sys = "0.3"
-
 
 [profile.release.package.wasm-preview]
 opt-level = "s"

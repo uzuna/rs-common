@@ -1,17 +1,11 @@
 use std::net::SocketAddr;
 
-use axum::{routing::get, Router};
+use axum::Router;
 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::prelude::*;
-
-mod capture;
-mod device;
-mod error;
-mod imgfmt;
-mod util;
 
 #[derive(Debug, clap::Parser)]
 struct Opt {
@@ -30,7 +24,13 @@ impl Opt {
 
 #[derive(Clone)]
 struct Context {
-    capture_tx: mpsc::Sender<capture::Request>,
+    capture_tx: mpsc::Sender<v4l_serve::context::Request>,
+}
+
+impl v4l_serve::context::Context for Context {
+    fn capture_tx(&self) -> mpsc::Sender<v4l_serve::context::Request> {
+        self.capture_tx.clone()
+    }
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -44,13 +44,10 @@ async fn main() -> anyhow::Result<()> {
 
     let opt = <Opt as clap::Parser>::parse();
 
-    let (mut cap_handle, capture_tx) = capture::CaptureRoutine::new();
+    let (mut cap_handle, capture_tx) = v4l_serve::capture::CaptureRoutine::new();
     let token = CancellationToken::new();
 
-    let router = Router::new()
-        .route("/devices", get(device::list))
-        .route("/device/:index", get(device::device))
-        .route("/device/:index/capture", get(device::capture))
+    let router = v4l_serve::service::route(Router::new())
         .layer(TraceLayer::new_for_http())
         .with_state(Context { capture_tx });
 

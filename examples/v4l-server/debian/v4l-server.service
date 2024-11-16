@@ -1,0 +1,12 @@
+[Unit]
+Description=V4L server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/v4l-server
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,33 @@
+[package]
+name = "v4l-server"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+clap = { version = "4.5.20", features = ["derive"] }
+tokio = { workspace = true, features = ["macros"] }
+tokio-util.workspace = true
+tower-http = { workspace = true,  features = ["fs", "trace"]  }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing.workspace = true
+v4l-serve.workspace = true
+
+[package.metadata.deb]
+maintainer = "FUJIANKA Fumiya <uzuna.kf@gmail.com>"
+copyright = "2024, FUJIANKA Fumiya <uzuna.kf@gmail.com>"
+license-file = ["../../LICENSE"]
+section = "utility"
+priority = "optional"
+assets = [
+    ["target/release/v4l-server", "usr/bin/", "755"],
+]
+
+maintainer-scripts = "debian/"
+systemd-units = [
+    { unit-name = "v4l-server" },
+]

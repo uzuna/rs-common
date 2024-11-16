@@ -183,7 +183,7 @@ pub unsafe fn mask_as_u128_simd(buf: &mut [u8], csi_format: CsiPixelFormat) {
     for i in 0..buf.len() / 16 {
         let i: usize = i * 16;
         let invec = vld1q_u16(buf.as_ptr().add(i) as *const _);
-        let res = vandq_s16(invec, mask);
+        let res = vandq_u16(invec, mask);
         vst1q_u16(buf.as_mut_ptr().add(i) as *mut _, res);
     }
 }

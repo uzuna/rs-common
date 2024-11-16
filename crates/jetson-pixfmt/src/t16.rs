@@ -1,7 +1,7 @@
 //! JetsonのT_R16をフォーマットするモジュール
 
 use core::slice;
-use std::ops::AddAssign;
+use std::ops::{AddAssign, DivAssign};
 
 use byteorder::{ByteOrder, LittleEndian};
 
@@ -70,12 +70,21 @@ impl RawBuffer {
 }
 
 impl AddAssign<&Self> for RawBuffer {
+    #[allow(unreachable_code)]
     fn add_assign(&mut self, rhs: &Self) {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
-            unsafe { calc::add_assign_simd(&mut self.buf, &rhs.buf) };
+            return unsafe { calc::add_assign_simd(&mut self.buf, &rhs.buf) };
         }
         calc::add_assign(&mut self.buf, &rhs.buf);
+    }
+}
+
+impl DivAssign<u16> for RawBuffer {
+    fn div_assign(&mut self, rhs: u16) {
+        for i in self.buf.iter_mut() {
+            *i /= rhs;
+        }
     }
 }
 
@@ -555,9 +564,11 @@ mod tests {
         let one = RawBuffer::new(1, 16, CsiPixelFormat::Raw12);
         let mut buf = RawBuffer::new(0, 16, CsiPixelFormat::Raw12);
 
-        for i in 1..16 {
+        for i in 1..=16 {
             buf += &one;
             buf.assert(i as u16);
         }
+        buf /= 2;
+        buf.assert(8);
     }
 }

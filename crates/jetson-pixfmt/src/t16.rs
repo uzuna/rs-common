@@ -98,6 +98,21 @@ impl DivAssign<u16> for RawBuffer {
     }
 }
 
+impl From<RawBuffer> for Vec<u8> {
+    fn from(val: RawBuffer) -> Self {
+        let mut buf = Vec::with_capacity(val.buf.len() * 2);
+        unsafe {
+            std::ptr::copy(
+                val.buf.as_ptr() as *const u8,
+                buf.as_mut_ptr(),
+                val.buf.len() * 2,
+            );
+            buf.set_len(val.buf.len() * 2);
+        }
+        buf
+    }
+}
+
 pub struct RawSlice<'d> {
     pub buf: &'d [u16],
     pub format: CsiPixelFormat,
@@ -295,6 +310,14 @@ pub fn format(buf: &mut [u8], csi_format: CsiPixelFormat) {
         }
     }
     format_as_u128(buf, csi_format);
+}
+
+pub fn format_copy(src: &[u8], dst: &mut [u8], csi_format: CsiPixelFormat) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if std::arch::is_x86_feature_detected!("sse2") {
+        return unsafe { format_copy_as_u128_simd(src, dst, csi_format) };
+    }
+    format_copy_as_u128(src, dst, csi_format);
 }
 
 /// Paddingのみをマスクして、データが16bitの空間にマップしている結果を返す

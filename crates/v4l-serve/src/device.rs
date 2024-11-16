@@ -9,11 +9,11 @@ use axum::{
 };
 use image::ImageEncoder;
 use jetson_pixfmt::pixfmt::CsiPixelFormat;
-use v4l::{util::control::ControlTable, video::Capture};
+use v4l::{util::control::ControlTable, video::Capture, Format};
 
 use crate::{
     capture::{CaptureProp, CaptureResponse},
-    context::{Context, Controls, Request},
+    context::{CaptureArgs, Context, Controls, Request},
     error::AppError,
     util::open_device,
 };
@@ -153,6 +153,42 @@ impl CaptureQuery {
     }
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct CaptureStackQuery {
+    pub fourcc: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub control: Option<String>,
+    /// カメラの安定を待つバッファ数
+    #[serde(default = "CaptureStackQuery::buffer_count_default")]
+    pub buffer_count: u32,
+    #[serde(default = "OutFmt::default")]
+    pub outfmt: OutFmt,
+    #[serde(default = "CaptureStackQuery::buffer_stack_default")]
+    pub stack_count: u32,
+}
+
+impl CaptureStackQuery {
+    fn buffer_count_default() -> u32 {
+        4
+    }
+
+    fn buffer_stack_default() -> u32 {
+        5
+    }
+
+    /// クエリの他、未入力の場合はデバイスデフォルトの値を使用してCapturePropを生成する
+    pub fn to_prop(&self, format: v4l::format::Format, ctrls: Option<Controls>) -> CaptureProp {
+        CaptureProp {
+            fourcc: self.fourcc.clone().unwrap_or(format.fourcc.to_string()),
+            width: self.width.unwrap_or(format.width),
+            height: self.height.unwrap_or(format.height),
+            controls: ctrls,
+            buffer_count: self.buffer_count,
+        }
+    }
+}
+
 /// RAW画像の出力フォーマット
 #[derive(Debug, Default, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -221,24 +257,9 @@ pub async fn capture<C>(
 where
     C: Context,
 {
-    let (default_format, ctrls) = {
-        let dev = open_device(index)?;
-        let format = dev.format().inspect_err(|e| {
-            tracing::error!("Failed to get format: {:?}", e);
-        })?;
-
-        let ctrls = if let Some(ctrl_str) = query.0.control.as_ref() {
-            let req = v4l::util::control::Requests::try_from(ctrl_str.as_str())
-                .map_err(|e| anyhow::anyhow!("Failed to create control requests: {:?}", e))?;
-            let ctrlmap = ControlTable::from(dev.query_controls()?.as_slice());
-            let def = ctrlmap.get_default(&req);
-            let target = ctrlmap.get_control(&req);
-            Some(Controls::new(def, target))
-        } else {
-            None
-        };
-        (format, ctrls)
-    };
+    let (default_format, ctrls) = fetch_format(index, &query.0.control).inspect_err(|e| {
+        tracing::error!("Failed to fetch format: {:?}", e);
+    })?;
 
     let prop = query.0.to_prop(default_format, ctrls);
     prop.validate()?;
@@ -247,14 +268,14 @@ where
 
     // デバイスを開く操作は1つだけしか許されないため
     // Captureは別の単一フローのルーチンで取得する
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let req = Request::Capture {
-        tx,
-        format,
+    let args = CaptureArgs {
         device_index: index,
+        format,
         buffer_count: prop.buffer_count,
         controls: prop.controls,
     };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let req = Request::Capture { tx, args };
     context.capture_tx().send(req).await.inspect_err(|e| {
         tracing::error!("Failed to send capture request: {:?}", e);
     })?;
@@ -316,11 +337,91 @@ where
     Ok((headers, Body::from(res.buffer)))
 }
 
+/// CaptureStack Average
+///
+/// 連続した画像を取得して平均を取る
+pub async fn capture_stack_avg<C>(
+    State(context): State<C>,
+    Path(index): Path<usize>,
+    query: Query<CaptureStackQuery>,
+) -> Result<impl IntoResponse, AppError>
+where
+    C: Context,
+{
+    let (default_format, ctrls) = fetch_format(index, &query.0.control).inspect_err(|e| {
+        tracing::error!("Failed to fetch format: {:?}", e);
+    })?;
+
+    let prop = query.0.to_prop(default_format, ctrls);
+    prop.validate()?;
+    tracing::info!("Capture: {:?}", prop);
+    let format = prop.format();
+
+    let csv_format = match format.fourcc.str()? {
+        "RG10" => CsiPixelFormat::Raw10,
+        "RG12" => CsiPixelFormat::Raw12,
+        _ => Err(anyhow::anyhow!("Unsupported fourcc: {}", format.fourcc))?,
+    };
+
+    // デバイスを開く操作は1つだけしか許されないため
+    // Captureは別の単一フローのルーチンで取得する
+    let args = CaptureArgs {
+        device_index: index,
+        format,
+        buffer_count: prop.buffer_count,
+        controls: prop.controls,
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let req = Request::CaptureStack {
+        tx,
+        args,
+        stack_count: query.0.stack_count as usize,
+        csv_format,
+    };
+    context.capture_tx().send(req).await.inspect_err(|e| {
+        tracing::error!("Failed to send capture request: {:?}", e);
+    })?;
+    let mut res = rx.await.inspect_err(|e| {
+        tracing::error!("Failed to receive capture response: {:?}", e);
+    })??;
+    let mut headers = HeaderMap::new();
+    headers.insert("X-FourCC", res.format.fourcc.to_string().parse().unwrap());
+    headers.insert(
+        "X-ImageWidth",
+        res.format.width.to_string().parse().unwrap(),
+    );
+    headers.insert(
+        "X-ImageHeight",
+        res.format.height.to_string().parse().unwrap(),
+    );
+    if query.0.outfmt == OutFmt::Png {
+        match res.format.fourcc.as_str() {
+            "RG10" | "RG12" => {
+                headers.insert("Content-Type", "image/png".parse().unwrap());
+                format_raw(&mut res).inspect_err(|e| {
+                    tracing::error!("Failed to format raw: {:?}", e);
+                })?;
+            }
+            _ => {
+                headers.insert("Content-Type", "image/raw".parse().unwrap());
+            }
+        }
+    } else {
+        headers.insert("Content-Type", "image/raw".parse().unwrap());
+    }
+    Ok((headers, Body::from(res.buffer)))
+}
+
 fn format_raw(res: &mut CaptureResponse) -> anyhow::Result<()> {
     let pixfmt = match res.format.fourcc.as_str() {
         "RG10" => CsiPixelFormat::Raw10,
         "RG12" => CsiPixelFormat::Raw12,
-        _ => return Err(anyhow::anyhow!("Unsupported fourcc: {}", res.format.fourcc)),
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Unsupported fourcc: {}, only RG10 or RG12",
+                res.format.fourcc
+            ))
+        }
     };
     // 16bit空間に12bitを展開するため左シフトして16bit領域全体を使う
     // jetsonのRG12は左詰めされているので下位をマスクする
@@ -339,4 +440,27 @@ fn format_raw(res: &mut CaptureResponse) -> anyhow::Result<()> {
     res.buffer.clear();
     res.buffer = out;
     Ok(())
+}
+
+// デバイスにアクセスしてフォーマットとコントロールを取得する
+fn fetch_format(
+    index: usize,
+    controls: &Option<String>,
+) -> anyhow::Result<(Format, Option<Controls>)> {
+    let dev = open_device(index)?;
+    let format = dev.format().inspect_err(|e| {
+        tracing::error!("Failed to get format: {:?}", e);
+    })?;
+
+    let ctrls = if let Some(ctrl_str) = controls.as_ref() {
+        let req = v4l::util::control::Requests::try_from(ctrl_str.as_str())
+            .map_err(|e| anyhow::anyhow!("Failed to create control requests: {:?}", e))?;
+        let ctrlmap = ControlTable::from(dev.query_controls()?.as_slice());
+        let def = ctrlmap.get_default(&req);
+        let target = ctrlmap.get_control(&req);
+        Some(Controls::new(def, target))
+    } else {
+        None
+    };
+    Ok((format, ctrls))
 }

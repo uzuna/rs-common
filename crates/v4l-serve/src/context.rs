@@ -1,3 +1,4 @@
+use jetson_pixfmt::pixfmt::CsiPixelFormat;
 use tokio::sync::{mpsc, oneshot};
 use v4l::Control;
 
@@ -10,10 +11,13 @@ pub trait Context {
 pub enum Request {
     Capture {
         tx: oneshot::Sender<Result<CaptureResponse, anyhow::Error>>,
-        device_index: usize,
-        format: v4l::Format,
-        buffer_count: u32,
-        controls: Option<Controls>,
+        args: CaptureArgs,
+    },
+    CaptureStack {
+        tx: oneshot::Sender<Result<CaptureResponse, anyhow::Error>>,
+        args: CaptureArgs,
+        stack_count: usize,
+        csv_format: CsiPixelFormat,
     },
 }
 
@@ -28,4 +32,11 @@ impl Controls {
     pub fn new(def: Vec<Control>, target: Vec<Control>) -> Self {
         Controls { def, target }
     }
+}
+
+pub struct CaptureArgs {
+    pub device_index: usize,
+    pub format: v4l::format::Format,
+    pub buffer_count: u32,
+    pub controls: Option<Controls>,
 }

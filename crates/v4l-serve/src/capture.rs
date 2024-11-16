@@ -1,11 +1,12 @@
 //! captureはサーバーに対して1つの実行フロー歯科持つことができない
 
+use jetson_pixfmt::{pixfmt::CsiPixelFormat, t16::RawBuffer};
 use tokio::{select, sync::mpsc};
 use tokio_util::sync::CancellationToken;
-use v4l::{prelude::UserptrStream, video::Capture};
+use v4l::{prelude::UserptrStream, video::Capture, Format};
 
 use crate::{
-    context::{Controls, Request},
+    context::{CaptureArgs, Controls, Request},
     error::AppError,
     util::open_device,
 };
@@ -85,12 +86,29 @@ impl CaptureRoutine {
                     match req {
                         Request::Capture {
                             tx,
-                            format,
-                            device_index,
-                            buffer_count,
-                            controls,
+                            args
                         } => {
-                            let res = match capture_inner(format, device_index, buffer_count, controls).await{
+                            let res = match capture_inner(args).await{
+                                Ok(res) => res,
+                                Err(e) => {
+                                    tracing::error!("Failed to capture: {:?}", e);
+                                    continue;
+                                }
+                            };
+                            match tx.send(Ok(res)) {
+                                Ok(_) => {}
+                                Err(_e) => {
+                                    tracing::error!("Failed to sendback to connection");
+                                }
+                            }
+                        },
+                        Request::CaptureStack {
+                            tx,
+                            args,
+                            stack_count,
+                            csv_format,
+                        } => {
+                            let res = match capture_stack_avg(args, stack_count, csv_format).await{
                                 Ok(res) => res,
                                 Err(e) => {
                                     tracing::error!("Failed to capture: {:?}", e);
@@ -113,13 +131,69 @@ impl CaptureRoutine {
 }
 
 /// captureの内部実装
-async fn capture_inner(
-    format: v4l::format::Format,
-    device_index: usize,
-    buffer_count: u32,
-    controls: Option<Controls>,
+async fn capture_inner(carg: CaptureArgs) -> anyhow::Result<CaptureResponse> {
+    use v4l::io::traits::{AsyncCaptureStream, Stream};
+    let (mut stream, actual_format) = open_stream(carg).await?;
+
+    let (buf, _meta) = stream.poll_next().await?;
+    let b = buf.to_owned();
+    stream.stop()?;
+
+    Ok(CaptureResponse {
+        format: CaptureFormat {
+            fourcc: actual_format.fourcc.to_string(),
+            width: actual_format.width,
+            height: actual_format.height,
+        },
+        buffer: b,
+    })
+}
+
+/// 複数のフレームをキャプチャして平均を取る
+pub async fn capture_stack_avg(
+    carg: CaptureArgs,
+    sum_count: usize,
+    pixfmt: CsiPixelFormat,
 ) -> anyhow::Result<CaptureResponse> {
     use v4l::io::traits::{AsyncCaptureStream, Stream};
+    let f = jetson_pixfmt::t16::format_copy;
+    let (mut stream, actual_format) = open_stream(carg).await?;
+
+    let (buf, _meta) = stream.poll_next().await?;
+    let mut b = RawBuffer::with_format(buf, pixfmt, f);
+    let mut src = RawBuffer::with_format(buf, pixfmt, f);
+
+    for _ in 1..sum_count {
+        let (buf, _meta) = stream.poll_next().await?;
+        src.copy_from_slice_with_format(buf, f);
+        b += &src;
+    }
+
+    stream.stop()?;
+
+    b /= sum_count as u16;
+
+    // TODO: 16bit幅のデータに伸張する
+
+    Ok(CaptureResponse {
+        format: CaptureFormat {
+            fourcc: actual_format.fourcc.to_string(),
+            width: actual_format.width,
+            height: actual_format.height,
+        },
+        buffer: b.into(),
+    })
+}
+
+// カメラのストリームを開く
+async fn open_stream(carg: CaptureArgs) -> anyhow::Result<(UserptrStream, Format)> {
+    use v4l::io::traits::AsyncCaptureStream;
+    let CaptureArgs {
+        format,
+        device_index,
+        buffer_count,
+        controls,
+    } = carg;
     let dev = open_device(device_index)?;
     dev.set_format(&format).inspect_err(|e| {
         tracing::error!("Failed to set format: {:?}", e);
@@ -137,20 +211,11 @@ async fn capture_inner(
     if !target.is_empty() {
         dev.set_controls(target)?;
     }
+    // カメラの安定を待つためbuffer_count分は捨てる
     if buffer_count > 2 {
         for _ in 0..buffer_count - 1 {
             let (_buf, _meta) = stream.poll_next().await?;
         }
     }
-    let (buf, _meta) = stream.poll_next().await?;
-    let b = buf.to_owned();
-    stream.stop()?;
-    Ok(CaptureResponse {
-        format: CaptureFormat {
-            fourcc: actual_format.fourcc.to_string(),
-            width: actual_format.width,
-            height: actual_format.height,
-        },
-        buffer: b,
-    })
+    Ok((stream, actual_format))
 }

@@ -1,8 +1,71 @@
 //! JetsonのT_R16をフォーマットするモジュール
 
+use core::slice;
+
 use byteorder::{ByteOrder, LittleEndian};
 
 use crate::pixfmt::CsiPixelFormat;
+
+/// バッファの生データの保持
+pub struct RawBuffer {
+    pub buf: Vec<u16>,
+    pub format: CsiPixelFormat,
+}
+
+impl RawBuffer {
+    /// 長さを指定して作成
+    pub fn new(init: u16, len: usize, format: CsiPixelFormat) -> Self {
+        Self {
+            buf: vec![init; len],
+            format,
+        }
+    }
+
+    /// スライスを元に作成
+    pub fn from_slice(src: &[u8], format: CsiPixelFormat) -> Self {
+        let len = src.len() / 2;
+        let mut buf = Vec::with_capacity(len);
+        unsafe {
+            std::ptr::copy(src.as_ptr() as *const u16, buf.as_mut_ptr(), len);
+            buf.set_len(len);
+        };
+        Self { buf, format }
+    }
+
+    /// フォーマット関数を適用して作成
+    pub fn with_format(
+        src: &[u8],
+        format: CsiPixelFormat,
+        f: impl Fn(&[u8], &mut [u8], CsiPixelFormat),
+    ) -> Self {
+        let mut buf = vec![0_u16; src.len() / 2];
+        f(
+            src,
+            unsafe { slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, buf.len() * 2) },
+            format,
+        );
+        Self { buf, format }
+    }
+
+    /// 取得済みバッファにデータを取り込む
+    pub fn copy_from_slice(&mut self, src: &[u8]) {
+        self.copy_from_slice_with_format(src, |src, buf, _format| unsafe {
+            std::ptr::copy(src.as_ptr(), buf.as_mut_ptr(), src.len());
+        });
+    }
+
+    /// 取得済みバッファにデータをフォーマットしながら取り込む
+    pub fn copy_from_slice_with_format(
+        &mut self,
+        src: &[u8],
+        f: impl Fn(&[u8], &mut [u8], CsiPixelFormat),
+    ) {
+        let buf = unsafe {
+            slice::from_raw_parts_mut(self.buf.as_mut_ptr() as *mut u8, self.buf.len() * 2)
+        };
+        f(src, buf, self.format);
+    }
+}
 
 /// SSE2を使って128bit幅単位でフォーマット。16byteの倍数のデータに対応
 ///
@@ -79,6 +142,16 @@ pub fn format_as_u128(buf: &mut [u8], csi_format: CsiPixelFormat) {
         let i: usize = i * LEN;
         let a = LittleEndian::read_u128(&buf[i..i + LEN]);
         LittleEndian::write_u128(&mut buf[i..i + LEN], csi_format.format_u128(a));
+    }
+}
+
+/// 128bit幅単位でフォーマットとコピー
+pub fn format_copy_as_u128(src: &[u8], dst: &mut [u8], csi_format: CsiPixelFormat) {
+    const LEN: usize = 16;
+    for i in 0..src.len() / LEN {
+        let i: usize = i * LEN;
+        let a = LittleEndian::read_u128(&src[i..i + LEN]);
+        LittleEndian::write_u128(&mut dst[i..i + LEN], csi_format.format_u128(a));
     }
 }
 
@@ -334,5 +407,40 @@ mod tests {
         let (mut buf, expect) = mask_data(8);
         unsafe { mask_as_u128_simd(&mut buf, CsiPixelFormat::Raw12) };
         assert_eq!(buf, expect);
+    }
+
+    impl RawBuffer {
+        fn assert(&self, expect: u16) {
+            for b in self.buf.iter() {
+                assert_eq!(*b, expect);
+            }
+        }
+    }
+
+    #[test]
+    fn test_raw_buffer_copy_from_slice() {
+        let target = 0x800f_u16;
+        let mut buf = RawBuffer::new(target, 16, CsiPixelFormat::Raw12);
+        buf.assert(target);
+
+        let td = vec![0x400f_u16, 0x200f_u16, 0x100f_u16];
+
+        for t in td {
+            let n = to_le_bytes(t, 16);
+            buf.copy_from_slice(n.as_slice());
+            buf.assert(t);
+        }
+    }
+
+    #[test]
+    fn test_raw_buffer_copy_with_format() {
+        let mut buf = RawBuffer::new(0, 16, CsiPixelFormat::Raw12);
+        let td = vec![(0x800f_u16, 0x0800_u16), (0x1f0f, 0x01f0), (0x084f, 0x0084)];
+
+        for (src, expect) in td {
+            let n = to_le_bytes(src, 16);
+            buf.copy_from_slice_with_format(n.as_slice(), format_copy_as_u128);
+            buf.assert(expect);
+        }
     }
 }

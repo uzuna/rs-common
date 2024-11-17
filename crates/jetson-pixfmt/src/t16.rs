@@ -86,6 +86,10 @@ impl AddAssign<&RawSlice<'_>> for RawBuffer {
         if std::arch::is_x86_feature_detected!("sse2") {
             return unsafe { calc::add_assign_simd(&mut self.buf, rhs) };
         }
+        #[cfg(target_arch = "aarch64")]
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            return unsafe { calc::add_assign_simd(&mut self.buf, rhs) };
+        }
         calc::add_assign(&mut self.buf, rhs);
     }
 }
@@ -151,6 +155,21 @@ mod calc {
             let rvec = _mm_loadu_si128(rhs.as_ptr().add(i) as *const _);
             let res = _mm_add_epi16(lvec, rvec);
             _mm_storeu_si128(src.as_mut_ptr().add(i) as *mut _, res);
+        }
+    }
+
+    #[target_feature(enable = "neon")]
+    #[cfg(target_arch = "aarch64")]
+    pub unsafe fn add_assign_simd(src: &mut [u16], rhs: &[u16]) {
+        use std::arch::aarch64::*;
+
+        #[allow(clippy::never_loop)]
+        for i in 0..src.len() / 8 {
+            let i: usize = i * 8;
+            let lvec = vld1q_u16(src.as_ptr().add(i) as *const _);
+            let rvec = vld1q_u16(rhs.as_ptr().add(i) as *const _);
+            let res = vaddq_u16(lvec, rvec);
+            vst1q_u16(src.as_mut_ptr().add(i) as *mut _, res);
         }
     }
 

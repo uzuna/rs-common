@@ -67,6 +67,14 @@ impl RawBuffer {
         };
         f(src, buf, self.format);
     }
+
+    /// バッファを編集する
+    pub fn modify(&mut self, f: impl Fn(&mut [u8], CsiPixelFormat)) {
+        let buf = unsafe {
+            slice::from_raw_parts_mut(self.buf.as_mut_ptr() as *mut u8, self.buf.len() * 2)
+        };
+        f(buf, self.format)
+    }
 }
 
 impl AddAssign<&Self> for RawBuffer {
@@ -481,6 +489,72 @@ cfg_if::cfg_if!(
     }
 );
 
+/// 128bit幅で左詰めにシフト
+pub fn shift_left_as_u128(buf: &mut [u8], csi_format: CsiPixelFormat) {
+    const LEN: usize = 16;
+    for i in 0..buf.len() / LEN {
+        let i: usize = i * LEN;
+        let a = LittleEndian::read_u128(&buf[i..i + LEN]);
+        LittleEndian::write_u128(&mut buf[i..i + LEN], csi_format.shift_left_u128(a));
+    }
+}
+
+/// SSE2を使って128bit幅単位で左シフト
+///
+/// # Safety
+///
+/// 128bit幅単位でフォーマットするため。余った部分は変換されない。
+#[target_feature(enable = "sse2")]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub unsafe fn shift_left_as_u128_simd(buf: &mut [u8], csi_format: CsiPixelFormat) {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+    #[allow(overflowing_literals)]
+    let shift4 = _mm_setr_epi16(csi_format.bitshift() as i16, 0, 0, 0, 0, 0, 0, 0);
+
+    for i in 0..buf.len() / 16 {
+        let i: usize = i * 16;
+        let invec = _mm_loadu_si128(buf.as_ptr().add(i) as *const _);
+        let shifted = _mm_sll_epi16(invec, shift4); // 論理右シフト
+        _mm_storeu_si128(buf.as_mut_ptr().add(i) as *mut _, shifted);
+    }
+}
+
+/// Arm NEONを使って128bit幅単位で左シフト
+///
+/// # Safety
+///
+/// 128bit幅単位でフォーマットするため。余った部分は変換されない。
+#[target_feature(enable = "neon")]
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn shift_left_as_u128_simd(buf: &mut [u8], csi_format: CsiPixelFormat) {
+    use std::arch::aarch64::*;
+    let s = csi_format.bitshift() as i16;
+    let shift4_vec: [i16; 8] = [s, s, s, s, s, s, s, s];
+    let shift4 = vld1q_s16(shift4_vec.as_ptr() as *const _);
+
+    #[allow(clippy::never_loop)]
+    for i in 0..buf.len() / 16 {
+        let i: usize = i * 16;
+        let invec = vld1q_u16(buf.as_ptr().add(i) as *const _);
+        let res = vshlq_u16(invec, shift4);
+        vst1q_u16(buf.as_mut_ptr().add(i) as *mut _, res);
+    }
+}
+
+/// 左詰めシフト
+pub fn shift_left(buf: &mut [u8], csi_format: CsiPixelFormat) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if std::arch::is_x86_feature_detected!("sse2") {
+            return unsafe { shift_left_as_u128_simd(buf, csi_format) };
+        }
+    }
+    shift_left_as_u128(buf, csi_format);
+}
+
 #[cfg(test)]
 mod tests {
     use std::vec;
@@ -574,6 +648,20 @@ mod tests {
         let (mut buf, expect) = mask_data(8);
         unsafe { mask_as_u128_simd(&mut buf, CsiPixelFormat::Raw12) };
         assert_eq!(buf, expect);
+    }
+
+    #[test]
+    fn test_shift_left() {
+        let td = vec![(0xf800_u16, 0x8000_u16), (0x01f0, 0x1f00), (0x3084, 0x0840)];
+
+        for (src, expect) in td {
+            let mut buf = RawBuffer::new(src, 16, CsiPixelFormat::Raw12);
+            buf.modify(shift_left_as_u128);
+            buf.assert(expect);
+            let mut buf = RawBuffer::new(src, 16, CsiPixelFormat::Raw12);
+            buf.modify(|buf, csi| unsafe { shift_left_as_u128_simd(buf, csi) });
+            buf.assert(expect);
+        }
     }
 
     impl RawBuffer {

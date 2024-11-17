@@ -322,7 +322,7 @@ where
             }
             "RG10" | "RG12" => {
                 headers.insert("Content-Type", "image/png".parse().unwrap());
-                format_raw(&mut res).inspect_err(|e| {
+                format_raw_to_png(&mut res).inspect_err(|e| {
                     tracing::error!("Failed to format raw: {:?}", e);
                 })?;
             }
@@ -398,7 +398,7 @@ where
         match res.format.fourcc.as_str() {
             "RG10" | "RG12" => {
                 headers.insert("Content-Type", "image/png".parse().unwrap());
-                format_raw(&mut res).inspect_err(|e| {
+                format_stack_to_png(&mut res).inspect_err(|e| {
                     tracing::error!("Failed to format raw: {:?}", e);
                 })?;
             }
@@ -412,7 +412,8 @@ where
     Ok((headers, Body::from(res.buffer)))
 }
 
-fn format_raw(res: &mut CaptureResponse) -> anyhow::Result<()> {
+// キャプチャ画像を16bitグレースケールに適した値域でpngに変換する
+fn format_raw_to_png(res: &mut CaptureResponse) -> anyhow::Result<()> {
     let pixfmt = match res.format.fourcc.as_str() {
         "RG10" => CsiPixelFormat::Raw10,
         "RG12" => CsiPixelFormat::Raw12,
@@ -426,6 +427,37 @@ fn format_raw(res: &mut CaptureResponse) -> anyhow::Result<()> {
     // 16bit空間に12bitを展開するため左シフトして16bit領域全体を使う
     // jetsonのRG12は左詰めされているので下位をマスクする
     jetson_pixfmt::t16::mask(&mut res.buffer, pixfmt);
+    let mut out = vec![];
+    let writer = BufWriter::new(&mut out);
+
+    image::codecs::png::PngEncoder::new(writer)
+        .write_image(
+            &res.buffer,
+            res.format.width,
+            res.format.height,
+            image::ExtendedColorType::L16,
+        )
+        .inspect_err(|e| tracing::error!("Failed to encode PNG: {:?}", e))?;
+    res.buffer.clear();
+    res.buffer = out;
+    Ok(())
+}
+
+// stack画像を16bitグレースケールに適した値域でpngに変換する
+fn format_stack_to_png(res: &mut CaptureResponse) -> anyhow::Result<()> {
+    let pixfmt = match res.format.fourcc.as_str() {
+        "RG10" => CsiPixelFormat::Raw10,
+        "RG12" => CsiPixelFormat::Raw12,
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Unsupported fourcc: {}, only RG10 or RG12",
+                res.format.fourcc
+            ))
+        }
+    };
+    // 16bit空間に12bitを展開するため左シフトして16bit領域全体を使う
+    // jetsonのRG12は左詰めされているので下位をマスクする
+    jetson_pixfmt::t16::shift_left(&mut res.buffer, pixfmt);
     let mut out = vec![];
     let writer = BufWriter::new(&mut out);
 

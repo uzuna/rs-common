@@ -64,6 +64,7 @@ pub struct Description {
     pub id: u32,
     pub typ: String,
     pub name: String,
+    pub ctrl_name: String,
     pub minimum: i64,
     pub maximum: i64,
     pub step: u64,
@@ -74,9 +75,11 @@ pub struct Description {
 
 impl From<v4l::control::Description> for Description {
     fn from(ctrl: v4l::control::Description) -> Self {
+        use v4l::util::ctrl_name::ToCtrlName;
         Self {
             id: ctrl.id,
             typ: ctrl.typ.to_string(),
+            ctrl_name: ctrl.name.to_ctrl_name(),
             name: ctrl.name,
             minimum: ctrl.minimum,
             maximum: ctrl.maximum,

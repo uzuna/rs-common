@@ -48,25 +48,25 @@ impl CsiPixelFormat {
         }
     }
 
-    /// 16bit幅のデータを左詰めにする
+    /// 16bit幅のデータを右詰めにする
     #[inline]
     pub const fn format_u16(&self, data: u16) -> u16 {
         (data & self.lmask_u16()) >> self.bitshift()
     }
 
-    /// 32bit幅のデータを左詰めにする
+    /// 32bit幅のデータを右詰めにする
     #[inline]
     pub const fn format_u32(&self, data: u32) -> u32 {
         (data & self.lmask_u32()) >> self.bitshift()
     }
 
-    /// 64bit幅のデータを左詰めにする
+    /// 64bit幅のデータを右詰めにする
     #[inline]
     pub const fn format_u64(&self, data: u64) -> u64 {
         (data & self.lmask_u64()) >> self.bitshift()
     }
 
-    /// 128bit幅のデータを左詰めにする
+    /// 128bit幅のデータを右詰めにする
     #[inline]
     pub const fn format_u128(&self, data: u128) -> u128 {
         (data & self.lmask_u128()) >> self.bitshift()
@@ -79,6 +79,12 @@ impl CsiPixelFormat {
             CsiPixelFormat::Raw10 => 0x03ff,
             CsiPixelFormat::Raw12 => 0x0fff,
         }
+    }
+
+    /// 128bit幅のデータを左詰めにする
+    #[inline]
+    pub const fn shift_left_u128(&self, data: u128) -> u128 {
+        (data << self.bitshift()) & self.lmask_u128()
     }
 }
 

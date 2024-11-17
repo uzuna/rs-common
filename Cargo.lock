@@ -1537,7 +1537,7 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 [[package]]
 name = "v4l"
 version = "0.14.0"
-source = "git+ssh://git@github.com/uzuna/libv4l-rs.git?rev=791ec17#791ec1717fc8c3694c737b8fcf88e4f50b39c558"
+source = "git+ssh://git@github.com/uzuna/libv4l-rs.git?rev=740e727#740e7275b48669c1f40427d1aa5415ae4cae029e"
 dependencies = [
  "bitflags 2.6.0",
  "libc",
@@ -1547,7 +1547,7 @@ dependencies = [
 
 [[package]]
 name = "v4l-serve"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1563,7 +1563,7 @@ dependencies = [
 
 [[package]]
 name = "v4l-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1579,7 +1579,7 @@ dependencies = [
 [[package]]
 name = "v4l2-sys-mit"
 version = "0.3.0"
-source = "git+ssh://git@github.com/uzuna/libv4l-rs.git?rev=791ec17#791ec1717fc8c3694c737b8fcf88e4f50b39c558"
+source = "git+ssh://git@github.com/uzuna/libv4l-rs.git?rev=740e727#740e7275b48669c1f40427d1aa5415ae4cae029e"
 dependencies = [
  "bindgen",
 ]

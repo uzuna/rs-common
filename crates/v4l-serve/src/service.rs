@@ -11,4 +11,8 @@ where
         .route("/devices", get(device::list))
         .route("/device/:index", get(device::device))
         .route("/device/:index/capture", get(device::capture::<C>))
+        .route(
+            "/device/:index/capture/avg",
+            get(device::capture_stack_avg::<C>),
+        )
 }

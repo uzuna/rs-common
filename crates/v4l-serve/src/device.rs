@@ -1,18 +1,22 @@
-use std::{io::BufWriter, path::PathBuf};
+use std::{io::BufWriter, path::PathBuf, time::Duration};
 
 use axum::{
     body::Body,
     extract::{Path, Query, State},
-    http::HeaderMap,
+    http::{HeaderMap, HeaderName},
     response::IntoResponse,
     Json,
 };
 use image::ImageEncoder;
 use jetson_pixfmt::pixfmt::CsiPixelFormat;
-use v4l::{util::control::ControlTable, video::Capture, Format};
+use v4l::{
+    util::control::{ControlTable, ControlTexts},
+    video::Capture,
+    Format,
+};
 
 use crate::{
-    capture::{CaptureProp, CaptureResponse},
+    capture::{CaptureFormat, CaptureProp, CaptureResponse},
     context::{CaptureArgs, Context, Controls, Request},
     error::AppError,
     util::open_device,
@@ -257,9 +261,10 @@ pub async fn capture<C>(
 where
     C: Context,
 {
-    let (default_format, ctrls) = fetch_format(index, &query.0.control).inspect_err(|e| {
-        tracing::error!("Failed to fetch format: {:?}", e);
-    })?;
+    let (default_format, ctrls, ctrl_test) =
+        fetch_format(index, &query.0.control).inspect_err(|e| {
+            tracing::error!("Failed to fetch format: {:?}", e);
+        })?;
 
     let prop = query.0.to_prop(default_format, ctrls);
     prop.validate()?;
@@ -276,6 +281,8 @@ where
     };
     let (tx, rx) = tokio::sync::oneshot::channel();
     let req = Request::Capture { tx, args };
+
+    let start = tokio::time::Instant::now();
     context.capture_tx().send(req).await.inspect_err(|e| {
         tracing::error!("Failed to send capture request: {:?}", e);
     })?;
@@ -284,15 +291,11 @@ where
     })??;
 
     let mut headers = HeaderMap::new();
-    headers.insert("X-FourCC", res.format.fourcc.to_string().parse().unwrap());
-    headers.insert(
-        "X-ImageWidth",
-        res.format.width.to_string().parse().unwrap(),
-    );
-    headers.insert(
-        "X-ImageHeight",
-        res.format.height.to_string().parse().unwrap(),
-    );
+    header_from_format(&mut headers, &res.format, start.elapsed());
+    if let Some(ctrl_test) = ctrl_test {
+        header_from_ctrl_text(&mut headers, &ctrl_test);
+    }
+
     if res.format.fourcc == "MJPG" {
         headers.insert("Content-Type", "image/jpeg".parse().unwrap());
     } else if query.0.outfmt == OutFmt::Png {
@@ -348,9 +351,10 @@ pub async fn capture_stack_avg<C>(
 where
     C: Context,
 {
-    let (default_format, ctrls) = fetch_format(index, &query.0.control).inspect_err(|e| {
-        tracing::error!("Failed to fetch format: {:?}", e);
-    })?;
+    let (default_format, ctrls, ctrl_test) =
+        fetch_format(index, &query.0.control).inspect_err(|e| {
+            tracing::error!("Failed to fetch format: {:?}", e);
+        })?;
 
     let prop = query.0.to_prop(default_format, ctrls);
     prop.validate()?;
@@ -378,6 +382,7 @@ where
         stack_count: query.0.stack_count as usize,
         csv_format,
     };
+    let start = tokio::time::Instant::now();
     context.capture_tx().send(req).await.inspect_err(|e| {
         tracing::error!("Failed to send capture request: {:?}", e);
     })?;
@@ -385,15 +390,16 @@ where
         tracing::error!("Failed to receive capture response: {:?}", e);
     })??;
     let mut headers = HeaderMap::new();
-    headers.insert("X-FourCC", res.format.fourcc.to_string().parse().unwrap());
+    header_from_format(&mut headers, &res.format, start.elapsed());
+    if let Some(ctrl_test) = ctrl_test {
+        header_from_ctrl_text(&mut headers, &ctrl_test);
+    }
+
     headers.insert(
-        "X-ImageWidth",
-        res.format.width.to_string().parse().unwrap(),
+        "X-Stack-Count",
+        query.0.stack_count.to_string().parse().unwrap(),
     );
-    headers.insert(
-        "X-ImageHeight",
-        res.format.height.to_string().parse().unwrap(),
-    );
+
     if query.0.outfmt == OutFmt::Png {
         match res.format.fourcc.as_str() {
             "RG10" | "RG12" => {
@@ -478,21 +484,43 @@ fn format_stack_to_png(res: &mut CaptureResponse) -> anyhow::Result<()> {
 fn fetch_format(
     index: usize,
     controls: &Option<String>,
-) -> anyhow::Result<(Format, Option<Controls>)> {
+) -> anyhow::Result<(Format, Option<Controls>, Option<ControlTexts>)> {
     let dev = open_device(index)?;
     let format = dev.format().inspect_err(|e| {
         tracing::error!("Failed to get format: {:?}", e);
     })?;
 
-    let ctrls = if let Some(ctrl_str) = controls.as_ref() {
+    let (ctrls, text) = if let Some(ctrl_str) = controls.as_ref() {
         let req = v4l::util::control::Requests::try_from(ctrl_str.as_str())
             .map_err(|e| anyhow::anyhow!("Failed to create control requests: {:?}", e))?;
         let ctrlmap = ControlTable::from(dev.query_controls()?.as_slice());
         let def = ctrlmap.get_default(&req);
         let target = ctrlmap.get_control(&req);
-        Some(Controls::new(def, target))
+        let text = ctrlmap.text(&req);
+        (Some(Controls::new(def, target)), Some(text))
     } else {
-        None
+        (None, None)
     };
-    Ok((format, ctrls))
+    Ok((format, ctrls, text))
+}
+
+// フォーマット情報をヘッダに追加する
+fn header_from_format(headers: &mut HeaderMap, format: &CaptureFormat, elapsed: Duration) {
+    headers.insert("X-Image-FourCC", format.fourcc.to_string().parse().unwrap());
+    headers.insert("X-Image-Width", format.width.to_string().parse().unwrap());
+    headers.insert("X-Image-Height", format.height.to_string().parse().unwrap());
+    headers.insert(
+        "X-Capture-Mill-Seconds",
+        elapsed.as_millis().to_string().parse().unwrap(),
+    );
+}
+
+// コントロール情報をヘッダに追加する
+fn header_from_ctrl_text(headers: &mut HeaderMap, text: &ControlTexts) {
+    for (key, value) in text.0.iter() {
+        headers.insert(
+            HeaderName::from_bytes(format!("X-Control-{}", key).as_bytes()).unwrap(),
+            value.to_string().parse().unwrap(),
+        );
+    }
 }

@@ -1,0 +1,13 @@
+[package]
+name = "rawproc"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ndarray = "0.16.1"
+
+[dev-dependencies]
+image = { workspace = true, features = ["png"] }

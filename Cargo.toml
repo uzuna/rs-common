@@ -20,6 +20,7 @@ criterion = "0.5.1"
 image = { version = "0.25", default-features = false }
 jetson-pixfmt = { path = "crates/jetson-pixfmt" }
 rand = "0.8.5"
+rawproc = { path = "crates/rawproc" }
 serde = "1.0.215"
 tokio = "1.41.1"
 tokio-util = "0.7.12"

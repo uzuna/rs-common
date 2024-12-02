@@ -15,4 +15,8 @@ where
             "/device/:index/capture/avg",
             get(device::capture_stack_avg::<C>),
         )
+        .route(
+            "/device/:index/capture/std",
+            get(device::capture_stack_std::<C>),
+        )
 }

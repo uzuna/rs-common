@@ -11,6 +11,7 @@ anyhow.workspace = true
 axum.workspace = true
 image = { workspace = true, features = ["png"] }
 jetson-pixfmt.workspace = true
+rawproc.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["macros"] }
 tokio-util.workspace = true

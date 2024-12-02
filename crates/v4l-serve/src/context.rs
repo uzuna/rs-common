@@ -2,7 +2,7 @@ use jetson_pixfmt::pixfmt::CsiPixelFormat;
 use tokio::sync::{mpsc, oneshot};
 use v4l::Control;
 
-use crate::capture::CaptureResponse;
+use crate::capture::{CaptureResponse, CaptureStackResponse};
 
 pub trait Context {
     fn capture_tx(&self) -> mpsc::Sender<Request>;
@@ -13,8 +13,14 @@ pub enum Request {
         tx: oneshot::Sender<Result<CaptureResponse, anyhow::Error>>,
         args: CaptureArgs,
     },
-    CaptureStack {
+    CaptureAvg {
         tx: oneshot::Sender<Result<CaptureResponse, anyhow::Error>>,
+        args: CaptureArgs,
+        stack_count: usize,
+        csv_format: CsiPixelFormat,
+    },
+    CaptureStack {
+        tx: oneshot::Sender<Result<CaptureStackResponse, anyhow::Error>>,
         args: CaptureArgs,
         stack_count: usize,
         csv_format: CsiPixelFormat,

@@ -379,7 +379,7 @@ where
         controls: prop.controls,
     };
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let req = Request::CaptureStack {
+    let req = Request::CaptureAvg {
         tx,
         args,
         stack_count: query.0.stack_count as usize,
@@ -419,6 +419,106 @@ where
         headers.insert("Content-Type", "image/raw".parse().unwrap());
     }
     Ok((headers, Body::from(res.buffer)))
+}
+
+/// CaptureStack Average
+///
+/// 連続した画像を取得して平均を取る
+pub async fn capture_stack_std<C>(
+    State(context): State<C>,
+    Path(index): Path<usize>,
+    query: Query<CaptureStackQuery>,
+) -> Result<impl IntoResponse, AppError>
+where
+    C: Context,
+{
+    let (default_format, ctrls, ctrl_test) =
+        fetch_format(index, &query.0.control).inspect_err(|e| {
+            tracing::error!("Failed to fetch format: {:?}", e);
+        })?;
+
+    let prop = query.0.to_prop(default_format, ctrls);
+    prop.validate()?;
+    tracing::info!("Capture: {:?}", prop);
+    let format = prop.format();
+
+    let csv_format = match format.fourcc.str()? {
+        "RG10" => CsiPixelFormat::Raw10,
+        "RG12" => CsiPixelFormat::Raw12,
+        _ => Err(anyhow::anyhow!("Unsupported fourcc: {}", format.fourcc))?,
+    };
+
+    // デバイスを開く操作は1つだけしか許されないため
+    // Captureは別の単一フローのルーチンで取得する
+    let args = CaptureArgs {
+        device_index: index,
+        format,
+        buffer_count: prop.buffer_count,
+        controls: prop.controls,
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let req = Request::CaptureStack {
+        tx,
+        args,
+        stack_count: query.0.stack_count as usize,
+        csv_format,
+    };
+    let start = tokio::time::Instant::now();
+    context.capture_tx().send(req).await.inspect_err(|e| {
+        tracing::error!("Failed to send capture request: {:?}", e);
+    })?;
+    let res = rx.await.inspect_err(|e| {
+        tracing::error!("Failed to receive capture response: {:?}", e);
+    })??;
+    let mut headers = HeaderMap::new();
+    header_from_format(&mut headers, &res.format, start.elapsed());
+    if let Some(ctrl_test) = ctrl_test {
+        header_from_ctrl_text(&mut headers, &ctrl_test);
+    }
+
+    headers.insert(
+        "X-Stack-Count",
+        query.0.stack_count.to_string().parse().unwrap(),
+    );
+    let std = res.stack.std();
+    let mut buf = vec![0_u16; res.format.width as usize * res.format.height as usize];
+    for (i, v) in std.iter().enumerate() {
+        buf[i] = *v as u16;
+    }
+    let mut buf = unsafe {
+        let size = buf.len();
+        #[allow(clippy::unsound_collection_transmute)]
+        let mut buf = std::mem::transmute::<Vec<u16>, Vec<u8>>(buf);
+        buf.set_len(size * 2);
+        buf
+    };
+
+    if query.0.outfmt == OutFmt::Png {
+        match res.format.fourcc.as_str() {
+            "RG10" | "RG12" => {
+                headers.insert("Content-Type", "image/png".parse().unwrap());
+                let mut out = vec![];
+                let writer = BufWriter::new(&mut out);
+                image::codecs::png::PngEncoder::new(writer)
+                    .write_image(
+                        &buf,
+                        res.format.width,
+                        res.format.height,
+                        image::ExtendedColorType::L16,
+                    )
+                    .inspect_err(|e| tracing::error!("Failed to encode PNG: {:?}", e))?;
+                buf.clear();
+                buf = out;
+            }
+            _ => {
+                headers.insert("Content-Type", "image/raw".parse().unwrap());
+            }
+        }
+    } else {
+        headers.insert("Content-Type", "image/raw".parse().unwrap());
+    }
+
+    Ok((headers, Body::from(buf)))
 }
 
 // キャプチャ画像を16bitグレースケールに適した値域でpngに変換する

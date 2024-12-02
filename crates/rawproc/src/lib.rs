@@ -103,10 +103,30 @@ impl ImageStack {
         ImageStack { stack }
     }
 
+    pub fn from_slice(buf: &[u16], w: usize, h: usize) -> Self {
+        let img = Array2::from_shape_vec((h, w), buf.to_vec()).unwrap();
+        let img = img.mapv(|x| x as f64);
+        let mut stack = Array3::<f64>::zeros((0, img.shape()[0], img.shape()[1]));
+        stack.push(Axis(0), img.view()).unwrap();
+        ImageStack { stack }
+    }
+
     /// 画像をスタックに追加する
     pub fn push(&mut self, img: ArrayView2<u16>) {
         let img = img.mapv(|x| x as f64);
         self.stack.push(Axis(0), img.view()).unwrap();
+    }
+
+    /// 画像をスタックに追加する
+    pub fn push_from_slice(&mut self, buf: &[u16]) {
+        let mut arr = Array2::<f64>::zeros((self.stack.shape()[1], self.stack.shape()[2]));
+
+        for i in 0..self.stack.shape()[1] {
+            for j in 0..self.stack.shape()[2] {
+                arr[[i, j]] = buf[i * self.stack.shape()[2] + j] as f64;
+            }
+        }
+        self.stack.push(Axis(0), arr.view()).unwrap();
     }
 
     /// スタックの各画素の平均値を取得する
@@ -157,9 +177,11 @@ mod tests {
             BayerPattern::GRBG,
         ];
 
-        let colors = [(ColorChannel::R, 256_usize),
+        let colors = [
+            (ColorChannel::R, 256_usize),
             (ColorChannel::G, 512),
-            (ColorChannel::B, 256)];
+            (ColorChannel::B, 256),
+        ];
 
         for ptn in ptns.iter() {
             for (color, count) in colors.iter() {

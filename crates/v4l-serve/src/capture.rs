@@ -1,6 +1,7 @@
 //! captureはサーバーに対して1つの実行フロー歯科持つことができない
 
 use jetson_pixfmt::{pixfmt::CsiPixelFormat, t16::RawBuffer};
+use rawproc::ImageStack;
 use tokio::{select, sync::mpsc};
 use tokio_util::sync::CancellationToken;
 use v4l::{prelude::UserptrStream, video::Capture, Format};
@@ -63,6 +64,11 @@ pub struct CaptureResponse {
     pub buffer: Vec<u8>,
 }
 
+pub struct CaptureStackResponse {
+    pub format: CaptureFormat,
+    pub stack: ImageStack,
+}
+
 /// サーバーに対して1つだけのcaptureルーチンを持つ実装
 ///
 /// TODO: 実際には1デバイスあたり1つのルーチンまで実行が許されるので、良き感じに構造化するのが望ましい
@@ -102,13 +108,33 @@ impl CaptureRoutine {
                                 }
                             }
                         },
-                        Request::CaptureStack {
+                        Request::CaptureAvg {
                             tx,
                             args,
                             stack_count,
                             csv_format,
                         } => {
                             let res = match capture_stack_avg(args, stack_count, csv_format).await{
+                                Ok(res) => res,
+                                Err(e) => {
+                                    tracing::error!("Failed to capture: {:?}", e);
+                                    continue;
+                                }
+                            };
+                            match tx.send(Ok(res)) {
+                                Ok(_) => {}
+                                Err(_e) => {
+                                    tracing::error!("Failed to sendback to connection");
+                                }
+                            }
+                        }
+                        Request::CaptureStack {
+                            tx,
+                            args,
+                            stack_count,
+                            csv_format,
+                        } => {
+                            let res = match capture_stack(args, stack_count, csv_format).await{
                                 Ok(res) => res,
                                 Err(e) => {
                                     tracing::error!("Failed to capture: {:?}", e);
@@ -182,6 +208,47 @@ pub async fn capture_stack_avg(
             height: actual_format.height,
         },
         buffer: b.into(),
+    })
+}
+
+/// captureの内部実装
+pub async fn capture_stack(
+    carg: CaptureArgs,
+    stack_count: usize,
+    pixfmt: CsiPixelFormat,
+) -> anyhow::Result<CaptureStackResponse> {
+    use v4l::io::traits::{AsyncCaptureStream, Stream};
+    let (mut stream, actual_format) = open_stream(carg).await?;
+
+    let mut stack = {
+        let (buf, _meta) = stream.poll_next().await?;
+        unsafe {
+            let mbuf = std::slice::from_raw_parts_mut(buf.as_ptr() as *mut u8, buf.len());
+            jetson_pixfmt::t16::format(mbuf, pixfmt);
+        }
+        let b = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u16, buf.len() / 2) };
+        ImageStack::from_slice(
+            b,
+            actual_format.width as usize,
+            actual_format.height as usize,
+        )
+    };
+
+    for _ in 1..stack_count {
+        let (buf, _meta) = stream.poll_next().await?;
+        let b = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u16, buf.len() / 2) };
+        stack.push_from_slice(b);
+    }
+
+    stream.stop()?;
+
+    Ok(CaptureStackResponse {
+        format: CaptureFormat {
+            fourcc: actual_format.fourcc.to_string(),
+            width: actual_format.width,
+            height: actual_format.height,
+        },
+        stack,
     })
 }
 

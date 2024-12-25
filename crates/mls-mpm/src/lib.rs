@@ -146,7 +146,6 @@ impl Sim<f32> {
     pub fn new(config: SimConfig<f32>) -> Self {
         let (cell_space, cells) = Self::init_grid(&config);
 
-        
         Sim {
             particles: vec![Particle::default(); config.num_of_particle],
             cells,

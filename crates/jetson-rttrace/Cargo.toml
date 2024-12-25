@@ -1,0 +1,10 @@
+[package]
+name = "jetson-rttrace"
+version = "0.1.0"
+description = "Jetson RT Trace switch and access library"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]

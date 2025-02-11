@@ -3,11 +3,15 @@
 
 <head>
   <meta charset="utf-8">
-  <script type="module" src="./index.js"></script>
 </head>
 
-<body>
-  <noscript>This page contains webassembly and javascript content, please enable javascript in your browser.</noscript>
+<body id="wasm-example">
+  <script type="module">
+      import init from "./pkg/app.js";
+      init().then(() => {
+          console.log("WASM Loaded");
+      });
+  </script>
 </body>
 
 </html>

@@ -1,99 +1,262 @@
-use mls_mpm::Sim;
+use std::iter;
+
+use wasm_util::util::get_performance;
+use winit::{
+    event::*,
+    event_loop::EventLoop,
+    keyboard::{KeyCode, PhysicalKey},
+    window::{Window, WindowBuilder},
+};
+
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::spawn_local;
-use wasm_util::{error::*, info, time::AnimationTicker, util::get_document};
-use web_sys::HtmlCanvasElement;
-use wgpu::{InstanceDescriptor, SurfaceTarget};
 
-/// モジュールの初期化処理
-#[wasm_bindgen(start)]
-pub fn init() -> Result<()> {
-    wasm_util::panic::set_panic_hook();
-    Ok(())
-}
-
-/// wasmのエントリーポイントとして定義
-#[wasm_bindgen]
-pub fn start() -> std::result::Result<(), JsValue> {
-    spawn_local(async {
-        let ctx = initialize_html().await.unwrap();
-        let config = mls_mpm::SimConfig::new(100, 10);
-        let mut sim = Sim::<f32>::init(config);
-        let mut t = AnimationTicker::default();
-        while let Ok(i) = t.tick().await {
-            let dt_sec = i as f32 / 1000.0;
-
-            let output = match ctx.surface.get_current_texture() {
-                Ok(output) => output,
-                Err(_) => {
-                    info!("failed to get current texture");
-                    continue;
-                }
-            };
-            let view = output
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default());
-            let mut encoder = ctx
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Render Encoder"),
-                });
-            sim.simulate(dt_sec);
-            info!("tick {dt_sec:?}");
-        }
-    });
-    Ok(())
-}
-
-struct WgpuContext {
-    element: HtmlCanvasElement,
-    instance: wgpu::Instance,
-    surface: wgpu::Surface<'static>,
-    adapter: wgpu::Adapter,
+struct Context<'a> {
+    surface: wgpu::Surface<'a>,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    size: winit::dpi::PhysicalSize<u32>,
+    // The window must be declared after the surface so
+    // it gets dropped after it as the surface contains
+    // unsafe references to the window's resources.
+    window: &'a Window,
 }
 
-async fn initialize_html() -> Result<WgpuContext> {
-    // タイトルの設定
-    let title = "WebAssemblyでMLS-MPMを実行";
-    let title_element = get_document()?
-        .create_element("title")
-        .map_err(|_| JsError::new("failed to create title element"))?;
-    title_element.set_inner_html(title);
+impl<'a> Context<'a> {
+    async fn new(window: &'a Window) -> Context<'a> {
+        let size = window.inner_size();
 
-    // canvasの設定
-    let canvas = get_document()?
-        .create_element("canvas")
-        .map_err(|_| JsError::new("failed to create canvas element"))?;
-    let canvas = canvas
-        .dyn_into::<HtmlCanvasElement>()
-        .map_err(|_| JsError::new("failed to convert canvas element"))?;
-    canvas.set_width(1024);
-    canvas.set_height(768);
+        // The instance is a handle to our GPU
+        // BackendBit::PRIMARY => Vulkan + Metal + DX12 + Browser WebGPU
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::GL,
+            ..Default::default()
+        });
 
-    let instance = wgpu::Instance::new(&InstanceDescriptor::from_env_or_default());
-    let target = SurfaceTarget::Canvas(canvas.clone());
-    let surface = instance.create_surface(target).unwrap();
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::default(),
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
+        let surface = instance.create_surface(window).unwrap();
+
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::default(),
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .unwrap();
+
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: None,
+                    required_features: wgpu::Features::empty(),
+                    // WebGL doesn't support all of wgpu's features, so if
+                    // we're building for the web we'll have to disable some.
+                    required_limits: if cfg!(target_arch = "wasm32") {
+                        wgpu::Limits::downlevel_webgl2_defaults()
+                    } else {
+                        wgpu::Limits::default()
+                    },
+                    memory_hints: Default::default(),
+                },
+                // Some(&std::path::Path::new("trace")), // Trace path
+                None,
+            )
+            .await
+            .unwrap();
+
+        let surface_caps = surface.get_capabilities(&adapter);
+        // Shader code in this tutorial assumes an Srgb surface texture. Using a different
+        // one will result all the colors comming out darker. If you want to support non
+        // Srgb surfaces, you'll need to account for that when drawing to the frame.
+        let surface_format = surface_caps
+            .formats
+            .iter()
+            .copied()
+            .find(|f| f.is_srgb())
+            .unwrap_or(surface_caps.formats[0]);
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            width: size.width,
+            height: size.height,
+            present_mode: surface_caps.present_modes[0],
+            alpha_mode: surface_caps.alpha_modes[0],
+            desired_maximum_frame_latency: 2,
+            view_formats: vec![],
+        };
+
+        Self {
+            surface,
+            device,
+            queue,
+            config,
+            size,
+            window,
+        }
+    }
+
+    fn window(&self) -> &Window {
+        self.window
+    }
+
+    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+        if new_size.width > 0 && new_size.height > 0 {
+            self.size = new_size;
+            self.config.width = new_size.width;
+            self.config.height = new_size.height;
+            self.surface.configure(&self.device, &self.config);
+        }
+    }
+
+    #[allow(unused_variables)]
+    fn input(&mut self, event: &WindowEvent) -> bool {
+        false
+    }
+
+    fn update(&mut self) {}
+
+    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+        let output = self.surface.get_current_texture()?;
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
+
+        {
+            let _render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.1,
+                            g: 0.2,
+                            b: 0.3,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+            });
+        }
+
+        self.queue.submit(iter::once(encoder.finish()));
+        output.present();
+
+        Ok(())
+    }
+}
+
+#[wasm_bindgen(start)]
+pub async fn run() -> Result<(), JsError> {
+    std::panic::set_hook(Box::new(console_error_panic_hook::hook));
+    console_log::init_with_level(log::Level::Info).expect("Couldn't initialize logger");
+
+    let event_loop = EventLoop::new()?;
+    let window = WindowBuilder::new().build(&event_loop)?;
+
+    {
+        // Winit prevents sizing with CSS, so we have to set
+        // the size manually when on web.
+        use winit::dpi::PhysicalSize;
+
+        use winit::platform::web::WindowExtWebSys;
+        web_sys::window()
+            .and_then(|win| win.document())
+            .and_then(|doc| {
+                let dst = doc.get_element_by_id("wasm-example")?;
+                let canvas = web_sys::Element::from(window.canvas()?);
+                dst.append_child(&canvas).ok()?;
+                Some(())
+            })
+            .expect("Couldn't append canvas to document body.");
+
+        let _ = window.request_inner_size(PhysicalSize::new(450, 400));
+    }
+
+    // Context::new uses async code, so we're going to wait for it to finish
+    let mut ctx = Context::new(&window).await;
+    let mut sim = mls_mpm::Sim::<f32>::new(mls_mpm::SimConfig::new(100, 10));
+    let mut surface_configured = false;
+    let p = get_performance()?;
+    let start = p.now();
+    let mut last = p.now();
+
+    event_loop
+        .run(move |event, control_flow| {
+            match event {
+                Event::WindowEvent {
+                    ref event,
+                    window_id,
+                } if window_id == ctx.window().id() => {
+                    if !ctx.input(event) {
+                        // UPDATED!
+                        match event {
+                            WindowEvent::CloseRequested
+                            | WindowEvent::KeyboardInput {
+                                event:
+                                    KeyEvent {
+                                        state: ElementState::Pressed,
+                                        physical_key: PhysicalKey::Code(KeyCode::Escape),
+                                        ..
+                                    },
+                                ..
+                            } => control_flow.exit(),
+                            WindowEvent::Resized(physical_size) => {
+                                log::info!("physical_size: {physical_size:?}");
+                                surface_configured = true;
+                                ctx.resize(*physical_size);
+                            }
+                            WindowEvent::RedrawRequested => {
+                                let _elapsed = p.now() - start;
+                                let dt = (p.now() - last) / 1000.0;
+                                last = p.now();
+
+                                // This tells winit that we want another frame after this one
+                                ctx.window().request_redraw();
+
+                                if !surface_configured {
+                                    return;
+                                }
+
+                                sim.simulate(dt as f32);
+                                ctx.update();
+                                match ctx.render() {
+                                    Ok(_) => {}
+                                    // Reconfigure the surface if it's lost or outdated
+                                    Err(
+                                        wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated,
+                                    ) => ctx.resize(ctx.size),
+                                    // The system is out of memory, we should probably quit
+                                    Err(
+                                        wgpu::SurfaceError::OutOfMemory | wgpu::SurfaceError::Other,
+                                    ) => {
+                                        log::error!("OutOfMemory");
+                                        control_flow.exit();
+                                    }
+
+                                    // This happens when the a frame takes too long to present
+                                    Err(wgpu::SurfaceError::Timeout) => {
+                                        log::warn!("Surface timeout")
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
         })
-        .await
-        .unwrap();
-    let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor::default(), None)
-        .await
-        .unwrap();
-
-    Ok(WgpuContext {
-        element: canvas,
-        instance,
-        surface,
-        adapter,
-        device,
-        queue,
-    })
+        .map_err(|e| JsError::new(&format!("{:?}", e)))?;
+    Ok(())
 }

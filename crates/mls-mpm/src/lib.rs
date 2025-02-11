@@ -70,7 +70,7 @@ where
 }
 
 impl Sim<f32> {
-    pub fn init(config: SimConfig) -> Self {
+    pub fn new(config: SimConfig) -> Self {
         Sim {
             particles: vec![Particle::default(); config.num_of_particle],
             cells: vec![Cell::default(); config.num_of_grid()],

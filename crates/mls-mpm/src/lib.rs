@@ -1,4 +1,3 @@
-
 use nalgebra::Vector2;
 use num_traits::real::Real;
 
@@ -49,6 +48,13 @@ pub struct SimConfig {
 }
 
 impl SimConfig {
+    pub fn new(num_of_particle: usize, grid_resolution: usize) -> Self {
+        SimConfig {
+            num_of_particle,
+            grid_resolution,
+        }
+    }
+
     fn num_of_grid(&self) -> usize {
         self.grid_resolution * self.grid_resolution
     }

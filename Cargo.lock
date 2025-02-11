@@ -1903,6 +1903,7 @@ dependencies = [
 name = "wasm-mls-mpm"
 version = "0.0.0"
 dependencies = [
+ "mls-mpm",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-util",

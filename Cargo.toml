@@ -20,6 +20,7 @@ criterion = "0.5.1"
 image = { version = "0.25", default-features = false }
 jetson-pixfmt = { path = "crates/jetson-pixfmt" }
 khronos-egl = "6.0.0"
+mls-mpm = { path = "crates/mls-mpm" }
 rand = "0.8.5"
 rawproc = { path = "crates/rawproc" }
 serde = "1.0.217"

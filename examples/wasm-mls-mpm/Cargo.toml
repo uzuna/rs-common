@@ -1,0 +1,17 @@
+[package]
+name = "wasm-mls-mpm"
+version = "0.0.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "app"
+
+[dependencies]
+mls-mpm.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+wasm-util = { workspace = true, features = ["macros", "time"] }

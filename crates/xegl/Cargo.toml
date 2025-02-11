@@ -1,0 +1,18 @@
+[package]
+name = "xegl"
+version = "0.0.0"
+description = "X11を利用するEGLのラッパー"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["static"]
+# EGLライブラリへのリンク方法を指定する
+static = ["khronos-egl/static"]
+dynamic = ["khronos-egl/dynamic"]
+
+[dependencies]
+khronos-egl.workspace = true
+thiserror.workspace = true

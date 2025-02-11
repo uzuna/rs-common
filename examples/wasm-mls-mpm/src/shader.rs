@@ -1,0 +1,77 @@
+use wgpu::util::DeviceExt;
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Vertex {
+    position: [f32; 3],
+    color: [f32; 3],
+}
+
+impl Vertex {
+    pub const RECT: &[Vertex; 4] = &[
+        Vertex {
+            position: [-0.5, -0.5, 0.0],
+            color: [1.0, 0.0, 0.0],
+        },
+        Vertex {
+            position: [0.5, -0.5, 0.0],
+            color: [0.0, 1.0, 0.0],
+        },
+        Vertex {
+            position: [0.5, 0.5, 0.0],
+            color: [0.0, 0.0, 1.0],
+        },
+        Vertex {
+            position: [-0.5, 0.5, 0.0],
+            color: [1.0, 1.0, 1.0],
+        },
+    ];
+
+    pub fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                // wgpu::VertexAttribute {
+                //     offset: std::mem::size_of::<[f32; 6]>() as wgpu::BufferAddress,
+                //     shader_location: 2,
+                //     format: wgpu::VertexFormat::Float32,
+                // },
+            ],
+        }
+    }
+}
+
+pub struct VertexBuffer {
+    pub vert: wgpu::Buffer,
+    vert_len: usize,
+}
+
+impl VertexBuffer {
+    pub fn new(device: &wgpu::Device, vertices: &[Vertex]) -> Self {
+        let vert = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        Self {
+            vert,
+            vert_len: vertices.len(),
+        }
+    }
+
+    pub fn draw(&self, rpass: &mut wgpu::RenderPass) {
+        rpass.set_vertex_buffer(0, self.vert.slice(..));
+        rpass.draw(0..4, 0..self.vert_len as u32);
+    }
+}

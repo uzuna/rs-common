@@ -2949,6 +2949,7 @@ dependencies = [
 name = "wasm-mls-mpm"
 version = "0.0.0"
 dependencies = [
+ "bytemuck",
  "console_error_panic_hook",
  "console_log",
  "log",

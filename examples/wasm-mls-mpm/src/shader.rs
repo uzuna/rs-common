@@ -42,11 +42,6 @@ impl Vertex {
                     shader_location: 1,
                     format: wgpu::VertexFormat::Float32x3,
                 },
-                // wgpu::VertexAttribute {
-                //     offset: std::mem::size_of::<[f32; 6]>() as wgpu::BufferAddress,
-                //     shader_location: 2,
-                //     format: wgpu::VertexFormat::Float32,
-                // },
             ],
         }
     }
@@ -72,6 +67,8 @@ impl VertexBuffer {
 
     pub fn draw(&self, rpass: &mut wgpu::RenderPass) {
         rpass.set_vertex_buffer(0, self.vert.slice(..));
-        rpass.draw(0..4, 0..self.vert_len as u32);
+        // 頂点の数(instanceの場合は内部生成も含む)とinstance(描画する要素数)
+        // instanceは点の数なのでvertのぶんだけ。shader内で6点生成しているので6を指定
+        rpass.draw(0..6, 0..self.vert_len as u32);
     }
 }

@@ -12,9 +12,22 @@ struct VertexOutput {
 @vertex
 fn vs_main(
     particle: VertexInput,
+    @builtin(vertex_index) vNdx: u32,
 ) -> VertexOutput {
-    var out: VertexOutput;
-    out.pos = vec4<f32>(particle.position, 1.0);
+    let points = array(
+        vec3f(-1, -1, 0),
+        vec3f( 1, -1, 0),
+        vec3f(-1,  1, 0),
+        vec3f(-1,  1, 0),
+        vec3f( 1, -1, 0),
+        vec3f( 1,  1, 0),
+    );
+
+    let resolution = vec3f(450.0, 400.0, 1.0);
+
+    var out: VertexOutput;  
+    let pos = points[vNdx];
+    out.pos = vec4<f32>(particle.position + pos * 12.0 / resolution, 1.0);
     out.color = particle.color;
     return out;
 }

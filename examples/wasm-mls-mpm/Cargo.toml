@@ -10,8 +10,20 @@ rust-version.workspace = true
 crate-type = ["cdylib", "rlib"]
 name = "app"
 
+[build]
+target = "wasm32-unknown-unknown"
+
 [dependencies]
 mls-mpm.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
+wasm-logger = "0.2.0"
 wasm-util = { workspace = true, features = ["macros", "time"] }
+wgpu = "24.0.1"
+
+[dependencies.web-sys]
+workspace = true
+features = [
+    "HtmlCanvasElement",
+]
+

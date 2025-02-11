@@ -19,9 +19,11 @@ cfg-if = "1.0.0"
 criterion = "0.5.1"
 image = { version = "0.25", default-features = false }
 jetson-pixfmt = { path = "crates/jetson-pixfmt" }
+khronos-egl = "6.0.0"
 rand = "0.8.5"
 rawproc = { path = "crates/rawproc" }
 serde = "1.0.215"
+thiserror = "2.0.11"
 tokio = "1.41.1"
 tokio-util = "0.7.12"
 tower-http = "0.5.0"
@@ -33,6 +35,7 @@ wasm-bindgen = "0.2.95"
 wasm-bindgen-futures = "0.4.45"
 wasm-util = { path = "crates/wasm-util" }
 web-sys = "0.3"
+xegl = { path = "crates/xegl" }
 
 [profile.release.package.wasm-preview]
 opt-level = "s"

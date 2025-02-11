@@ -1,0 +1,13 @@
+[package]
+name = "xwindow"
+version = "0.0.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+x11-dl = "2.21.0"
+xegl.workspace = true

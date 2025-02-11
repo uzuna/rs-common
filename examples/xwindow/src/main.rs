@@ -1,4 +1,3 @@
-
 use tracing::debug;
 
 mod window;

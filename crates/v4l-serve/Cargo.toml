@@ -17,4 +17,4 @@ tokio = { workspace = true, features = ["macros"] }
 tokio-util.workspace = true
 tracing.workspace = true
 v4l = { workspace = true, features = ["tokio", "aligned-alloc"] }
-yuvutils-rs = "0.5.1"
+yuvutils-rs = "0.5.13"

@@ -6,4 +6,4 @@ test:
 
 .PHONY: build
 build:
-	wasm-pack build -d ${ASSETS_DIR}/mls-mpm/pkg --target web
+	RUSTFLAGS='--cfg getrandom_backend="wasm_js"' wasm-pack build -d ${ASSETS_DIR}/mls-mpm/pkg --target web

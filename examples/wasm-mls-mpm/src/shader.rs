@@ -3,8 +3,8 @@ use wgpu::util::DeviceExt;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
-    position: [f32; 3],
-    color: [f32; 3],
+    pub position: [f32; 3],
+    pub color: [f32; 3],
 }
 
 impl Vertex {
@@ -47,6 +47,15 @@ impl Vertex {
     }
 }
 
+impl Default for Vertex {
+    fn default() -> Self {
+        Vertex {
+            position: [0.0, 0.0, 0.0],
+            color: [1.0, 0.0, 0.0],
+        }
+    }
+}
+
 pub struct VertexBuffer {
     pub vert: wgpu::Buffer,
     vert_len: usize,
@@ -63,6 +72,10 @@ impl VertexBuffer {
             vert,
             vert_len: vertices.len(),
         }
+    }
+
+    pub fn update_vertices(&self, queue: &wgpu::Queue, vertices: &[Vertex]) {
+        queue.write_buffer(&self.vert, 0, bytemuck::cast_slice(vertices));
     }
 
     pub fn draw(&self, rpass: &mut wgpu::RenderPass) {

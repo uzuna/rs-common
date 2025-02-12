@@ -7,9 +7,9 @@ pub struct Particle<R>
 where
     R: Real,
 {
-    pos: Vector2<R>,
-    vel: Vector2<R>,
-    mass: R,
+    pub pos: Vector2<R>,
+    pub vel: Vector2<R>,
+    pub mass: R,
 }
 
 impl Default for Particle<f32> {
@@ -89,6 +89,9 @@ where
         self.g2p();
     }
 
+    pub fn get_particles_mut(&mut self) -> &mut Vec<Particle<R>> {
+        &mut self.particles
+    }
     fn reset_grid(&mut self) {}
     fn p2g(&mut self) {}
     fn calc_grid_vel(&mut self) {}

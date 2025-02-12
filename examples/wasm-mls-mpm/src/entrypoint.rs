@@ -1,5 +1,7 @@
 use std::iter;
 
+use nalgebra::Vector2;
+use rand::Rng;
 use wasm_util::util::get_performance;
 use winit::{
     event::*,
@@ -10,7 +12,7 @@ use winit::{
 
 use wasm_bindgen::prelude::*;
 
-use crate::shader;
+use crate::shader::{self, Vertex};
 
 struct Context<'a> {
     surface: wgpu::Surface<'a>,
@@ -27,7 +29,7 @@ struct Context<'a> {
 }
 
 impl<'a> Context<'a> {
-    async fn new(window: &'a Window) -> Context<'a> {
+    async fn new(window: &'a Window, vertices: &[Vertex]) -> Context<'a> {
         let size = window.inner_size();
 
         // The instance is a handle to our GPU
@@ -88,8 +90,7 @@ impl<'a> Context<'a> {
             desired_maximum_frame_latency: 2,
             view_formats: vec![],
         };
-
-        let buf = shader::VertexBuffer::new(&device, shader::Vertex::RECT);
+        let buf = shader::VertexBuffer::new(&device, vertices);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
@@ -227,6 +228,12 @@ impl<'a> Context<'a> {
     }
 }
 
+fn update_vertex(vertices: &mut [Vertex], particles: &[mls_mpm::Particle<f32>]) {
+    for (v, p) in vertices.iter_mut().zip(particles.iter()) {
+        v.position = [p.pos.x, p.pos.y, 0.0];
+    }
+}
+
 #[wasm_bindgen(start)]
 pub async fn run() -> Result<(), JsError> {
     std::panic::set_hook(Box::new(console_error_panic_hook::hook));
@@ -254,9 +261,21 @@ pub async fn run() -> Result<(), JsError> {
         let _ = window.request_inner_size(PhysicalSize::new(450, 400));
     }
 
-    // Context::new uses async code, so we're going to wait for it to finish
-    let mut ctx = Context::new(&window).await;
     let mut sim = mls_mpm::Sim::<f32>::new(mls_mpm::SimConfig::new(100, 10));
+    // initialize position
+    let verts = {
+        let mut rng = rand::rngs::OsRng::default();
+        let particles = sim.get_particles_mut();
+        for p in particles.iter_mut() {
+            p.pos = Vector2::new(rng.gen_range(-0.5..0.5), rng.gen_range(-0.5..0.5));
+        }
+        let mut verts = vec![Vertex::default(); particles.len()];
+        update_vertex(&mut verts, particles);
+        verts
+    };
+
+    // Context::new uses async code, so we're going to wait for it to finish
+    let mut ctx = Context::new(&window, &verts).await;
     let mut surface_configured = false;
     let p = get_performance()?;
     let start = p.now();

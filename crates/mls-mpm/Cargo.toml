@@ -7,5 +7,5 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-nalgebra = "0.33.2"
-num-traits = "0.2.19"
+nalgebra.workspace = true
+num-traits.workspace = true

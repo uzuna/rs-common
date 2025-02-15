@@ -182,8 +182,6 @@ impl<'a> Context<'a> {
         false
     }
 
-    fn update(&mut self) {}
-
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let view = output
@@ -234,8 +232,27 @@ fn update_vertex(vertices: &mut [Vertex], particles: &[mls_mpm::Particle<f32>]) 
     }
 }
 
-#[wasm_bindgen(start)]
-pub async fn run() -> Result<(), JsError> {
+#[wasm_bindgen]
+pub struct RunConfig {
+    num_particles: usize,
+    num_subdiv: usize,
+    gravity_y: f32,
+}
+
+#[wasm_bindgen]
+impl RunConfig {
+    #[wasm_bindgen(constructor)]
+    pub fn new(num_particles: usize, num_subdiv: usize, gravity_y: f32) -> Self {
+        Self {
+            num_particles,
+            num_subdiv,
+            gravity_y,
+        }
+    }
+}
+
+#[wasm_bindgen]
+pub async fn run(c: RunConfig) -> Result<(), JsError> {
     std::panic::set_hook(Box::new(console_error_panic_hook::hook));
     console_log::init_with_level(log::Level::Info).expect("Couldn't initialize logger");
 
@@ -261,13 +278,27 @@ pub async fn run() -> Result<(), JsError> {
         let _ = window.request_inner_size(PhysicalSize::new(450, 400));
     }
 
-    let mut sim = mls_mpm::Sim::<f32>::new(mls_mpm::SimConfig::new(100, 10));
+    let mut sim = mls_mpm::Sim::<f32>::new(mls_mpm::SimConfig::new(
+        c.num_particles,
+        c.num_subdiv,
+        2.0,
+        Vector2::new(0.0, c.gravity_y),
+    ));
     // initialize position
-    let verts = {
-        let mut rng = rand::rngs::OsRng::default();
+    let pos_range = -0.5..0.5;
+    let vel_range = -4.0..4.0;
+    let mut verts = {
+        let mut rng = rand::rngs::OsRng;
         let particles = sim.get_particles_mut();
         for p in particles.iter_mut() {
-            p.pos = Vector2::new(rng.gen_range(-0.5..0.5), rng.gen_range(-0.5..0.5));
+            p.pos = Vector2::new(
+                rng.gen_range(pos_range.clone()),
+                rng.gen_range(pos_range.clone()),
+            );
+            p.vel = Vector2::new(
+                rng.gen_range(vel_range.clone()),
+                rng.gen_range(vel_range.clone()),
+            );
         }
         let mut verts = vec![Vertex::default(); particles.len()];
         update_vertex(&mut verts, particles);
@@ -319,7 +350,9 @@ pub async fn run() -> Result<(), JsError> {
                                 }
 
                                 sim.simulate(dt as f32);
-                                ctx.update();
+                                let particles = sim.get_particles_mut();
+                                update_vertex(&mut verts, particles);
+                                ctx.buf.update_vertices(&ctx.queue, &verts);
                                 match ctx.render() {
                                     Ok(_) => {}
                                     // Reconfigure the surface if it's lost or outdated

@@ -7,9 +7,11 @@
 
 <body id="wasm-example">
   <script type="module">
-      import init from "./pkg/app.js";
+      import init, {run, RunConfig} from "./pkg/app.js";
       init().then(() => {
           console.log("WASM Loaded");
+          let config = new RunConfig(100, 32, -9.8);
+          run(config);
       });
   </script>
 </body>

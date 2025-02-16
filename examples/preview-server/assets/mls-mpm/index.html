@@ -10,7 +10,7 @@
       import init, {run, RunConfig} from "./pkg/app.js";
       init().then(() => {
           console.log("WASM Loaded");
-          let config = new RunConfig(200, 128, -1.8);
+          let config = new RunConfig(200, 64, -1.8);
           run(config);
       });
   </script>

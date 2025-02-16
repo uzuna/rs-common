@@ -1,4 +1,4 @@
-use nalgebra::{Matrix2, Vector2};
+use nalgebra::{ComplexField, Matrix2, Vector2};
 use num_traits::real::Real;
 
 /// 粒子データ構造体
@@ -11,6 +11,7 @@ where
     pub vel: Vector2<R>,
     pub c: Matrix2<R>, // アフィン変形行列
     pub mass: R,
+    pub volume: R,
 }
 
 impl Default for Particle<f32> {
@@ -20,6 +21,7 @@ impl Default for Particle<f32> {
             vel: Vector2::new(0.0, 0.0),
             c: Matrix2::zeros(),
             mass: 1.0,
+            volume: 0.0,
         }
     }
 }
@@ -59,6 +61,25 @@ where
     }
 }
 
+/// Lamé parameters for stress-strain relationship
+#[derive(Debug, Clone)]
+pub struct ElasticConfig<R>
+where
+    R: Real,
+{
+    mu: R,
+    lambda: R,
+}
+
+impl Default for ElasticConfig<f32> {
+    fn default() -> Self {
+        ElasticConfig {
+            mu: 20.0,
+            lambda: 10.0,
+        }
+    }
+}
+
 /// シミュレーション初期化時に使う設定
 pub struct SimConfig<R>
 where
@@ -72,6 +93,8 @@ where
     space_width: R,
     // 重力
     gravity: Vector2<R>,
+    // 弾性体の設定
+    elastic_config: ElasticConfig<R>,
 }
 
 impl<R> SimConfig<R>
@@ -83,12 +106,14 @@ where
         grid_resolution: usize,
         space_width: R,
         gravity: Vector2<R>,
+        elastic_config: ElasticConfig<R>,
     ) -> Self {
         SimConfig {
             num_of_particle,
             grid_resolution,
             space_width,
             gravity,
+            elastic_config,
         }
     }
 
@@ -102,28 +127,36 @@ pub struct Sim<R>
 where
     R: Real,
 {
+    // 粒子データ
     particles: Vec<Particle<R>>,
+    // グリッドデータ
     cells: Vec<Cell<R>>,
+    // 変形勾配テンソル
+    fs: Vec<Matrix2<R>>,
     // gridは正立方体として考える
     grid_resolution: usize,
     // セルの間隔。パーティクルはこの空間内に存在する必要がある
     cell_space: f32,
     outer: f32,
     gravity: Vector2<R>,
+    elastic_config: ElasticConfig<R>,
 }
 
 impl Sim<f32> {
     pub fn new(config: SimConfig<f32>) -> Self {
         let (cell_space, cells) = Self::init_grid(&config);
 
-        Sim {
+        let mut s = Sim {
             particles: vec![Particle::default(); config.num_of_particle],
             cells,
+            fs: vec![Matrix2::identity(); config.num_of_particle],
             grid_resolution: config.grid_resolution,
             cell_space,
             outer: config.space_width * 0.495, // 0.5だとindexを超える場合があるのでマージンを撮っている,
             gravity: config.gravity,
-        }
+            elastic_config: config.elastic_config,
+        };
+        s
     }
 
     // グリッドの初期化
@@ -149,7 +182,8 @@ impl Sim<f32> {
 
     pub fn simulate(&mut self, dt_sec: f32) {
         self.reset_grid();
-        self.p2g();
+        self.p2g(dt_sec);
+        self.update_volume();
         self.calc_grid_vel(dt_sec);
         self.g2p(dt_sec);
     }
@@ -196,23 +230,50 @@ impl Sim<f32> {
     }
 
     // Particle to Grid
-    fn p2g(&mut self) {
+    fn p2g(&mut self, dt: f32) {
         // P2Gするときのセルへの分配重みを計算
         // 最も近いセルに75%を、その隣のセルに25%を分配し合計1.0にする
         // この計算方法がよく使われるらしい
         // 次元数が増えた場合も同様に計算できる
         // この求め方をしている限り、Particleは一番外側のセルに存在をすることが許されない
-
         for i in 0..self.particles.len() {
             let p = &self.particles[i];
+
+            // MPM Course, page 13 page
+            let f = self.fs[i];
+            let j = f.determinant(); // 回転や並進では1で、膨らむ変形は1、縮む変形は1より小さい値になる
+            let volume = p.volume * j; // 体積変化
+            println!("momentum: {f} {j} {}", p.volume);
+
+            // useful matrices for Neo-Hookean model
+            let f_t = f.transpose();
+            let f_inv_t = f.try_inverse().unwrap().transpose();
+            let f_minus_f_inv_t = f - f_inv_t;
+
+            // MPM course equation 48
+            // 軸ごとの変形応力計算を合成して応力テンソルを計算
+            let p_term_0 = self.elastic_config.mu * f_minus_f_inv_t;
+            let p_term_1 = self.elastic_config.lambda * j.exp() * f_inv_t;
+            let pw = p_term_0 + p_term_1;
+
+            // コーシ応力テンソル(cauchy stress) = (1 / det(F)) * P * F_T
+            // 物体を分割する任意の面上で、一方が他方に及ぼす作用は面の力と結合力のシステムと等価であると規定する
+            // equation 38, MPM course
+            let stress = (1.0 / j) * pw * &f_t;
+
             let cell_idx = self.calc_cell_idx(p.pos);
             let cell = &self.cells[cell_idx];
 
             // セルとの距離に応じてグリッドに寄与する値を加算
             let cell_diff = p.pos - cell.pos;
+            let q = p.c * cell_diff;
             let weights = self.calc_weight(cell_diff);
 
-            // 重み計算できたので周囲のセルに分配
+            // (M_p)^-1 = 4, see APIC paper and MPM course page 42
+            // this term is used in MLS-MPM paper eq. 16. with quadratic weights, Mp = (1/4) * (delta_x)^2.
+            let mp_r = 1.0 / (cell_diff.x.norm1().powi(2) * 0.25);
+            let eq_16_term_0 = -volume * mp_r * stress * dt;
+
             for gx in 0..3 {
                 let x_offset = gx as isize - 1;
                 for gy in 0..3 {
@@ -228,9 +289,43 @@ impl Sim<f32> {
                     self.cells[idx].mass += mass_contrib;
 
                     // 力として加算
-                    self.cells[idx].v += p.vel * mass_contrib;
+                    self.cells[idx].v += (p.vel + q) * mass_contrib;
+
+                    // momentumの更新
+                    // let momentum = eq_16_term_0 * w * cell_diff;
+                    // self.cells[idx].v += momentum;
                 }
             }
+        }
+    }
+
+    // per-particle volume estimate has now been computed
+    // 密度を計算して体積の・ようなものを計算している?
+    // P2GでGridを更新した後に行う必要がある
+    fn update_volume(&mut self) {
+        for i in 0..self.particles.len() {
+            let p = &self.particles[i];
+            let cell_idx = self.calc_cell_idx(p.pos);
+            let cell = &self.cells[cell_idx];
+
+            let cell_diff = p.pos - cell.pos;
+            let weights = self.calc_weight(cell_diff);
+
+            let mut density = 0.0;
+
+            for gx in 0..3 {
+                let x_offset = gx as isize - 1;
+                for gy in 0..3 {
+                    // calc cell index
+                    let y_offset = (gy as isize - 1) * self.grid_resolution as isize;
+                    let idx = (cell_idx as isize + x_offset + y_offset) as usize;
+                    let w = weights[gx].x * weights[gy].y;
+
+                    density += self.cells[idx].mass * w;
+                }
+            }
+
+            self.particles[i].volume = p.mass / density;
         }
     }
 
@@ -287,8 +382,9 @@ impl Sim<f32> {
                     let idx = (cell_idx as isize + x_offset + y_offset) as usize;
                     let w = weights[gx].x * weights[gy].y;
 
+                    // セルの速度を取得
                     let dist =
-                        self.cells[idx].pos - p.pos + Vector2::new(0.5, 0.5) * self.cell_space;
+                        self.cells[idx].pos - p.pos + (Vector2::new(0.5, 0.5) * self.cell_space);
                     let w_vel = self.cells[idx].v * w;
 
                     // APIC paper equation 10, constructing inner term for B
@@ -298,12 +394,14 @@ impl Sim<f32> {
                         dist.y * w_vel.x,
                         dist.y * w_vel.y,
                     );
+                    println!("b {gx} {gy} {b:?} {:?} {:?}", self.cells[idx].pos, p.pos);
 
                     p.vel += w_vel;
                 }
             }
 
             // 計算しているがまだこの値は使っていない
+            println!("b: {}", b);
             p.c = b * 4.0;
 
             // 位置反映
@@ -319,6 +417,9 @@ impl Sim<f32> {
                 p.pos.y = p.pos.y.clamp(-outer, outer);
                 p.vel.y *= -1.0;
             }
+
+            // deformation gradient update - MPM course, equation 181
+            self.fs[i] = (Matrix2::identity() + p.c * dt) * self.fs[i];
         }
     }
 }
@@ -360,7 +461,13 @@ mod tests {
         let norm_offsets = [(-0.5, 0.0), (-0.1, 0.3), (0.1, 0.5)];
         for resolution in grids {
             for width in widths {
-                let sim = Sim::new(SimConfig::new(1, resolution, width, Vector2::new(0.0, 0.0)));
+                let sim = Sim::new(SimConfig::new(
+                    1,
+                    resolution,
+                    width,
+                    Vector2::new(0.0, 0.0),
+                    ElasticConfig::default(),
+                ));
                 for offset in norm_offsets.iter() {
                     let pos = Vector2::new(offset.0 * sim.cell_space, offset.1 * sim.cell_space);
                     let diff = sim.calc_weight(pos);
@@ -380,7 +487,7 @@ mod tests {
         }
     }
 
-    /// シミュレーション空間内に留める境界条件のテスト
+    /// シミュレーション空間内に粒子がとどまることを確認する
     #[test]
     fn test_index_boundry() {
         let gs = [
@@ -391,7 +498,7 @@ mod tests {
         ];
         let dt = 0.1;
         for g in gs.into_iter() {
-            let mut sim = Sim::new(SimConfig::new(1, 128, 2.0, g));
+            let mut sim = Sim::new(SimConfig::new(1, 128, 2.0, g, ElasticConfig::default()));
             for _ in 0..100 {
                 sim.simulate(dt);
                 let sum_mass = sim.sum_mass();

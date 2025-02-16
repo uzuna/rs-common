@@ -1,5 +1,6 @@
 use std::iter;
 
+use mls_mpm::ElasticConfig;
 use nalgebra::Vector2;
 use rand::Rng;
 use wasm_util::util::get_performance;
@@ -283,6 +284,7 @@ pub async fn run(c: RunConfig) -> Result<(), JsError> {
         c.num_subdiv,
         2.0,
         Vector2::new(0.0, c.gravity_y),
+        ElasticConfig::<f32>::default(),
     ));
     // initialize position
     let pos_range = -0.5..0.5;

@@ -146,7 +146,8 @@ impl Sim<f32> {
     pub fn new(config: SimConfig<f32>) -> Self {
         let (cell_space, cells) = Self::init_grid(&config);
 
-        let mut s = Sim {
+        
+        Sim {
             particles: vec![Particle::default(); config.num_of_particle],
             cells,
             fs: vec![Matrix2::identity(); config.num_of_particle],
@@ -155,8 +156,7 @@ impl Sim<f32> {
             outer: config.space_width * 0.495, // 0.5だとindexを超える場合があるのでマージンを撮っている,
             gravity: config.gravity,
             elastic_config: config.elastic_config,
-        };
-        s
+        }
     }
 
     // グリッドの初期化

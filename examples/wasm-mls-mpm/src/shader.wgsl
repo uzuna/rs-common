@@ -9,6 +9,12 @@ struct VertexOutput {
     @location(0) color: vec3<f32>,
 };
 
+struct Window {
+    resolution: vec4<f32>,
+}
+
+@group(0) @binding(0) var<uniform> uw: Window;
+
 @vertex
 fn vs_main(
     particle: VertexInput,
@@ -23,7 +29,7 @@ fn vs_main(
         vec3f( 1,  1, 0),
     );
 
-    let resolution = vec3f(450.0, 400.0, 1.0);
+    let resolution = uw.resolution.xyz;
 
     var out: VertexOutput;  
     let pos = points[vNdx];

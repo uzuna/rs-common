@@ -3063,6 +3063,7 @@ dependencies = [
  "wasm-util",
  "web-sys",
  "wgpu",
+ "wgpu-common",
  "winit",
 ]
 
@@ -3241,6 +3242,14 @@ dependencies = [
  "wgpu-core",
  "wgpu-hal",
  "wgpu-types",
+]
+
+[[package]]
+name = "wgpu-common"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "wgpu",
 ]
 
 [[package]]

@@ -1,4 +1,5 @@
 use wgpu::util::DeviceExt;
+use wgpu_common::uniform::UniformBuffer;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -102,32 +103,13 @@ impl Default for Uniform {
     }
 }
 
-pub struct UniformBuffer {
-    pub uniform: wgpu::Buffer,
-}
-
-impl UniformBuffer {
-    pub fn new(device: &wgpu::Device) -> Self {
-        let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Uniform Buffer"),
-            contents: bytemuck::cast_slice(&[Uniform::default()]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-        Self { uniform }
-    }
-
-    pub fn update(&self, queue: &wgpu::Queue, uni: Uniform) {
-        queue.write_buffer(&self.uniform, 0, bytemuck::cast_slice(&[uni]));
-    }
-}
-
 /// パイプラインの構築
 ///
 ///
 pub fn render_pipeline(
     device: &wgpu::Device,
     config: &wgpu::SurfaceConfiguration,
-    uniform: &UniformBuffer,
+    uniform: &UniformBuffer<Uniform>,
 ) -> (wgpu::RenderPipeline, wgpu::BindGroup) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Shader"),

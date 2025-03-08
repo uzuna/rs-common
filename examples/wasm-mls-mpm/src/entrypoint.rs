@@ -4,6 +4,7 @@ use mls_mpm::ElasticConfig;
 use nalgebra::Vector2;
 use rand::Rng;
 use wasm_util::util::get_performance;
+use wgpu_common::uniform::UniformBuffer;
 use winit::{
     event::*,
     event_loop::EventLoop,
@@ -24,7 +25,7 @@ struct Context<'a> {
     render_pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     buf: shader::VertexBuffer,
-    unibuf: shader::UniformBuffer,
+    unibuf: UniformBuffer<Uniform>,
     uniform: Uniform,
     // The window must be declared after the surface so
     // it gets dropped after it as the surface contains
@@ -94,7 +95,7 @@ impl<'a> Context<'a> {
             desired_maximum_frame_latency: 2,
             view_formats: vec![],
         };
-        let unibuf = shader::UniformBuffer::new(&device);
+        let unibuf = UniformBuffer::new(&device, None);
         let (render_pipeline, bind_group) = shader::render_pipeline(&device, &config, &unibuf);
         let buf = shader::VertexBuffer::new(&device, vertices);
 

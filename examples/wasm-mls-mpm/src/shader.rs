@@ -1,4 +1,3 @@
-use wgpu::util::DeviceExt;
 use wgpu_common::uniform::UniformBuffer;
 
 #[repr(C)]
@@ -54,36 +53,6 @@ impl Default for Vertex {
             position: [0.0, 0.0, 0.0],
             color: [1.0, 0.0, 0.0],
         }
-    }
-}
-
-pub struct VertexBuffer {
-    pub vert: wgpu::Buffer,
-    vert_len: usize,
-}
-
-impl VertexBuffer {
-    pub fn new(device: &wgpu::Device, vertices: &[Vertex]) -> Self {
-        let vert = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(vertices),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        });
-        Self {
-            vert,
-            vert_len: vertices.len(),
-        }
-    }
-
-    pub fn update_vertices(&self, queue: &wgpu::Queue, vertices: &[Vertex]) {
-        queue.write_buffer(&self.vert, 0, bytemuck::cast_slice(vertices));
-    }
-
-    pub fn draw(&self, rpass: &mut wgpu::RenderPass) {
-        rpass.set_vertex_buffer(0, self.vert.slice(..));
-        // 頂点の数(instanceの場合は内部生成も含む)とinstance(描画する要素数)
-        // instanceは点の数なのでvertのぶんだけ。shader内で6点生成しているので6を指定
-        rpass.draw(0..6, 0..self.vert_len as u32);
     }
 }
 

@@ -189,9 +189,9 @@ pub(crate) mod tests {
         }
 
         // ランダムデータテスト
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         for _ in 0..1000 {
-            let rawdata = rng.gen::<u16>();
+            let rawdata = rng.random::<u16>();
             for tc in &td {
                 let reference_u16 = tc.rmask_u16() & rawdata;
                 let paddata_u16 = tc.test_padding_u16(reference_u16);

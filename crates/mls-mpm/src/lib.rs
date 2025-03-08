@@ -146,7 +146,6 @@ impl Sim<f32> {
     pub fn new(config: SimConfig<f32>) -> Self {
         let (cell_space, cells) = Self::init_grid(&config);
 
-        
         Sim {
             particles: vec![Particle::default(); config.num_of_particle],
             cells,
@@ -259,7 +258,7 @@ impl Sim<f32> {
             // コーシ応力テンソル(cauchy stress) = (1 / det(F)) * P * F_T
             // 物体を分割する任意の面上で、一方が他方に及ぼす作用は面の力と結合力のシステムと等価であると規定する
             // equation 38, MPM course
-            let stress = (1.0 / j) * pw * &f_t;
+            let stress = (1.0 / j) * pw * f_t;
 
             let cell_idx = self.calc_cell_idx(p.pos);
             let cell = &self.cells[cell_idx];
@@ -272,7 +271,7 @@ impl Sim<f32> {
             // (M_p)^-1 = 4, see APIC paper and MPM course page 42
             // this term is used in MLS-MPM paper eq. 16. with quadratic weights, Mp = (1/4) * (delta_x)^2.
             let mp_r = 1.0 / (cell_diff.x.norm1().powi(2) * 0.25);
-            let eq_16_term_0 = -volume * mp_r * stress * dt;
+            let _eq_16_term_0 = -volume * mp_r * stress * dt;
 
             for gx in 0..3 {
                 let x_offset = gx as isize - 1;

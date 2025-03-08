@@ -4,14 +4,14 @@
 
 ## APIs
 
-| `path`                           | desc                                  |
-| -------------------------------- | ------------------------------------- |
-| `GET /devices`                   | デバイス一覧を取得                    |
-| `GET /device/:index`             | `index`番目デバイスの詳細を取得       |
-| `GET /device/:index/capture`     | 指定デバイスで画像を取得              |
-| `GET /device/:index/capture/avg` | Raw画像を複数枚撮影撮影して平均を取得 |
+| `path`                            | desc                                  |
+| --------------------------------- | ------------------------------------- |
+| `GET /devices`                    | デバイス一覧を取得                    |
+| `GET /device/{index}`             | `index`番目デバイスの詳細を取得       |
+| `GET /device/{index}/capture`     | 指定デバイスで画像を取得              |
+| `GET /device/{index}/capture/avg` | Raw画像を複数枚撮影撮影して平均を取得 |
 
-### `GET /device/:index`
+### `GET /device/{index}`
 
 デバイスの詳細を取得する。
 `JSON`でレスポンスが返ってくる
@@ -36,7 +36,7 @@
 | step      | 変更最小単位                                  |
 | default   | デフォルト値                                  |
 
-### `GET /device/:index/capture`
+### `GET /device/{index}/capture`
 
 指定デバイスで画像を取得します。
 
@@ -45,7 +45,7 @@
 | fourcc       | カメラの画像フォーマットの指定                                 | `RG10`                  |
 | width        | 撮影画像の横幅リクエスト。実際の大きさはカメラモードに依存する | `1280`                  |
 | height       | 撮影画像の縦幅リクエスト。実際の大きさはカメラモードに依存する | `720`                   |
-| control      | 撮影パラメータの指定。詳細は`/device/:index`で取得できる       | `gain=120,expose=20000` |
+| control      | 撮影パラメータの指定。詳細は`/device/{index}`で取得できる      | `gain=120,expose=20000` |
 | buffer_count | 画像取得までに捨てるバッファ数。                               | `4(default)`            |
 | outfmt       | Raw撮影時に表示可能な画像フォーマットに変換する                | `png`                   |
 
@@ -61,7 +61,7 @@ CSIカメラはデータの安定、パラメータの反映まで数フレー�
 | `X-Capture-Mill-Seconds` | Captureにかかった時間(msec) |
 | `X-Control-<key>`        | 撮影条件の値                |
 
-### `GET /device/:index/capture/avg`
+### `GET /device/{index}/capture/avg`
 
 Raw画像を複数枚撮影撮影して平均を取得
 
@@ -70,7 +70,7 @@ Raw画像を複数枚撮影撮影して平均を取得
 | fourcc       | カメラの画像フォーマットの指定                                 | `RG10`                  |
 | width        | 撮影画像の横幅リクエスト。実際の大きさはカメラモードに依存する | `1280`                  |
 | height       | 撮影画像の縦幅リクエスト。実際の大きさはカメラモードに依存する | `720`                   |
-| control      | 撮影パラメータの指定。詳細は`/device/:index`で取得できる       | `gain=120,expose=20000` |
+| control      | 撮影パラメータの指定。詳細は`/device/{index}`で取得できる      | `gain=120,expose=20000` |
 | buffer_count | 画像取得までに捨てるバッファ数。                               | `4(default)`            |
 | outfmt       | Raw撮影時に表示可能な画像フォーマットに変換する                | `png`                   |
 | stack_count  | 平均を計算するための撮影枚数                                   | `5(default)`            |

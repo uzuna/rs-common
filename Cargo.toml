@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/*",
+    "jetson/*",
     "examples/*",
 ]
 resolver = "2"
@@ -12,25 +13,27 @@ repository = "https://github.com/uzuna/rs-common"
 rust-version = "1.76"
 
 [workspace.dependencies]
-anyhow = "1.0.95"
-axum = "0.7.9"
+anyhow = "1.0.97"
+axum = "0.8.1"
 byteorder = "1.5"
 cfg-if = "1.0.0"
 criterion = "0.5.1"
+fs-err = "3.1.0"
 image = { version = "0.25", default-features = false }
-jetson-pixfmt = { path = "crates/jetson-pixfmt" }
+jetson-pixfmt = { path = "jetson/pixfmt" }
 khronos-egl = "6.0.0"
 mls-mpm = { path = "crates/mls-mpm" }
 nalgebra = "0.33.2"
 num-traits = "0.2.19"
-rand = { version = "0.8.5", default-features = false}
+rand = "0.9.0"
 rawproc = { path = "crates/rawproc" }
-serde = "1.0.217"
-thiserror = "2.0.11"
-tokio = "1.43.0"
+serde = "1.0.218"
+thiserror = "2.0.12"
+tempfile = "3.18.0"
+tokio = "1.44.0"
 tokio-util = "0.7.13"
-tower-http = "0.5.2"
-tracing = "0.1"
+tower-http = "0.6.2"
+tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 v4l = { git = "ssh://git@github.com/uzuna/libv4l-rs.git", rev = "740e727" }
 v4l-serve = { path = "crates/v4l-serve" }

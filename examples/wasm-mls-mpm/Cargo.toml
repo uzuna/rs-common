@@ -14,13 +14,13 @@ name = "app"
 target = "wasm32-unknown-unknown"
 
 [dependencies]
-bytemuck = "1.21.0"
+bytemuck = "1.22.0"
 console_error_panic_hook = "0.1.7"
 console_log = "1.0"
-log = "0.4.25"
+log = "0.4.26"
 mls-mpm.workspace = true
 nalgebra.workspace = true
-rand = { workspace = true, features = ["std"] }
+rand = { version = "0.8.5", features = ["std"] }
 wasm-bindgen-futures.workspace = true
 wasm-bindgen.workspace = true
 wasm-logger = "0.2.0"

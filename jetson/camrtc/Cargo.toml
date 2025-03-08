@@ -1,0 +1,15 @@
+[package]
+name = "jetson-camrtc"
+version = "1.1.0"
+description = "Jetson RT Trace switch and access library"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+fs-err.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

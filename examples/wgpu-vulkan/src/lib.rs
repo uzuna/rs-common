@@ -1,10 +1,11 @@
-use std::iter;
+use std::{iter, time::Duration};
 
 use log::info;
 use winit::{
     event::*,
-    event_loop::EventLoop,
+    event_loop::{EventLoop, EventLoopBuilder},
     keyboard::{KeyCode, PhysicalKey},
+    platform::x11::EventLoopBuilderExtX11,
     window::{Window, WindowBuilder},
 };
 
@@ -163,7 +164,7 @@ impl<'a> State<'a> {
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
-pub async fn run() {
+pub async fn run(timeout: Option<Duration>) {
     cfg_if::cfg_if! {
         if #[cfg(target_arch = "wasm32")] {
             std::panic::set_hook(Box::new(console_error_panic_hook::hook));
@@ -172,8 +173,10 @@ pub async fn run() {
             env_logger::init();
         }
     }
-
-    let event_loop = EventLoop::new().unwrap();
+    let event_loop = EventLoopBuilder::new()
+        .with_any_thread(true)
+        .build()
+        .unwrap();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
 
     #[cfg(target_arch = "wasm32")]
@@ -199,6 +202,7 @@ pub async fn run() {
     // State::new uses async code, so we're going to wait for it to finish
     let mut state = State::new(&window).await;
     let mut surface_configured = false;
+    let start = std::time::Instant::now();
 
     event_loop
         .run(move |event, control_flow| {
@@ -257,6 +261,11 @@ pub async fn run() {
                             _ => {}
                         }
                     }
+                    if let Some(timeout) = timeout {
+                        if start.elapsed() > timeout {
+                            control_flow.exit();
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -268,10 +277,8 @@ pub async fn run() {
 mod test {
     use super::*;
 
-    #[ignore = "can not run on cargo test(multi-thread process)"]
     #[test]
     fn test_run() {
-        // Initializing the event loop outside of the main thread is a significant cross-platform compatibility hazard. If you absolutely need to create an EventLoop on a different thread, you can use the `EventLoopBuilderExtUnix::any_thread` function.
-        pollster::block_on(run());
+        pollster::block_on(run(Some(Duration::from_secs(1))));
     }
 }

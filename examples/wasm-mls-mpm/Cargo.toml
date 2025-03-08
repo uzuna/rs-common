@@ -20,7 +20,7 @@ console_log = "1.0"
 log = "0.4.26"
 mls-mpm.workspace = true
 nalgebra.workspace = true
-rand = { workspace = true, features = ["std"] }
+rand = { version = "0.8.5", features = ["std"] }
 wasm-bindgen-futures.workspace = true
 wasm-bindgen.workspace = true
 wasm-logger = "0.2.0"

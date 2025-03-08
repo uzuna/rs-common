@@ -25,7 +25,7 @@ khronos-egl = "6.0.0"
 mls-mpm = { path = "crates/mls-mpm" }
 nalgebra = "0.33.2"
 num-traits = "0.2.19"
-rand = "0.8.5"
+rand = "0.9.0"
 rawproc = { path = "crates/rawproc" }
 serde = "1.0.218"
 thiserror = "2.0.12"

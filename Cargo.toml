@@ -47,4 +47,4 @@ web-sys = "0.3"
 xegl = { path = "crates/xegl" }
 
 [profile.release.package.wasm-preview]
-opt-level = "s"
+opt-level = 3

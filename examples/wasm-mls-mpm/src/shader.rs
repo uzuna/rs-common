@@ -163,7 +163,7 @@ pub fn render_pipeline(
         entries: &[wgpu::BindGroupEntry {
             binding: 0,
             // 確保済みのリソースをバインドする
-            resource: uniform.uniform.as_entire_binding(),
+            resource: uniform.buf.as_entire_binding(),
         }],
     });
     (pipeline, bind_group)

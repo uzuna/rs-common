@@ -1,9 +1,8 @@
 use std::{iter, time::Duration};
 
-use log::info;
 use winit::{
     event::*,
-    event_loop::{EventLoop, EventLoopBuilder},
+    event_loop::EventLoopBuilder,
     keyboard::{KeyCode, PhysicalKey},
     platform::x11::EventLoopBuilderExtX11,
     window::{Window, WindowBuilder},
@@ -103,7 +102,7 @@ impl<'a> State<'a> {
     }
 
     fn window(&self) -> &Window {
-        &self.window
+        self.window
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {

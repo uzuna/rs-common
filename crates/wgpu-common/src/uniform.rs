@@ -1,7 +1,7 @@
 use wgpu::util::DeviceExt;
 
 pub struct UniformBuffer<V> {
-    pub uniform: wgpu::Buffer,
+    pub buf: wgpu::Buffer,
     _phantom: std::marker::PhantomData<V>,
 }
 
@@ -16,12 +16,18 @@ where
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         Self {
-            uniform,
+            buf: uniform,
             _phantom: std::marker::PhantomData,
         }
     }
 
     pub fn update(&self, queue: &wgpu::Queue, uni: V) {
-        queue.write_buffer(&self.uniform, 0, bytemuck::cast_slice(&[uni]));
+        queue.write_buffer(&self.buf, 0, bytemuck::cast_slice(&[uni]));
+    }
+}
+
+impl<V> UniformBuffer<V> {
+    pub fn buffer(&self) -> &wgpu::Buffer {
+        &self.buf
     }
 }

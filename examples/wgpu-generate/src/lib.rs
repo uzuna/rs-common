@@ -64,7 +64,16 @@ pub async fn run(timeout: Option<Duration>) {
     let pipe = particle::Pipeline::new(state.device(), state.config(), &uniform);
 
     // init vertex
-    let verts = vec![particle::shader::VertexInput::new(); 10];
+    let mut verts = vec![];
+    for x in 0..10 {
+        for y in 0..10 {
+            verts.push(particle::shader::VertexInput {
+                position: [x as f32 * 0.1 - 0.5, y as f32 * 0.1 - 0.5, 0.0].into(),
+                color: [1.0, 0.0, 0.0].into(),
+            });
+        }
+    }
+
     let vb = particle::Vert::new(state.device(), &verts, Some("Vertex Buffer"));
 
     event_loop

@@ -50,7 +50,8 @@ impl Pipeline {
             layout: Some(&render_pipeline_layout),
             vertex: shader::vertex_state(
                 &shader,
-                &shader::vs_main_entry(wgpu::VertexStepMode::Vertex),
+                // 内部で6頂点を描画するのでInstanceモードで描画する
+                &shader::vs_main_entry(wgpu::VertexStepMode::Instance),
             ),
             fragment: Some(shader::fragment_state(
                 &shader,
@@ -202,6 +203,10 @@ where
             vert_len: verts.len(),
             phantom: std::marker::PhantomData,
         }
+    }
+
+    pub fn update(&self, queue: &wgpu::Queue, verts: &[V]) {
+        queue.write_buffer(&self.buf, 0, bytemuck::cast_slice(verts));
     }
 
     pub fn draw(&self, rpass: &mut wgpu::RenderPass, vert_range: Range<u32>) {

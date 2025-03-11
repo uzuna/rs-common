@@ -16,6 +16,7 @@ rust-version = "1.76"
 anyhow = "1.0.97"
 axum = "0.8.1"
 byteorder = "1.5"
+bytemuck = "1.22.0"
 cfg-if = "1.0.0"
 criterion = "0.5.1"
 fs-err = "3.1.0"
@@ -40,8 +41,10 @@ v4l-serve = { path = "crates/v4l-serve" }
 wasm-bindgen = "0.2.100"
 wasm-bindgen-futures = "0.4.50"
 wasm-util = { path = "crates/wasm-util" }
+wgpu-shader = { path = "crates/wgpu-shader" }
+wgpu = "24.0.1"
 web-sys = "0.3"
 xegl = { path = "crates/xegl" }
 
 [profile.release.package.wasm-preview]
-opt-level = "s"
+opt-level = 3

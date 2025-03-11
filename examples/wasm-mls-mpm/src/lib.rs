@@ -1,2 +1,2 @@
 pub mod entrypoint;
-pub mod shader;
+pub mod state;

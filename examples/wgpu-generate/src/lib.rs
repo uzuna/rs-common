@@ -1,55 +1,36 @@
-use mls_mpm::ElasticConfig;
-use nalgebra::Vector2;
-use rand::Rng;
-use wasm_util::util::get_performance;
+use std::time::Duration;
+
 use wgpu_shader::{particle, prelude::*};
 use winit::{
     event::*,
-    event_loop::EventLoop,
+    event_loop::EventLoopBuilder,
     keyboard::{KeyCode, PhysicalKey},
+    platform::x11::EventLoopBuilderExtX11,
     window::WindowBuilder,
 };
 
+pub mod state;
+
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
-use crate::state;
-
-fn update_vertex(
-    vertices: &mut [particle::shader::VertexInput],
-    particles: &[mls_mpm::Particle<f32>],
-) {
-    for (v, p) in vertices.iter_mut().zip(particles.iter()) {
-        v.position = [p.pos.x, p.pos.y, 0.0].into();
-    }
-}
-
-#[wasm_bindgen]
-pub struct RunConfig {
-    num_particles: usize,
-    num_subdiv: usize,
-    gravity_y: f32,
-}
-
-#[wasm_bindgen]
-impl RunConfig {
-    #[wasm_bindgen(constructor)]
-    pub fn new(num_particles: usize, num_subdiv: usize, gravity_y: f32) -> Self {
-        Self {
-            num_particles,
-            num_subdiv,
-            gravity_y,
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
+pub async fn run(timeout: Option<Duration>) {
+    cfg_if::cfg_if! {
+        if #[cfg(target_arch = "wasm32")] {
+            std::panic::set_hook(Box::new(console_error_panic_hook::hook));
+            console_log::init_with_level(log::Level::Info).expect("Couldn't initialize logger");
+        } else {
+            env_logger::init();
         }
     }
-}
+    let event_loop = EventLoopBuilder::new()
+        .with_any_thread(true)
+        .build()
+        .unwrap();
+    let window = WindowBuilder::new().build(&event_loop).unwrap();
 
-#[wasm_bindgen]
-pub async fn run(c: RunConfig) -> Result<(), JsError> {
-    std::panic::set_hook(Box::new(console_error_panic_hook::hook));
-    console_log::init_with_level(log::Level::Info).expect("Couldn't initialize logger");
-
-    let event_loop = EventLoop::new()?;
-    let window = WindowBuilder::new().build(&event_loop)?;
-    let (width, height) = (450, 400);
+    #[cfg(target_arch = "wasm32")]
     {
         // Winit prevents sizing with CSS, so we have to set
         // the size manually when on web.
@@ -66,55 +47,33 @@ pub async fn run(c: RunConfig) -> Result<(), JsError> {
             })
             .expect("Couldn't append canvas to document body.");
 
-        let _ = window.request_inner_size(PhysicalSize::new(width, height));
+        let _ = window.request_inner_size(PhysicalSize::new(450, 400));
     }
 
-    let mut sim = mls_mpm::Sim::<f32>::new(mls_mpm::SimConfig::new(
-        c.num_particles,
-        c.num_subdiv,
-        2.0,
-        Vector2::new(0.0, c.gravity_y),
-        ElasticConfig::<f32>::default(),
-    ));
-    // initialize position
-    let pos_range = -0.5..0.5;
-    let vel_range = -4.0..4.0;
-    let mut verts = {
-        let mut rng = rand::rngs::OsRng;
-        let particles = sim.get_particles_mut();
-        for p in particles.iter_mut() {
-            p.pos = Vector2::new(
-                rng.gen_range(pos_range.clone()),
-                rng.gen_range(pos_range.clone()),
-            );
-            p.vel = Vector2::new(
-                rng.gen_range(vel_range.clone()),
-                rng.gen_range(vel_range.clone()),
-            );
-        }
-        let mut verts = vec![particle::shader::VertexInput::default(); particles.len()];
-        update_vertex(&mut verts, particles);
-        verts
-    };
-
-    // Context::new uses async code, so we're going to wait for it to finish
+    // State::new uses async code, so we're going to wait for it to finish
     let mut state = state::State::new(&window).await;
     let mut surface_configured = false;
-    let p = get_performance()?;
-    let start = p.now();
-    let mut last = p.now();
+    let start = std::time::Instant::now();
 
     // init render uniform
-
     let u_w = particle::shader::Window {
-        resolution: [width as f32, height as f32, 1.0, 0.0].into(),
+        resolution: [800.0, 600.0, 1.0, 0.0].into(),
     };
-
-    let uniform = particle::Unif::new(state.device(), u_w);
+    let mut uniform = particle::Unif::new(state.device(), u_w);
 
     let pipe = particle::Pipeline::new(state.device(), state.config(), &uniform);
 
     // init vertex
+    let mut verts = vec![];
+    for x in 0..10 {
+        for y in 0..10 {
+            verts.push(particle::shader::VertexInput {
+                position: [x as f32 * 0.1 - 0.5, y as f32 * 0.1 - 0.5, 0.0].into(),
+                color: [1.0, 0.0, 0.0].into(),
+            });
+        }
+    }
+
     let vb = particle::Vert::new(state.device(), &verts, Some("Vertex Buffer"));
 
     event_loop
@@ -143,22 +102,13 @@ pub async fn run(c: RunConfig) -> Result<(), JsError> {
                                 state.resize(*physical_size);
                             }
                             WindowEvent::RedrawRequested => {
-                                let _elapsed = p.now() - start;
-                                let dt = (p.now() - last) / 1000.0;
-                                last = p.now();
-
                                 // This tells winit that we want another frame after this one
                                 state.window().request_redraw();
 
                                 if !surface_configured {
                                     return;
                                 }
-
-                                // update simulation
-                                sim.simulate(dt as f32);
-                                let particles = sim.get_particles_mut();
-                                update_vertex(&mut verts, particles);
-                                vb.update(state.queue(), &verts);
+                                uniform.set(state.queue(), &u_w);
 
                                 match pipe.render(&state, &vb) {
                                     Ok(_) => {}
@@ -183,10 +133,14 @@ pub async fn run(c: RunConfig) -> Result<(), JsError> {
                             _ => {}
                         }
                     }
+                    if let Some(timeout) = timeout {
+                        if start.elapsed() > timeout {
+                            control_flow.exit();
+                        }
+                    }
                 }
                 _ => {}
             }
         })
-        .map_err(|e| JsError::new(&format!("{:?}", e)))?;
-    Ok(())
+        .unwrap();
 }

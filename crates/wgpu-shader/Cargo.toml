@@ -1,5 +1,5 @@
 [package]
-name = "wgpu-generate"
+name = "wgpu-shader"
 version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
@@ -7,13 +7,11 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-cfg-if = "1"
-winit = { version = "0.29", features = ["rwh_05"] }
-env_logger = "0.10"
-log = "0.4"
 wgpu.workspace = true
-pollster = "0.3"
 glam = { version = "0.29.1", features = ["bytemuck"] }
 bytemuck = { version = "1.19", features = ["derive"] }
 encase = { version = "0.10.0", features = ["glam"] }
-wgpu-shader.workspace = true
+
+[build-dependencies]
+wgsl_to_wgpu = "0.13.0"
+glob = "0.3.2"

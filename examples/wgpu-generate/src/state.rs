@@ -1,3 +1,4 @@
+use wgpu_shader::WgpuContext;
 use winit::{event::*, window::Window};
 
 #[cfg(target_arch = "wasm32")]
@@ -97,24 +98,12 @@ impl<'a> State<'a> {
         self.window
     }
 
-    pub fn device(&self) -> &wgpu::Device {
-        &self.device
-    }
-
     pub fn config(&self) -> &wgpu::SurfaceConfiguration {
         &self.config
     }
 
-    pub fn surface(&self) -> &wgpu::Surface {
-        &self.surface
-    }
-
     pub fn size(&self) -> winit::dpi::PhysicalSize<u32> {
         self.size
-    }
-
-    pub fn queue(&self) -> &wgpu::Queue {
-        &self.queue
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
@@ -129,5 +118,19 @@ impl<'a> State<'a> {
     #[allow(unused_variables)]
     pub fn input(&mut self, event: &WindowEvent) -> bool {
         false
+    }
+}
+
+impl WgpuContext for State<'_> {
+    fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    fn surface(&self) -> &wgpu::Surface {
+        &self.surface
+    }
+
+    fn queue(&self) -> &wgpu::Queue {
+        &self.queue
     }
 }

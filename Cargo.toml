@@ -41,7 +41,7 @@ v4l-serve = { path = "crates/v4l-serve" }
 wasm-bindgen = "0.2.100"
 wasm-bindgen-futures = "0.4.50"
 wasm-util = { path = "crates/wasm-util" }
-wgpu-common = { path = "crates/wgpu-common" }
+wgpu-shader = { path = "crates/wgpu-shader" }
 wgpu = "24.0.1"
 web-sys = "0.3"
 xegl = { path = "crates/xegl" }

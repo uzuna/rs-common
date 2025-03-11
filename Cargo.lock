@@ -3141,7 +3141,7 @@ dependencies = [
  "wasm-util",
  "web-sys",
  "wgpu",
- "wgpu-common",
+ "wgpu-shader",
  "winit",
 ]
 
@@ -3323,14 +3323,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wgpu-common"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "wgpu",
-]
-
-[[package]]
 name = "wgpu-core"
 version = "24.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3367,8 +3359,7 @@ dependencies = [
  "log",
  "pollster",
  "wgpu",
- "wgpu-common",
- "wgsl_to_wgpu",
+ "wgpu-shader",
  "winit",
 ]
 
@@ -3416,6 +3407,18 @@ dependencies = [
  "wgpu-types",
  "windows",
  "windows-core",
+]
+
+[[package]]
+name = "wgpu-shader"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "encase",
+ "glam",
+ "glob",
+ "wgpu",
+ "wgsl_to_wgpu",
 ]
 
 [[package]]

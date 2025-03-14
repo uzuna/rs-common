@@ -43,3 +43,24 @@ pub mod particle {
         }
     }
 }
+
+pub mod introduction {
+    use wgpu_shader::{introduction::*, WgpuContext};
+
+    #[allow(dead_code)]
+    pub struct Context {
+        pipe: Pipeline,
+    }
+
+    impl Context {
+        pub fn new(state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) -> Self {
+            let pipe = Pipeline::new(state.device(), config);
+
+            Self { pipe }
+        }
+
+        pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
+            self.pipe.render(state)
+        }
+    }
+}

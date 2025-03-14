@@ -55,7 +55,8 @@ pub async fn run(timeout: Option<Duration>) {
     let mut surface_configured = false;
     let start = std::time::Instant::now();
 
-    let r = render::particle::Context::new(&state, state.config());
+    // let r = render::particle::Context::new(&state, state.config());
+    let r = render::introduction::Context::new(&state, state.config());
 
     event_loop
         .run(move |event, control_flow| {

@@ -1,7 +1,6 @@
 use wgpu_shader::WgpuContext;
 use winit::{event::*, window::Window};
 
-
 pub struct State<'a> {
     surface: wgpu::Surface<'a>,
     device: wgpu::Device,

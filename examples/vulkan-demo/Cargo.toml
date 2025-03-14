@@ -1,5 +1,5 @@
 [package]
-name = "wgpu-vulkan"
+name = "vulkan-demo"
 version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
@@ -13,3 +13,7 @@ env_logger = "0.10"
 log = "0.4"
 wgpu.workspace = true
 pollster = "0.3"
+glam = { version = "0.29.1", features = ["bytemuck"] }
+bytemuck = { version = "1.19", features = ["derive"] }
+encase = { version = "0.10.0", features = ["glam"] }
+wgpu-shader.workspace = true

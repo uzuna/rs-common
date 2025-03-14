@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use wgpu_shader::{particle, prelude::*};
 use winit::{
     event::*,
     event_loop::EventLoopBuilder,
@@ -9,6 +8,7 @@ use winit::{
     window::WindowBuilder,
 };
 
+pub mod render;
 pub mod state;
 
 #[cfg(target_arch = "wasm32")]
@@ -55,26 +55,7 @@ pub async fn run(timeout: Option<Duration>) {
     let mut surface_configured = false;
     let start = std::time::Instant::now();
 
-    // init render uniform
-    let u_w = particle::shader::Window {
-        resolution: [800.0, 600.0, 1.0, 0.0].into(),
-    };
-    let mut uniform = particle::Unif::new(state.device(), u_w);
-
-    let pipe = particle::Pipeline::new(state.device(), state.config(), &uniform);
-
-    // init vertex
-    let mut verts = vec![];
-    for x in 0..10 {
-        for y in 0..10 {
-            verts.push(particle::shader::VertexInput {
-                position: [x as f32 * 0.1 - 0.5, y as f32 * 0.1 - 0.5, 0.0].into(),
-                color: [1.0, 0.0, 0.0].into(),
-            });
-        }
-    }
-
-    let vb = particle::Vert::new(state.device(), &verts, Some("Vertex Buffer"));
+    let r = render::particle::Context::new(&state, state.config());
 
     event_loop
         .run(move |event, control_flow| {
@@ -108,9 +89,8 @@ pub async fn run(timeout: Option<Duration>) {
                                 if !surface_configured {
                                     return;
                                 }
-                                uniform.set(state.queue(), &u_w);
 
-                                match pipe.render(&state, &vb) {
+                                match r.render(&state) {
                                     Ok(_) => {}
                                     // Reconfigure the surface if it's lost or outdated
                                     Err(

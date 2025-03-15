@@ -1,5 +1,12 @@
 use std::time::{Duration, Instant};
 
+pub const BG_COLOR: wgpu::Color = wgpu::Color {
+    r: 0.1,
+    g: 0.2,
+    b: 0.3,
+    a: 1.0,
+};
+
 pub struct Timer {
     i: Instant,
 }
@@ -50,7 +57,8 @@ pub mod particle {
                 resolution: [800.0, 600.0, 1.0, 0.0].into(),
             };
             let uniform = UniformBuffer::new(state.device(), u_w);
-            let pipe = Pipeline::new(state.device(), config, &uniform);
+            let mut pipe = Pipeline::new(state.device(), config, &uniform);
+            pipe.set_bg_color(super::BG_COLOR);
 
             // init vertex
             let mut verts = vec![];
@@ -130,7 +138,8 @@ pub mod introduction {
 
     impl Context {
         pub fn new(state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) -> Self {
-            let pipe = Pipeline::new(state.device(), config);
+            let mut pipe = Pipeline::new(state.device(), config);
+            pipe.set_bg_color(super::BG_COLOR);
             let vb = Self::pentagon(state);
 
             Self { pipe, vb }
@@ -200,7 +209,8 @@ pub mod texture {
     impl Context {
         pub fn new(state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) -> Self {
             let tx = load_texture(state);
-            let pipe = Pipeline::new(state.device(), config, &tx);
+            let mut pipe = Pipeline::new(state.device(), config, &tx);
+            pipe.set_bg_color(super::BG_COLOR);
             let vb = Self::pentagon(state);
             Self { pipe, vb, tx }
         }

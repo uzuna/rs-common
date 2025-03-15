@@ -19,6 +19,7 @@ impl shader::VertexInput {
 
 pub struct Pipeline {
     pipe: wgpu::RenderPipeline,
+    bg_color: wgpu::Color,
     bind_group: shader::bind_groups::BindGroup0,
 }
 
@@ -82,7 +83,12 @@ impl Pipeline {
         Self {
             pipe: pipeline,
             bind_group,
+            bg_color: wgpu::Color::BLACK,
         }
+    }
+
+    pub fn set_bg_color(&mut self, color: wgpu::Color) {
+        self.bg_color = color;
     }
 
     pub fn render(
@@ -108,12 +114,7 @@ impl Pipeline {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.2,
-                            b: 0.3,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(self.bg_color),
                         store: wgpu::StoreOp::Store,
                     },
                 })],

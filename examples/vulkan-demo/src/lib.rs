@@ -55,7 +55,7 @@ pub async fn run(timeout: Option<Duration>) {
     let mut surface_configured = false;
     let timer = render::Timer::new();
 
-    // let r = render::particle::Context::new(&state, state.config());
+    // let mut r = render::particle::Context::new(&state, state.config());
     // let mut r = render::introduction::Context::new(&state, state.config());
     let mut r = render::texture::Context::new(&state, state.config());
 

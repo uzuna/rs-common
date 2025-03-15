@@ -1,6 +1,4 @@
-use std::ops::Range;
-
-use crate::{uniform::UniformBuffer, WgpuContext};
+use crate::{uniform::UniformBuffer, vertex::VertexBufferInstanced, WgpuContext};
 
 pub mod shader;
 
@@ -90,7 +88,7 @@ impl Pipeline {
     pub fn render(
         &self,
         state: &impl WgpuContext,
-        buf: &Vert<shader::VertexInput>,
+        buf: &VertexBufferInstanced<shader::VertexInput>,
     ) -> Result<(), wgpu::SurfaceError> {
         let output = state.surface().get_current_texture()?;
         let view = output
@@ -134,39 +132,5 @@ impl Pipeline {
         output.present();
 
         Ok(())
-    }
-}
-
-pub struct Vert<V> {
-    pub buf: wgpu::Buffer,
-    vert_len: usize,
-    phantom: std::marker::PhantomData<V>,
-}
-
-impl<V> Vert<V>
-where
-    V: bytemuck::Pod,
-{
-    pub fn new(device: &wgpu::Device, verts: &[V], label: Option<&str>) -> Self {
-        use wgpu::util::DeviceExt;
-        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label,
-            contents: bytemuck::cast_slice(verts),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        });
-        Self {
-            buf,
-            vert_len: verts.len(),
-            phantom: std::marker::PhantomData,
-        }
-    }
-
-    pub fn update(&self, queue: &wgpu::Queue, verts: &[V]) {
-        queue.write_buffer(&self.buf, 0, bytemuck::cast_slice(verts));
-    }
-
-    pub fn draw(&self, rpass: &mut wgpu::RenderPass, vert_range: Range<u32>) {
-        rpass.set_vertex_buffer(0, self.buf.slice(..));
-        rpass.draw(vert_range, 0..self.vert_len as u32);
     }
 }

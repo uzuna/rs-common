@@ -1,3 +1,32 @@
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct VertexInput {
+    pub position: glam::Vec3,
+    pub color: glam::Vec3,
+}
+impl VertexInput {
+    pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: std::mem::offset_of!(VertexInput, position) as u64,
+            shader_location: 0,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: std::mem::offset_of!(VertexInput, color) as u64,
+            shader_location: 1,
+        },
+    ];
+    pub const fn vertex_buffer_layout(
+        step_mode: wgpu::VertexStepMode,
+    ) -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<VertexInput>() as u64,
+            step_mode,
+            attributes: &VertexInput::VERTEX_ATTRIBUTES,
+        }
+    }
+}
 pub const ENTRY_VS_MAIN: &str = "vs_main";
 pub const ENTRY_FS_MAIN: &str = "fs_main";
 #[derive(Debug)]
@@ -20,10 +49,10 @@ pub fn vertex_state<'a, const N: usize>(
         },
     }
 }
-pub fn vs_main_entry() -> VertexEntry<0> {
+pub fn vs_main_entry(vertex_input: wgpu::VertexStepMode) -> VertexEntry<1> {
     VertexEntry {
         entry_point: ENTRY_VS_MAIN,
-        buffers: [],
+        buffers: [VertexInput::vertex_buffer_layout(vertex_input)],
         constants: Default::default(),
     }
 }

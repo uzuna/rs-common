@@ -24,7 +24,11 @@ impl Pipeline {
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
             layout: Some(&render_pipeline_layout),
-            vertex: shader::vertex_state(&shader, &shader::vs_main_entry()),
+            vertex: shader::vertex_state(
+                &shader,
+                // データの種類は頂点毎
+                &shader::vs_main_entry(wgpu::VertexStepMode::Vertex),
+            ),
             fragment: Some(shader::fragment_state(
                 &shader,
                 &shader::fs_main_entry(fs_target),
@@ -51,7 +55,11 @@ impl Pipeline {
         Self { pipe: pipeline }
     }
 
-    pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
+    pub fn render(
+        &self,
+        state: &impl WgpuContext,
+        buf: &VertexBuffer<shader::VertexInput>,
+    ) -> Result<(), wgpu::SurfaceError> {
         let output = state.surface().get_current_texture()?;
         let view = output
             .texture
@@ -85,12 +93,61 @@ impl Pipeline {
             });
 
             render_pass.set_pipeline(&self.pipe);
-            render_pass.draw(0..3, 0..1);
+            buf.draw(&mut render_pass);
         }
 
         state.queue().submit(std::iter::once(encoder.finish()));
         output.present();
 
         Ok(())
+    }
+}
+
+impl shader::VertexInput {
+    pub const fn new(position: glam::Vec3, color: glam::Vec3) -> Self {
+        Self { position, color }
+    }
+}
+
+pub struct VertexBuffer<V> {
+    pub buf: wgpu::Buffer,
+    pub index: wgpu::Buffer,
+    index_len: usize,
+    phantom: std::marker::PhantomData<V>,
+}
+
+impl<V> VertexBuffer<V>
+where
+    V: bytemuck::Pod,
+{
+    pub fn new(device: &wgpu::Device, verts: &[V], indexes: &[u16]) -> Self {
+        use wgpu::util::DeviceExt;
+        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(verts),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
+        let index = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Index Buffer"),
+            contents: bytemuck::cast_slice(indexes),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        let index_len = indexes.len();
+        Self {
+            buf,
+            index,
+            index_len,
+            phantom: std::marker::PhantomData,
+        }
+    }
+
+    pub fn update(&self, queue: &wgpu::Queue, verts: &[V]) {
+        queue.write_buffer(&self.buf, 0, bytemuck::cast_slice(verts));
+    }
+
+    fn draw(&self, rpass: &mut wgpu::RenderPass) {
+        rpass.set_vertex_buffer(0, self.buf.slice(..));
+        rpass.set_index_buffer(self.index.slice(..), wgpu::IndexFormat::Uint16);
+        rpass.draw_indexed(0..self.index_len as u32, 0, 0..1);
     }
 }

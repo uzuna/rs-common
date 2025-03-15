@@ -45,22 +45,67 @@ pub mod particle {
 }
 
 pub mod introduction {
+    use glam::Vec3;
+    use wgpu_shader::introduction::shader::VertexInput;
     use wgpu_shader::{introduction::*, WgpuContext};
+
+    const TRIANGLE: &[VertexInput] = &[
+        VertexInput::new(Vec3::new(0.0, 0.5, 0.0), Vec3::new(1.0, 0.0, 0.0)),
+        VertexInput::new(Vec3::new(-0.5, -0.5, 0.0), Vec3::new(0.0, 1.0, 0.0)),
+        VertexInput::new(Vec3::new(0.5, -0.5, 0.0), Vec3::new(0.0, 0.0, 1.0)),
+    ];
+
+    const TRIANGLE_INDEXIES: &[u16] = &[0, 1, 2];
+
+    const PENTAGON: &[VertexInput] = &[
+        VertexInput::new(
+            Vec3::new(-0.0868241, 0.49240386, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+        ),
+        VertexInput::new(
+            Vec3::new(-0.49513406, 0.06958647, 0.0),
+            Vec3::new(0.5, 0.0, 0.5),
+        ),
+        VertexInput::new(
+            Vec3::new(-0.21918549, -0.44939706, 0.0),
+            Vec3::new(0.5, 1.0, 0.5),
+        ),
+        VertexInput::new(
+            Vec3::new(0.35966998, -0.3473291, 0.0),
+            Vec3::new(0.0, 0.0, 0.5),
+        ),
+        VertexInput::new(
+            Vec3::new(0.44147372, 0.2347359, 0.0),
+            Vec3::new(0.5, 0.0, 1.0),
+        ),
+    ];
+
+    const PENTAGON_INDEXIES: &[u16] = &[0, 1, 4, 1, 2, 4, 2, 3, 4];
 
     #[allow(dead_code)]
     pub struct Context {
         pipe: Pipeline,
+        vb: VertexBuffer<VertexInput>,
     }
 
     impl Context {
         pub fn new(state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) -> Self {
             let pipe = Pipeline::new(state.device(), config);
+            let vb = Self::pentagon(state);
 
-            Self { pipe }
+            Self { pipe, vb }
+        }
+
+        fn triangle(state: &impl WgpuContext) -> VertexBuffer<VertexInput> {
+            VertexBuffer::new(state.device(), TRIANGLE, TRIANGLE_INDEXIES)
+        }
+
+        fn pentagon(state: &impl WgpuContext) -> VertexBuffer<VertexInput> {
+            VertexBuffer::new(state.device(), PENTAGON, PENTAGON_INDEXIES)
         }
 
         pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
-            self.pipe.render(state)
+            self.pipe.render(state, &self.vb)
         }
     }
 }

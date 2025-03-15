@@ -1,4 +1,4 @@
-use crate::WgpuContext;
+use crate::{vertex::VertexBuffer, WgpuContext};
 
 pub mod shader;
 
@@ -93,7 +93,7 @@ impl Pipeline {
             });
 
             render_pass.set_pipeline(&self.pipe);
-            buf.draw(&mut render_pass);
+            buf.draw(&mut render_pass, 0..1);
         }
 
         state.queue().submit(std::iter::once(encoder.finish()));
@@ -106,48 +106,5 @@ impl Pipeline {
 impl shader::VertexInput {
     pub const fn new(position: glam::Vec3, color: glam::Vec3) -> Self {
         Self { position, color }
-    }
-}
-
-pub struct VertexBuffer<V> {
-    pub buf: wgpu::Buffer,
-    pub index: wgpu::Buffer,
-    index_len: usize,
-    phantom: std::marker::PhantomData<V>,
-}
-
-impl<V> VertexBuffer<V>
-where
-    V: bytemuck::Pod,
-{
-    pub fn new(device: &wgpu::Device, verts: &[V], indexes: &[u16]) -> Self {
-        use wgpu::util::DeviceExt;
-        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(verts),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        });
-        let index = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(indexes),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-        let index_len = indexes.len();
-        Self {
-            buf,
-            index,
-            index_len,
-            phantom: std::marker::PhantomData,
-        }
-    }
-
-    pub fn update(&self, queue: &wgpu::Queue, verts: &[V]) {
-        queue.write_buffer(&self.buf, 0, bytemuck::cast_slice(verts));
-    }
-
-    fn draw(&self, rpass: &mut wgpu::RenderPass) {
-        rpass.set_vertex_buffer(0, self.buf.slice(..));
-        rpass.set_index_buffer(self.index.slice(..), wgpu::IndexFormat::Uint16);
-        rpass.draw_indexed(0..self.index_len as u32, 0, 0..1);
     }
 }

@@ -1,21 +1,52 @@
-use std::ops::Range;
-
-use crate::{uniform::UniformBuffer, WgpuContext};
+use crate::{vertex::VertexBuffer, WgpuContext};
 
 pub mod shader;
 
-impl Default for shader::VertexInput {
-    fn default() -> Self {
-        Self::new()
-    }
+pub struct TextureInst {
+    tex: wgpu::Texture,
+    view: wgpu::TextureView,
+    sampler: wgpu::Sampler,
 }
 
-impl shader::VertexInput {
-    pub fn new() -> Self {
-        Self {
-            position: [0.0, 0.0, 0.0].into(),
-            color: [1.0, 0.0, 0.0].into(),
+impl TextureInst {
+    pub fn new(device: &wgpu::Device, tex: wgpu::Texture) -> Self {
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        Self { tex, view, sampler }
+    }
+
+    fn desc(&self) -> shader::bind_groups::BindGroupLayout0 {
+        shader::bind_groups::BindGroupLayout0 {
+            t_diffuse: &self.view,
+            s_diffuse: &self.sampler,
         }
+    }
+
+    /// テクスチャにデータを書き込む
+    pub fn write(&self, queue: &wgpu::Queue, data: &[u8], dim: (u32, u32), size: wgpu::Extent3d) {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * dim.0),
+                rows_per_image: Some(dim.1),
+            },
+            size,
+        );
     }
 }
 
@@ -29,7 +60,7 @@ impl Pipeline {
     pub fn new(
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
-        uniform_buffer: &UniformBuffer<shader::Window>,
+        tex: &TextureInst,
     ) -> Self {
         let shader = shader::create_shader_module(device);
 
@@ -48,8 +79,8 @@ impl Pipeline {
             layout: Some(&render_pipeline_layout),
             vertex: shader::vertex_state(
                 &shader,
-                // 内部で6頂点を描画するのでInstanceモードで描画する
-                &shader::vs_main_entry(wgpu::VertexStepMode::Instance),
+                // データの種類は頂点毎
+                &shader::vs_main_entry(wgpu::VertexStepMode::Vertex),
             ),
             fragment: Some(shader::fragment_state(
                 &shader,
@@ -74,13 +105,8 @@ impl Pipeline {
             cache: None,
         });
 
-        // uniform bufferのバインドグループの作成
-        let bind_group = shader::bind_groups::BindGroup0::from_bindings(
-            device,
-            shader::bind_groups::BindGroupLayout0 {
-                uw: uniform_buffer.buffer().as_entire_buffer_binding(),
-            },
-        );
+        let bind_group = shader::bind_groups::BindGroup0::from_bindings(device, tex.desc());
+
         Self {
             pipe: pipeline,
             bind_group,
@@ -90,7 +116,7 @@ impl Pipeline {
     pub fn render(
         &self,
         state: &impl WgpuContext,
-        buf: &Vert<shader::VertexInput>,
+        buf: &VertexBuffer<shader::VertexInput>,
     ) -> Result<(), wgpu::SurfaceError> {
         let output = state.surface().get_current_texture()?;
         let view = output
@@ -126,8 +152,7 @@ impl Pipeline {
 
             render_pass.set_pipeline(&self.pipe);
             self.bind_group.set(&mut render_pass);
-            // shaderが6頂点を描画する仕様になっている
-            buf.draw(&mut render_pass, 0..6);
+            buf.draw(&mut render_pass, 0..1);
         }
 
         state.queue().submit(std::iter::once(encoder.finish()));
@@ -137,36 +162,11 @@ impl Pipeline {
     }
 }
 
-pub struct Vert<V> {
-    pub buf: wgpu::Buffer,
-    vert_len: usize,
-    phantom: std::marker::PhantomData<V>,
-}
-
-impl<V> Vert<V>
-where
-    V: bytemuck::Pod,
-{
-    pub fn new(device: &wgpu::Device, verts: &[V], label: Option<&str>) -> Self {
-        use wgpu::util::DeviceExt;
-        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label,
-            contents: bytemuck::cast_slice(verts),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        });
+impl shader::VertexInput {
+    pub const fn new(position: glam::Vec3, uv: glam::Vec2) -> Self {
         Self {
-            buf,
-            vert_len: verts.len(),
-            phantom: std::marker::PhantomData,
+            position,
+            tex_coords: uv,
         }
-    }
-
-    pub fn update(&self, queue: &wgpu::Queue, verts: &[V]) {
-        queue.write_buffer(&self.buf, 0, bytemuck::cast_slice(verts));
-    }
-
-    pub fn draw(&self, rpass: &mut wgpu::RenderPass, vert_range: Range<u32>) {
-        rpass.set_vertex_buffer(0, self.buf.slice(..));
-        rpass.draw(vert_range, 0..self.vert_len as u32);
     }
 }

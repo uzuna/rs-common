@@ -3001,6 +3001,7 @@ dependencies = [
  "encase",
  "env_logger",
  "glam",
+ "image",
  "log",
  "pollster",
  "wgpu",

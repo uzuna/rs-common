@@ -1,6 +1,9 @@
 pub mod introduction;
 pub mod particle;
 pub mod prelude;
+pub mod texture;
+pub mod uniform;
+pub mod vertex;
 
 pub trait WgpuContext {
     fn device(&self) -> &wgpu::Device;

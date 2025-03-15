@@ -56,7 +56,8 @@ pub async fn run(timeout: Option<Duration>) {
     let timer = render::Timer::new();
 
     // let r = render::particle::Context::new(&state, state.config());
-    let mut r = render::introduction::Context::new(&state, state.config());
+    // let mut r = render::introduction::Context::new(&state, state.config());
+    let mut r = render::texture::Context::new(&state, state.config());
 
     event_loop
         .run(move |event, control_flow| {

@@ -1,5 +1,38 @@
+use std::time::{Duration, Instant};
+
+pub struct Timer {
+    i: Instant,
+}
+
+impl Default for Timer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Timer {
+    pub fn new() -> Self {
+        Self { i: Instant::now() }
+    }
+
+    pub fn ts(&self) -> Timestamp {
+        let elapsed = self.i.elapsed();
+        Timestamp {
+            elapsed,
+            delta: elapsed,
+        }
+    }
+}
+
+pub struct Timestamp {
+    pub elapsed: Duration,
+    pub delta: Duration,
+}
+
 pub mod particle {
     use wgpu_shader::{particle::*, WgpuContext};
+
+    use super::Timestamp;
 
     #[allow(dead_code)]
     pub struct Context {
@@ -38,6 +71,8 @@ pub mod particle {
             }
         }
 
+        pub fn update(&mut self, _state: &impl WgpuContext, _ts: &Timestamp) {}
+
         pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
             self.pipe.render(state, &self.vb)
         }
@@ -48,6 +83,8 @@ pub mod introduction {
     use glam::Vec3;
     use wgpu_shader::introduction::shader::VertexInput;
     use wgpu_shader::{introduction::*, WgpuContext};
+
+    use super::Timestamp;
 
     const TRIANGLE: &[VertexInput] = &[
         VertexInput::new(Vec3::new(0.0, 0.5, 0.0), Vec3::new(1.0, 0.0, 0.0)),
@@ -102,6 +139,15 @@ pub mod introduction {
 
         fn pentagon(state: &impl WgpuContext) -> VertexBuffer<VertexInput> {
             VertexBuffer::new(state.device(), PENTAGON, PENTAGON_INDEXIES)
+        }
+
+        pub fn update(&mut self, state: &impl WgpuContext, ts: &Timestamp) {
+            // 3角と5角の表示を切り替える
+            if ts.elapsed.as_secs_f32().sin() > 0.0 {
+                self.vb = Self::triangle(state);
+            } else {
+                self.vb = Self::pentagon(state);
+            }
         }
 
         pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {

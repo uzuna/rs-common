@@ -53,10 +53,10 @@ pub async fn run(timeout: Option<Duration>) {
     // State::new uses async code, so we're going to wait for it to finish
     let mut state = state::State::new(&window).await;
     let mut surface_configured = false;
-    let start = std::time::Instant::now();
+    let timer = render::Timer::new();
 
     // let r = render::particle::Context::new(&state, state.config());
-    let r = render::introduction::Context::new(&state, state.config());
+    let mut r = render::introduction::Context::new(&state, state.config());
 
     event_loop
         .run(move |event, control_flow| {
@@ -90,6 +90,7 @@ pub async fn run(timeout: Option<Duration>) {
                                 if !surface_configured {
                                     return;
                                 }
+                                r.update(&state, &timer.ts());
 
                                 match r.render(&state) {
                                     Ok(_) => {}
@@ -115,7 +116,7 @@ pub async fn run(timeout: Option<Duration>) {
                         }
                     }
                     if let Some(timeout) = timeout {
-                        if start.elapsed() > timeout {
+                        if timer.ts().elapsed > timeout {
                             control_flow.exit();
                         }
                     }

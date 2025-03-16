@@ -67,6 +67,11 @@ impl Camera {
         // convert the matrix.
         OPENGL_TO_WGPU_MATRIX * proj.as_matrix() * view.to_homogeneous()
     }
+
+    /// 画面リサイズ時にアスペクト比を更新する
+    pub fn set_aspect(&mut self, aspect: f32) {
+        self.aspect = aspect;
+    }
 }
 
 /// winitに異存してカメラを操作する

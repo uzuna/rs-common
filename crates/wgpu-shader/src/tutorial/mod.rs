@@ -54,6 +54,7 @@ impl TextureInst {
 
 pub struct Pipeline {
     pipe: wgpu::RenderPipeline,
+    dt: crate::texture::Texture,
     bg_color: wgpu::Color,
     bg0: shader::bind_groups::BindGroup0,
     bg1: shader::bind_groups::BindGroup1,
@@ -103,7 +104,13 @@ impl Pipeline {
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: crate::texture::Texture::DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState {
                 count: 1,
                 mask: !0,
@@ -121,8 +128,11 @@ impl Pipeline {
             },
         );
 
+        let texture = crate::texture::Texture::create_depth_texture(device, config, None);
+
         Self {
             pipe: pipeline,
+            dt: texture,
             bg0,
             bg1,
             bg_color: wgpu::Color::BLACK,
@@ -131,6 +141,10 @@ impl Pipeline {
 
     pub fn set_bg_color(&mut self, color: wgpu::Color) {
         self.bg_color = color;
+    }
+
+    pub fn resize(&mut self, device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) {
+        self.dt = crate::texture::Texture::create_depth_texture(device, config, None);
     }
 
     pub fn render(
@@ -160,7 +174,14 @@ impl Pipeline {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.dt.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });

@@ -84,14 +84,17 @@ pub async fn run(timeout: Option<Duration>) {
                                 log::info!("physical_size: {physical_size:?}");
                                 surface_configured = true;
                                 state.resize(*physical_size);
+                                state.resize(state.size());
+                                // resizeしているけどエラーで落ちてる
+                                // Attachments have differing sizes: the depth attachment's texture view has extent (800, 600, 1) but is followed by the color attachment at index 0's texture view which has (799, 600, 1)
                             }
                             WindowEvent::RedrawRequested => {
                                 // This tells winit that we want another frame after this one
                                 state.window().request_redraw();
-
                                 if !surface_configured {
                                     return;
                                 }
+
                                 r.update(&state, &timer.ts());
 
                                 match r.render(&state) {

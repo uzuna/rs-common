@@ -278,6 +278,13 @@ pub mod tutorial {
             self.cc.process_events(event)
         }
 
+        pub fn resize(&mut self, state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) {
+            self.cam
+                .set_aspect(config.width as f32 / config.height as f32);
+            self.cam_buf.set(state.queue(), &into_camuni(&self.cam));
+            self.pipe.resize(state.device(), config);
+        }
+
         pub fn update(&mut self, state: &impl WgpuContext, _ts: &super::Timestamp) {
             self.cc.update_camera(&mut self.cam);
             self.cam_buf.set(state.queue(), &into_camuni(&self.cam));

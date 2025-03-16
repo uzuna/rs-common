@@ -1,7 +1,7 @@
 pub mod introduction;
 pub mod particle;
 pub mod prelude;
-pub mod texture;
+pub mod tutorial;
 pub mod uniform;
 pub mod vertex;
 

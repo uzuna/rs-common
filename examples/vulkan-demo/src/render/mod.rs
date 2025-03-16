@@ -168,13 +168,13 @@ pub mod introduction {
     }
 }
 
-pub mod texture {
+pub mod tutorial {
 
     use glam::{Vec2, Vec3};
-    use nalgebra::{Translation3, Vector3};
+    use nalgebra::{Rotation3, Translation3, Vector3};
     use wgpu_shader::{
         prelude::*,
-        texture::{
+        tutorial::{
             shader::{InstanceInput, VertexInput},
             *,
         },
@@ -216,9 +216,19 @@ pub mod texture {
         let offset = 5.0 * -0.5;
         for z in 0..10 {
             for x in 0..10 {
-                let pos = Vector3::new(x as f32 * step + offset, 0.0, z as f32 * step + offset);
+                let pos: nalgebra::Matrix<
+                    f32,
+                    nalgebra::Const<3>,
+                    nalgebra::Const<1>,
+                    nalgebra::ArrayStorage<f32, 3, 1>,
+                > = Vector3::new(x as f32 * step + offset, 0.0, z as f32 * step + offset);
+                let rot = Rotation3::from_euler_angles(
+                    (x as f32 * 0.1).to_degrees(),
+                    (z as f32 * 0.1).to_degrees(),
+                    0.0,
+                );
                 instances.push(InstanceInput::from(glam::Mat4::from(
-                    Translation3::from(pos).to_homogeneous(),
+                    Translation3::from(pos).to_homogeneous() * rot.to_homogeneous(),
                 )));
             }
         }

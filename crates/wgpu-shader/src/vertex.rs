@@ -44,6 +44,64 @@ where
     }
 }
 
+/// 頂点とインデックスで構成するVertexBuffer
+pub struct ViBuffer<V, I> {
+    pub vertex: wgpu::Buffer,
+    pub index: wgpu::Buffer,
+    pub instance: wgpu::Buffer,
+    index_len: usize,
+    instance_len: usize,
+    _p0: std::marker::PhantomData<V>,
+    _p1: std::marker::PhantomData<I>,
+}
+
+impl<V, I> ViBuffer<V, I>
+where
+    V: bytemuck::Pod,
+    I: bytemuck::Pod,
+{
+    pub fn new(device: &wgpu::Device, verts: &[V], indexes: &[u16], insts: &[I]) -> Self {
+        use wgpu::util::DeviceExt;
+        let vertex = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(verts),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
+        let index = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Index Buffer"),
+            contents: bytemuck::cast_slice(indexes),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        let index_len = indexes.len();
+        let instance = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Instance Buffer"),
+            contents: bytemuck::cast_slice(insts),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
+        let instance_len = insts.len();
+        Self {
+            vertex,
+            index,
+            instance,
+            index_len,
+            instance_len,
+            _p0: std::marker::PhantomData,
+            _p1: std::marker::PhantomData,
+        }
+    }
+
+    pub fn update(&self, queue: &wgpu::Queue, verts: &[V]) {
+        queue.write_buffer(&self.vertex, 0, bytemuck::cast_slice(verts));
+    }
+
+    pub(crate) fn draw(&self, rpass: &mut wgpu::RenderPass) {
+        rpass.set_vertex_buffer(0, self.vertex.slice(..));
+        rpass.set_vertex_buffer(1, self.instance.slice(..));
+        rpass.set_index_buffer(self.index.slice(..), wgpu::IndexFormat::Uint16);
+        rpass.draw_indexed(0..self.index_len as u32, 0, 0..self.instance_len as u32);
+    }
+}
+
 /// Instance用のVertexBuffer
 pub struct VertexBufferInstanced<V> {
     pub buf: wgpu::Buffer,

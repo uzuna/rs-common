@@ -1,4 +1,6 @@
-use crate::{uniform::UniformBuffer, vertex::VertexBuffer, WgpuContext};
+use glam::Mat4;
+
+use crate::{uniform::UniformBuffer, vertex::ViBuffer, WgpuContext};
 
 pub mod shader;
 
@@ -83,7 +85,10 @@ impl Pipeline {
             vertex: shader::vertex_state(
                 &shader,
                 // データの種類は頂点毎
-                &shader::vs_main_entry(wgpu::VertexStepMode::Vertex),
+                &shader::vs_main_entry(
+                    wgpu::VertexStepMode::Vertex,
+                    wgpu::VertexStepMode::Instance,
+                ),
             ),
             fragment: Some(shader::fragment_state(
                 &shader,
@@ -131,7 +136,7 @@ impl Pipeline {
     pub fn render(
         &self,
         state: &impl WgpuContext,
-        buf: &VertexBuffer<shader::VertexInput>,
+        buf: &ViBuffer<shader::VertexInput, shader::InstanceInput>,
     ) -> Result<(), wgpu::SurfaceError> {
         let output = state.surface().get_current_texture()?;
         let view = output
@@ -163,7 +168,7 @@ impl Pipeline {
             render_pass.set_pipeline(&self.pipe);
             self.bg0.set(&mut render_pass);
             self.bg1.set(&mut render_pass);
-            buf.draw(&mut render_pass, 0..1);
+            buf.draw(&mut render_pass);
         }
 
         state.queue().submit(std::iter::once(encoder.finish()));
@@ -178,6 +183,17 @@ impl shader::VertexInput {
         Self {
             position,
             tex_coords: uv,
+        }
+    }
+}
+
+impl From<Mat4> for shader::InstanceInput {
+    fn from(mat: Mat4) -> Self {
+        Self {
+            model_matrix_0: mat.x_axis,
+            model_matrix_1: mat.y_axis,
+            model_matrix_2: mat.z_axis,
+            model_matrix_3: mat.w_axis,
         }
     }
 }

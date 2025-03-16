@@ -169,12 +169,17 @@ pub mod introduction {
 }
 
 pub mod texture {
+
     use glam::{Vec2, Vec3};
+    use nalgebra::{Translation3, Vector3};
     use wgpu_shader::{
         prelude::*,
-        texture::{shader::VertexInput, *},
+        texture::{
+            shader::{InstanceInput, VertexInput},
+            *,
+        },
         uniform::UniformBuffer,
-        vertex::VertexBuffer,
+        vertex::ViBuffer,
         WgpuContext,
     };
 
@@ -205,6 +210,21 @@ pub mod texture {
 
     const PENTAGON_INDEXIES: &[u16] = &[0, 1, 4, 1, 2, 4, 2, 3, 4];
 
+    fn instances() -> Vec<InstanceInput> {
+        let mut instances = vec![];
+        let step = 0.6;
+        let offset = 5.0 * -0.5;
+        for z in 0..10 {
+            for x in 0..10 {
+                let pos = Vector3::new(x as f32 * step + offset, 0.0, z as f32 * step + offset);
+                instances.push(InstanceInput::from(glam::Mat4::from(
+                    Translation3::from(pos).to_homogeneous(),
+                )));
+            }
+        }
+        instances
+    }
+
     fn into_camuni(cam: &Camera) -> shader::CameraUniform {
         shader::CameraUniform {
             view_proj: cam.build_view_projection_matrix().into(),
@@ -214,7 +234,7 @@ pub mod texture {
     #[allow(dead_code)]
     pub struct Context {
         pipe: Pipeline,
-        vb: VertexBuffer<VertexInput>,
+        vb: ViBuffer<VertexInput, InstanceInput>,
         tx: TextureInst,
         cam: Camera,
         cc: CameraController,
@@ -240,8 +260,8 @@ pub mod texture {
             }
         }
 
-        fn pentagon(state: &impl WgpuContext) -> VertexBuffer<VertexInput> {
-            VertexBuffer::new(state.device(), PENTAGON, PENTAGON_INDEXIES)
+        fn pentagon(state: &impl WgpuContext) -> ViBuffer<VertexInput, InstanceInput> {
+            ViBuffer::new(state.device(), PENTAGON, PENTAGON_INDEXIES, &instances())
         }
 
         pub fn input(&mut self, event: &winit::event::WindowEvent) -> bool {

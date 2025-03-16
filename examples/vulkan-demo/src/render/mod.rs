@@ -171,8 +171,14 @@ pub mod introduction {
 pub mod texture {
     use glam::{Vec2, Vec3};
     use wgpu_shader::{
-        prelude::*, texture::shader::VertexInput, texture::*, vertex::VertexBuffer, WgpuContext,
+        prelude::*,
+        texture::{shader::VertexInput, *},
+        uniform::UniformBuffer,
+        vertex::VertexBuffer,
+        WgpuContext,
     };
+
+    use crate::camera::{Camera, CameraController};
 
     const PENTAGON: &[VertexInput] = &[
         VertexInput::new(
@@ -199,27 +205,53 @@ pub mod texture {
 
     const PENTAGON_INDEXIES: &[u16] = &[0, 1, 4, 1, 2, 4, 2, 3, 4];
 
+    fn into_camuni(cam: &Camera) -> shader::CameraUniform {
+        shader::CameraUniform {
+            view_proj: cam.build_view_projection_matrix().into(),
+        }
+    }
+
     #[allow(dead_code)]
     pub struct Context {
         pipe: Pipeline,
         vb: VertexBuffer<VertexInput>,
         tx: TextureInst,
+        cam: Camera,
+        cc: CameraController,
+        cam_buf: UniformBuffer<shader::CameraUniform>,
     }
 
     impl Context {
         pub fn new(state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) -> Self {
             let tx = load_texture(state);
-            let mut pipe = Pipeline::new(state.device(), config, &tx);
+            let cam = Camera::with_aspect(config.width as f32 / config.height as f32);
+            let cc = CameraController::new(0.01);
+            let cam_buf = UniformBuffer::new(state.device(), into_camuni(&cam));
+            let mut pipe = Pipeline::new(state.device(), config, &tx, &cam_buf);
             pipe.set_bg_color(super::BG_COLOR);
             let vb = Self::pentagon(state);
-            Self { pipe, vb, tx }
+            Self {
+                pipe,
+                vb,
+                tx,
+                cam,
+                cc,
+                cam_buf,
+            }
         }
 
         fn pentagon(state: &impl WgpuContext) -> VertexBuffer<VertexInput> {
             VertexBuffer::new(state.device(), PENTAGON, PENTAGON_INDEXIES)
         }
 
-        pub fn update(&mut self, _state: &impl WgpuContext, _ts: &super::Timestamp) {}
+        pub fn input(&mut self, event: &winit::event::WindowEvent) -> bool {
+            self.cc.process_events(event)
+        }
+
+        pub fn update(&mut self, state: &impl WgpuContext, _ts: &super::Timestamp) {
+            self.cc.update_camera(&mut self.cam);
+            self.cam_buf.set(state.queue(), &into_camuni(&self.cam));
+        }
 
         pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
             self.pipe.render(state, &self.vb)

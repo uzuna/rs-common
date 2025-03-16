@@ -18,3 +18,4 @@ bytemuck = { version = "1.19", features = ["derive"] }
 encase = { version = "0.10.0", features = ["glam"] }
 wgpu-shader.workspace = true
 image = { workspace = true, features = ["png"], default-features = false }
+nalgebra = { workspace = true, features = ["convert-glam029"] }

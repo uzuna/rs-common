@@ -1,4 +1,4 @@
-use crate::{vertex::VertexBuffer, WgpuContext};
+use crate::{uniform::UniformBuffer, vertex::VertexBuffer, WgpuContext};
 
 pub mod shader;
 
@@ -53,7 +53,8 @@ impl TextureInst {
 pub struct Pipeline {
     pipe: wgpu::RenderPipeline,
     bg_color: wgpu::Color,
-    bind_group: shader::bind_groups::BindGroup0,
+    bg0: shader::bind_groups::BindGroup0,
+    bg1: shader::bind_groups::BindGroup1,
 }
 
 impl Pipeline {
@@ -62,6 +63,7 @@ impl Pipeline {
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
         tex: &TextureInst,
+        camera: &UniformBuffer<shader::CameraUniform>,
     ) -> Self {
         let shader = shader::create_shader_module(device);
 
@@ -91,7 +93,7 @@ impl Pipeline {
                 topology: wgpu::PrimitiveTopology::default(),
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
+                cull_mode: None,
                 polygon_mode: wgpu::PolygonMode::Fill,
                 unclipped_depth: false,
                 conservative: false,
@@ -106,11 +108,18 @@ impl Pipeline {
             cache: None,
         });
 
-        let bind_group = shader::bind_groups::BindGroup0::from_bindings(device, tex.desc());
+        let bg0 = shader::bind_groups::BindGroup0::from_bindings(device, tex.desc());
+        let bg1 = shader::bind_groups::BindGroup1::from_bindings(
+            device,
+            shader::bind_groups::BindGroupLayout1 {
+                camera: camera.buffer().as_entire_buffer_binding(),
+            },
+        );
 
         Self {
             pipe: pipeline,
-            bind_group,
+            bg0,
+            bg1,
             bg_color: wgpu::Color::BLACK,
         }
     }
@@ -152,7 +161,8 @@ impl Pipeline {
             });
 
             render_pass.set_pipeline(&self.pipe);
-            self.bind_group.set(&mut render_pass);
+            self.bg0.set(&mut render_pass);
+            self.bg1.set(&mut render_pass);
             buf.draw(&mut render_pass, 0..1);
         }
 

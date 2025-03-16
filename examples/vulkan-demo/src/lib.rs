@@ -8,6 +8,7 @@ use winit::{
     window::WindowBuilder,
 };
 
+pub mod camera;
 pub mod render;
 pub mod state;
 
@@ -66,7 +67,7 @@ pub async fn run(timeout: Option<Duration>) {
                     ref event,
                     window_id,
                 } if window_id == state.window().id() => {
-                    if !state.input(event) {
+                    if !r.input(event) {
                         // UPDATED!
                         match event {
                             WindowEvent::CloseRequested

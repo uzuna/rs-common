@@ -10,6 +10,7 @@ use winit::{
 
 pub mod camera;
 pub mod render;
+pub mod resources;
 pub mod state;
 
 #[cfg(target_arch = "wasm32")]

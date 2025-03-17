@@ -9,6 +9,7 @@ use winit::{
 };
 
 pub mod camera;
+pub mod env;
 pub mod render;
 pub mod resources;
 pub mod state;
@@ -17,7 +18,7 @@ pub mod state;
 use wasm_bindgen::prelude::*;
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
-pub async fn run(timeout: Option<Duration>) {
+pub async fn run(app_env: env::AppEnv, timeout: Option<Duration>) {
     cfg_if::cfg_if! {
         if #[cfg(target_arch = "wasm32")] {
             std::panic::set_hook(Box::new(console_error_panic_hook::hook));
@@ -59,7 +60,7 @@ pub async fn run(timeout: Option<Duration>) {
 
     // let mut r = render::particle::Context::new(&state, state.config());
     // let mut r = render::introduction::Context::new(&state, state.config());
-    let mut r = render::tutorial::Context::new(&state, state.config());
+    let mut r = render::tutorial::Context::new(&state, state.config(), &app_env.assets);
 
     event_loop
         .run(move |event, control_flow| {

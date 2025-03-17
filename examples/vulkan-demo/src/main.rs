@@ -1,5 +1,6 @@
-use vulkan_demo::run;
+use vulkan_demo::{env::AppEnv, run};
 
 fn main() {
-    pollster::block_on(run(None));
+    let env = AppEnv::from_env();
+    pollster::block_on(run(env, None));
 }

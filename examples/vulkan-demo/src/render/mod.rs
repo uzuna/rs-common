@@ -170,6 +170,8 @@ pub mod introduction {
 
 pub mod tutorial {
 
+    use std::path::Path;
+
     use glam::{Vec2, Vec3};
     use nalgebra::{Rotation3, Translation3, Vector3};
     use wgpu_shader::{
@@ -252,8 +254,13 @@ pub mod tutorial {
     }
 
     impl Context {
-        pub fn new(state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) -> Self {
-            let tx = load_texture(state);
+        pub fn new(
+            state: &impl WgpuContext,
+            config: &wgpu::SurfaceConfiguration,
+            assets_dir: &Path,
+        ) -> Self {
+            let texture_path = assets_dir.join("webgpu.png");
+            let tx = load_texture(state, &texture_path).expect("Failed to load texture");
             let cam = Camera::with_aspect(config.width as f32 / config.height as f32);
             let cc = CameraController::new(0.01);
             let cam_buf = UniformBuffer::new(state.device(), into_camuni(&cam));
@@ -295,9 +302,10 @@ pub mod tutorial {
         }
     }
 
-    fn load_texture(state: &impl WgpuContext) -> TextureInst {
-        let img = include_bytes!("../../assets/webgpu.png");
-        let img = image::load_from_memory(img).unwrap();
+    // テクスチャ読み込み
+    fn load_texture(state: &impl WgpuContext, path: &Path) -> Result<TextureInst, std::io::Error> {
+        let img = std::fs::read(path)?;
+        let img = image::load_from_memory(&img).unwrap();
         let img = img.to_rgba8();
         let dimensions = img.dimensions();
 
@@ -321,6 +329,6 @@ pub mod tutorial {
         let inst = TextureInst::new(state.device(), tex);
         inst.write(state.queue(), &img, dimensions, texture_size);
 
-        inst
+        Ok(inst)
     }
 }

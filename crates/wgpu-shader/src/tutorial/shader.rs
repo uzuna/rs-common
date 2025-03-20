@@ -8,6 +8,7 @@ pub struct CameraUniform {
 pub struct VertexInput {
     pub position: glam::Vec3,
     pub tex_coords: glam::Vec2,
+    pub normal: glam::Vec3,
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -193,7 +194,7 @@ impl InstanceInput {
     }
 }
 impl VertexInput {
-    pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
+    pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
         wgpu::VertexAttribute {
             format: wgpu::VertexFormat::Float32x3,
             offset: std::mem::offset_of!(VertexInput, position) as u64,
@@ -203,6 +204,11 @@ impl VertexInput {
             format: wgpu::VertexFormat::Float32x2,
             offset: std::mem::offset_of!(VertexInput, tex_coords) as u64,
             shader_location: 1,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: std::mem::offset_of!(VertexInput, normal) as u64,
+            shader_location: 2,
         },
     ];
     pub const fn vertex_buffer_layout(

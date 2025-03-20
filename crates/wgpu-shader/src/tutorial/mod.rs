@@ -204,6 +204,7 @@ impl shader::VertexInput {
         Self {
             position,
             tex_coords: uv,
+            normal: glam::Vec3::ZERO,
         }
     }
 }

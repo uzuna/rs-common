@@ -1,4 +1,5 @@
 pub mod introduction;
+pub mod model;
 pub mod particle;
 pub mod prelude;
 pub mod texture;

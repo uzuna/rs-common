@@ -10,6 +10,8 @@ struct VertexInput {
     @location(0) position: vec3<f32>,
     // テクスチャ座標
     @location(1) tex_coords: vec2<f32>,
+    // ノーマルマップ
+    @location(2) normal: vec3<f32>,
 }
 
 // instance毎の回転・拡大・移動行列

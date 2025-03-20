@@ -57,6 +57,11 @@ impl ModelData {
             materials: obj_materials,
         })
     }
+
+    // texture pathを取得する
+    pub fn texture_path(&self, mat: &Material) -> Option<PathBuf> {
+        mat.diffuse_texture.as_ref().map(|p| self.dir.join(p))
+    }
 }
 
 #[cfg(test)]

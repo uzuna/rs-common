@@ -181,11 +181,14 @@ pub mod tutorial {
             *,
         },
         uniform::UniformBuffer,
-        vertex::ViBuffer,
+        vertex::{VertexBuffer, ViBuffer},
         WgpuContext,
     };
 
-    use crate::camera::{Camera, CameraController};
+    use crate::{
+        camera::{Camera, CameraController},
+        resources::ModelData,
+    };
 
     const PENTAGON: &[VertexInput] = &[
         VertexInput::new(
@@ -243,6 +246,17 @@ pub mod tutorial {
         }
     }
 
+    pub struct Mesh {
+        pub name: String,
+        pub material: usize,
+        pub vb: VertexBuffer<shader::VertexInput>,
+    }
+
+    pub struct Material {
+        pub name: String,
+        pub diffuse: TextureInst,
+    }
+
     #[allow(dead_code)]
     pub struct Context {
         pipe: Pipeline,
@@ -261,12 +275,15 @@ pub mod tutorial {
         ) -> Self {
             let texture_path = assets_dir.join("webgpu.png");
             let tx = load_texture(state, &texture_path).expect("Failed to load texture");
+
             let cam = Camera::with_aspect(config.width as f32 / config.height as f32);
             let cc = CameraController::new(0.01);
             let cam_buf = UniformBuffer::new(state.device(), into_camuni(&cam));
+
             let mut pipe = Pipeline::new(state.device(), config, &tx, &cam_buf);
             pipe.set_bg_color(super::BG_COLOR);
             let vb = Self::pentagon(state);
+            Self::load_model(state, &assets_dir.join("models/cube/cube.obj"));
             Self {
                 pipe,
                 vb,
@@ -274,6 +291,52 @@ pub mod tutorial {
                 cam,
                 cc,
                 cam_buf,
+            }
+        }
+
+        /// モデルデータの読み込み。wgpuにはまだ載せない
+        fn load_model(state: &impl WgpuContext, path: &Path) {
+            let model_data = ModelData::from_path(path).expect("Failed to load model data");
+            let m = model_data.models.first().expect("Model data is empty");
+            let mesh = Self::load_model_inner(state, m);
+            let mat = model_data
+                .materials
+                .first()
+                .expect("Material data is empty");
+            let material = Material {
+                name: mat.name.clone(),
+                diffuse: load_texture(state, &model_data.texture_path(mat).unwrap())
+                    .expect("Failed to load texture"),
+            };
+        }
+
+        fn load_model_inner(state: &impl WgpuContext, m: &tobj::Model) -> Mesh {
+            let vertices = 0..m.mesh.positions.len() / 3;
+
+            let vertices = vertices
+                .map(|i| VertexInput {
+                    position: [
+                        m.mesh.positions[i * 3],
+                        m.mesh.positions[i * 3 + 1],
+                        m.mesh.positions[i * 3 + 2],
+                    ]
+                    .into(),
+                    tex_coords: [m.mesh.texcoords[i * 2], m.mesh.texcoords[i * 2 + 1]].into(),
+                    normal: [
+                        m.mesh.normals[i * 3],
+                        m.mesh.normals[i * 3 + 1],
+                        m.mesh.normals[i * 3 + 2],
+                    ]
+                    .into(),
+                })
+                .collect::<Vec<_>>();
+            let indexies = m.mesh.indices.iter().map(|x| *x as u16).collect::<Vec<_>>();
+            let vb = VertexBuffer::new(state.device(), &vertices, &indexies);
+
+            Mesh {
+                name: m.name.clone(),
+                material: m.mesh.material_id.unwrap_or(0),
+                vb,
             }
         }
 

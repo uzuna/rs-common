@@ -255,6 +255,12 @@ pub mod tutorial {
     pub struct Material {
         pub name: String,
         pub diffuse: TextureInst,
+        pub bg: shader::bind_groups::BindGroup0,
+    }
+
+    pub struct Model {
+        mesh: Mesh,
+        material: Material,
     }
 
     #[allow(dead_code)]
@@ -265,6 +271,7 @@ pub mod tutorial {
         cam: Camera,
         cc: CameraController,
         cam_buf: UniformBuffer<shader::CameraUniform>,
+        model: Model,
     }
 
     impl Context {
@@ -283,7 +290,7 @@ pub mod tutorial {
             let mut pipe = Pipeline::new(state.device(), config, &tx, &cam_buf);
             pipe.set_bg_color(super::BG_COLOR);
             let vb = Self::pentagon(state);
-            Self::load_model(state, &assets_dir.join("models/cube/cube.obj"));
+            let model = Self::load_model(state, &assets_dir.join("models/cube/cube.obj"));
             Self {
                 pipe,
                 vb,
@@ -291,11 +298,12 @@ pub mod tutorial {
                 cam,
                 cc,
                 cam_buf,
+                model,
             }
         }
 
         /// モデルデータの読み込み。wgpuにはまだ載せない
-        fn load_model(state: &impl WgpuContext, path: &Path) {
+        fn load_model(state: &impl WgpuContext, path: &Path) -> Model {
             let model_data = ModelData::from_path(path).expect("Failed to load model data");
             let m = model_data.models.first().expect("Model data is empty");
             let mesh = Self::load_model_inner(state, m);
@@ -303,11 +311,15 @@ pub mod tutorial {
                 .materials
                 .first()
                 .expect("Material data is empty");
+            let tex = load_texture(state, &model_data.texture_path(mat).unwrap())
+                .expect("Failed to load texture");
+            let bg0 = shader::bind_groups::BindGroup0::from_bindings(state.device(), tex.desc());
             let material = Material {
                 name: mat.name.clone(),
-                diffuse: load_texture(state, &model_data.texture_path(mat).unwrap())
-                    .expect("Failed to load texture"),
+                diffuse: tex,
+                bg: bg0,
             };
+            Model { mesh, material }
         }
 
         fn load_model_inner(state: &impl WgpuContext, m: &tobj::Model) -> Mesh {
@@ -361,7 +373,13 @@ pub mod tutorial {
         }
 
         pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
-            self.pipe.render(state, &self.vb)
+            self.pipe.render(state, |rp| {
+                self.pipe.bg0.set(rp);
+                self.pipe.bg1.set(rp);
+                self.vb.draw(rp);
+                self.model.material.bg.set(rp);
+                self.model.mesh.vb.draw(rp, 0..1);
+            })
         }
     }
 

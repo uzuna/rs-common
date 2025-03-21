@@ -37,7 +37,7 @@ where
         queue.write_buffer(&self.buf, 0, bytemuck::cast_slice(verts));
     }
 
-    pub(crate) fn draw(&self, rpass: &mut wgpu::RenderPass, instance_range: std::ops::Range<u32>) {
+    pub fn draw(&self, rpass: &mut wgpu::RenderPass, instance_range: std::ops::Range<u32>) {
         rpass.set_vertex_buffer(0, self.buf.slice(..));
         rpass.set_index_buffer(self.index.slice(..), wgpu::IndexFormat::Uint16);
         rpass.draw_indexed(0..self.index_len as u32, 0, instance_range);
@@ -94,7 +94,7 @@ where
         queue.write_buffer(&self.vertex, 0, bytemuck::cast_slice(verts));
     }
 
-    pub(crate) fn draw(&self, rpass: &mut wgpu::RenderPass) {
+    pub fn draw(&self, rpass: &mut wgpu::RenderPass) {
         rpass.set_vertex_buffer(0, self.vertex.slice(..));
         rpass.set_vertex_buffer(1, self.instance.slice(..));
         rpass.set_index_buffer(self.index.slice(..), wgpu::IndexFormat::Uint16);

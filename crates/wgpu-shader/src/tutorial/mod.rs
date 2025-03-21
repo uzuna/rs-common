@@ -1,6 +1,6 @@
 use glam::Mat4;
 
-use crate::{uniform::UniformBuffer, vertex::ViBuffer, WgpuContext};
+use crate::{uniform::UniformBuffer, WgpuContext};
 
 pub mod shader;
 
@@ -25,7 +25,7 @@ impl TextureInst {
         Self { tex, view, sampler }
     }
 
-    fn desc(&self) -> shader::bind_groups::BindGroupLayout0 {
+    pub fn desc(&self) -> shader::bind_groups::BindGroupLayout0 {
         shader::bind_groups::BindGroupLayout0 {
             t_diffuse: &self.view,
             s_diffuse: &self.sampler,
@@ -56,8 +56,8 @@ pub struct Pipeline {
     pipe: wgpu::RenderPipeline,
     dt: crate::texture::Texture,
     bg_color: wgpu::Color,
-    bg0: shader::bind_groups::BindGroup0,
-    bg1: shader::bind_groups::BindGroup1,
+    pub bg0: shader::bind_groups::BindGroup0,
+    pub bg1: shader::bind_groups::BindGroup1,
 }
 
 impl Pipeline {
@@ -150,7 +150,7 @@ impl Pipeline {
     pub fn render(
         &self,
         state: &impl WgpuContext,
-        buf: &ViBuffer<shader::VertexInput, shader::InstanceInput>,
+        f: impl FnOnce(&mut wgpu::RenderPass),
     ) -> Result<(), wgpu::SurfaceError> {
         let output = state.surface().get_current_texture()?;
         let view = output
@@ -187,9 +187,7 @@ impl Pipeline {
             });
 
             render_pass.set_pipeline(&self.pipe);
-            self.bg0.set(&mut render_pass);
-            self.bg1.set(&mut render_pass);
-            buf.draw(&mut render_pass);
+            f(&mut render_pass);
         }
 
         state.queue().submit(std::iter::once(encoder.finish()));

@@ -1,8 +1,34 @@
 use glam::Mat4;
 
-use crate::{uniform::UniformBuffer, WgpuContext};
+use crate::{uniform::UniformBuffer, vertex::ViBuffer, WgpuContext};
 
 pub mod shader;
+
+/// レンダリング対象の整理
+///
+/// 頂点とインスタンスとそのテクスチャで一つのレンダリング対象なのでまとめて扱う
+pub struct Model {
+    pub bg0: shader::bind_groups::BindGroup0,
+    pub tex: TextureInst,
+    pub vb: ViBuffer<shader::VertexInput, shader::InstanceInput>,
+}
+
+impl Model {
+    pub fn new(
+        device: &wgpu::Device,
+        tex: TextureInst,
+        vb: ViBuffer<shader::VertexInput, shader::InstanceInput>,
+    ) -> Self {
+        let bg0 = shader::bind_groups::BindGroup0::from_bindings(device, tex.desc());
+
+        Self { bg0, tex, vb }
+    }
+
+    pub fn draw(&self, pass: &mut wgpu::RenderPass) {
+        self.bg0.set(pass);
+        self.vb.draw(pass);
+    }
+}
 
 pub struct TextureInst {
     tex: wgpu::Texture,
@@ -56,7 +82,6 @@ pub struct Pipeline {
     pipe: wgpu::RenderPipeline,
     dt: crate::texture::Texture,
     bg_color: wgpu::Color,
-    pub bg0: shader::bind_groups::BindGroup0,
     pub bg1: shader::bind_groups::BindGroup1,
 }
 
@@ -65,7 +90,6 @@ impl Pipeline {
     pub fn new(
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
-        tex: &TextureInst,
         camera: &UniformBuffer<shader::CameraUniform>,
     ) -> Self {
         let shader = shader::create_shader_module(device);
@@ -120,7 +144,6 @@ impl Pipeline {
             cache: None,
         });
 
-        let bg0 = shader::bind_groups::BindGroup0::from_bindings(device, tex.desc());
         let bg1 = shader::bind_groups::BindGroup1::from_bindings(
             device,
             shader::bind_groups::BindGroupLayout1 {
@@ -133,7 +156,6 @@ impl Pipeline {
         Self {
             pipe: pipeline,
             dt: texture,
-            bg0,
             bg1,
             bg_color: wgpu::Color::BLACK,
         }

@@ -177,6 +177,7 @@ pub mod tutorial {
     use wgpu_shader::{
         prelude::*,
         tutorial::{
+            self,
             shader::{InstanceInput, VertexInput},
             *,
         },
@@ -266,11 +267,10 @@ pub mod tutorial {
     #[allow(dead_code)]
     pub struct Context {
         pipe: Pipeline,
-        vb: ViBuffer<VertexInput, InstanceInput>,
-        tx: TextureInst,
         cam: Camera,
         cc: CameraController,
         cam_buf: UniformBuffer<shader::CameraUniform>,
+        m0: tutorial::Model,
         model: Model,
     }
 
@@ -281,23 +281,25 @@ pub mod tutorial {
             assets_dir: &Path,
         ) -> Self {
             let texture_path = assets_dir.join("webgpu.png");
-            let tx = load_texture(state, &texture_path).expect("Failed to load texture");
+            let tex = load_texture(state, &texture_path).expect("Failed to load texture");
 
             let cam = Camera::with_aspect(config.width as f32 / config.height as f32);
             let cc = CameraController::new(0.01);
             let cam_buf = UniformBuffer::new(state.device(), into_camuni(&cam));
 
-            let mut pipe = Pipeline::new(state.device(), config, &tx, &cam_buf);
+            let mut pipe = Pipeline::new(state.device(), config, &cam_buf);
             pipe.set_bg_color(super::BG_COLOR);
+
             let vb = Self::pentagon(state);
+
+            let m0 = tutorial::Model::new(state.device(), tex, vb);
             let model = Self::load_model(state, &assets_dir.join("models/cube/cube.obj"));
             Self {
                 pipe,
-                vb,
-                tx,
                 cam,
                 cc,
                 cam_buf,
+                m0,
                 model,
             }
         }
@@ -374,9 +376,8 @@ pub mod tutorial {
 
         pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
             self.pipe.render(state, |rp| {
-                self.pipe.bg0.set(rp);
                 self.pipe.bg1.set(rp);
-                self.vb.draw(rp);
+                self.m0.draw(rp);
                 self.model.material.bg.set(rp);
                 self.model.mesh.vb.draw(rp, 0..1);
             })

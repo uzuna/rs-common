@@ -130,4 +130,8 @@ impl WgpuContext for State<'_> {
     fn queue(&self) -> &wgpu::Queue {
         &self.queue
     }
+
+    fn depth(&self) -> &wgpu::TextureView {
+        todo!()
+    }
 }

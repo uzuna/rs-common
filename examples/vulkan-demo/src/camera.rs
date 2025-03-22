@@ -72,6 +72,10 @@ impl Camera {
     pub fn set_aspect(&mut self, aspect: f32) {
         self.aspect = aspect;
     }
+
+    pub fn pos(&self) -> Point3<f32> {
+        self.eye
+    }
 }
 
 /// winitに異存してカメラを操作する

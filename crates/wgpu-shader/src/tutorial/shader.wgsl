@@ -1,9 +1,12 @@
 // カメラの射影行列
-struct CameraUniform {
+struct Camera {
+    // カメラの位置
+    view_pos: vec4<f32>,
+    // カメラの射影行列
     view_proj: mat4x4<f32>,
 };
 @group(1) @binding(0)
-var<uniform> camera: CameraUniform;
+var<uniform> camera: Camera;
 
 struct VertexInput {
     // 頂点座標

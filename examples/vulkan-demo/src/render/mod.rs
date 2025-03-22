@@ -172,7 +172,7 @@ pub mod tutorial {
 
     use std::path::Path;
 
-    use glam::{Vec2, Vec3};
+    use glam::{Vec2, Vec3, Vec4};
     use nalgebra::{Rotation3, Translation3, Vector3};
     use wgpu_shader::{
         prelude::*,
@@ -190,6 +190,8 @@ pub mod tutorial {
         camera::{Camera, CameraController},
         resources::ModelData,
     };
+
+    use super::BG_COLOR;
 
     const PENTAGON: &[VertexInput] = &[
         VertexInput::new(
@@ -241,8 +243,10 @@ pub mod tutorial {
         instances
     }
 
-    fn into_camuni(cam: &Camera) -> shader::CameraUniform {
-        shader::CameraUniform {
+    fn into_camuni(cam: &Camera) -> shader::Camera {
+        let pos = cam.pos();
+        shader::Camera {
+            view_pos: Vec4::new(pos.x, pos.y, pos.z, 1.0),
             view_proj: cam.build_view_projection_matrix().into(),
         }
     }
@@ -266,10 +270,13 @@ pub mod tutorial {
 
     #[allow(dead_code)]
     pub struct Context {
-        pipe: Pipeline,
+        pipe_render: Pipeline,
+        pipe_light: LightRenderPipeline,
         cam: Camera,
         cc: CameraController,
-        cam_buf: UniformBuffer<shader::CameraUniform>,
+        cb_render: UniformBuffer<shader::Camera>,
+        cb_light: UniformBuffer<light::Camera>,
+        lb_light: UniformBuffer<light::Light>,
         m0: tutorial::Model,
         model: Model,
     }
@@ -285,20 +292,29 @@ pub mod tutorial {
 
             let cam = Camera::with_aspect(config.width as f32 / config.height as f32);
             let cc = CameraController::new(0.01);
-            let cam_buf = UniformBuffer::new(state.device(), into_camuni(&cam));
+            let cam_mat = into_camuni(&cam);
+            let cb_render = UniformBuffer::new(state.device(), cam_mat);
 
-            let mut pipe = Pipeline::new(state.device(), config, &cam_buf);
-            pipe.set_bg_color(super::BG_COLOR);
+            let pipe_render = Pipeline::new(state.device(), config, &cb_render);
 
             let vb = Self::pentagon(state);
 
             let m0 = tutorial::Model::new(state.device(), tex, vb);
             let model = Self::load_model(state, &assets_dir.join("models/cube/cube.obj"));
+
+            let cam_mat: light::Camera = into_camuni(&cam).into();
+            let cb_light = UniformBuffer::new(state.device(), cam_mat);
+            let lb_light = UniformBuffer::new(state.device(), create_light());
+            let pipe_light = LightRenderPipeline::new(state.device(), config, &cb_light, &lb_light);
+
             Self {
-                pipe,
+                pipe_render,
+                pipe_light,
                 cam,
                 cc,
-                cam_buf,
+                cb_render,
+                cb_light,
+                lb_light,
                 m0,
                 model,
             }
@@ -365,18 +381,27 @@ pub mod tutorial {
         pub fn resize(&mut self, state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) {
             self.cam
                 .set_aspect(config.width as f32 / config.height as f32);
-            self.cam_buf.set(state.queue(), &into_camuni(&self.cam));
-            self.pipe.resize(state.device(), config);
+            self.cb_render.set(state.queue(), &into_camuni(&self.cam));
         }
 
         pub fn update(&mut self, state: &impl WgpuContext, _ts: &super::Timestamp) {
             self.cc.update_camera(&mut self.cam);
-            self.cam_buf.set(state.queue(), &into_camuni(&self.cam));
+            let cb = into_camuni(&self.cam);
+            self.cb_render.set(state.queue(), &cb);
+            self.cb_light.set(state.queue(), &cb.into());
         }
 
         pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
-            self.pipe.render(state, |rp| {
-                self.pipe.bg1.set(rp);
+            render(state, BG_COLOR, state.depth(), |rp| {
+                let r = &self.pipe_light;
+                rp.set_pipeline(r.pipe());
+                r.bg0.set(rp);
+                r.bg1.set(rp);
+                self.model.mesh.vb.draw(rp, 0..1);
+
+                let r = &self.pipe_render;
+                rp.set_pipeline(r.pipe());
+                r.bg1.set(rp);
                 self.m0.draw(rp);
                 self.model.material.bg.set(rp);
                 self.model.mesh.vb.draw(rp, 0..1);

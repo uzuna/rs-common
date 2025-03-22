@@ -83,6 +83,7 @@ impl TextureInst {
 pub struct Pipeline {
     pipe: wgpu::RenderPipeline,
     pub bg1: shader::bind_groups::BindGroup1,
+    pub bg2: shader::bind_groups::BindGroup2,
 }
 
 impl Pipeline {
@@ -91,6 +92,7 @@ impl Pipeline {
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
         camera: &UniformBuffer<shader::Camera>,
+        light: &UniformBuffer<shader::Light>,
     ) -> Self {
         let shader = shader::create_shader_module(device);
 
@@ -116,10 +118,17 @@ impl Pipeline {
                 camera: camera.buffer().as_entire_buffer_binding(),
             },
         );
+        let bg2 = shader::bind_groups::BindGroup2::from_bindings(
+            device,
+            shader::bind_groups::BindGroupLayout2 {
+                light: light.buffer().as_entire_buffer_binding(),
+            },
+        );
 
         Self {
             pipe: pipeline,
             bg1,
+            bg2,
         }
     }
 
@@ -161,8 +170,8 @@ impl LightRenderPipeline {
     pub fn new(
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
-        camera: &UniformBuffer<light::Camera>,
-        light: &UniformBuffer<light::Light>,
+        camera: &UniformBuffer<shader::Camera>,
+        light: &UniformBuffer<shader::Light>,
     ) -> Self {
         let shader = light::create_shader_module(device);
 
@@ -310,17 +319,8 @@ pub fn render(
     Ok(())
 }
 
-impl From<shader::Camera> for light::Camera {
-    fn from(c: shader::Camera) -> Self {
-        Self {
-            view_proj: c.view_proj,
-            view_pos: c.view_pos,
-        }
-    }
-}
-
-pub fn create_light() -> light::Light {
-    light::Light {
+pub fn create_light() -> shader::Light {
+    shader::Light {
         position: glam::Vec3::new(2.0, 2.0, 2.0),
         color: glam::Vec3::new(1.0, 1.0, 1.0),
     }

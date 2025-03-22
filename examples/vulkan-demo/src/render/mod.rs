@@ -274,9 +274,8 @@ pub mod tutorial {
         pipe_light: LightRenderPipeline,
         cam: Camera,
         cc: CameraController,
-        cb_render: UniformBuffer<shader::Camera>,
-        cb_light: UniformBuffer<light::Camera>,
-        lb_light: UniformBuffer<light::Light>,
+        ub_cam: UniformBuffer<shader::Camera>,
+        ub_light: UniformBuffer<shader::Light>,
         m0: tutorial::Model,
         model: Model,
     }
@@ -293,28 +292,25 @@ pub mod tutorial {
             let cam = Camera::with_aspect(config.width as f32 / config.height as f32);
             let cc = CameraController::new(0.01);
             let cam_mat = into_camuni(&cam);
-            let cb_render = UniformBuffer::new(state.device(), cam_mat);
+            let ub_cam = UniformBuffer::new(state.device(), cam_mat);
+            let ub_light = UniformBuffer::new(state.device(), create_light());
 
-            let pipe_render = Pipeline::new(state.device(), config, &cb_render);
+            let pipe_render = Pipeline::new(state.device(), config, &ub_cam, &ub_light);
 
             let vb = Self::pentagon(state);
 
             let m0 = tutorial::Model::new(state.device(), tex, vb);
             let model = Self::load_model(state, &assets_dir.join("models/cube/cube.obj"));
 
-            let cam_mat: light::Camera = into_camuni(&cam).into();
-            let cb_light = UniformBuffer::new(state.device(), cam_mat);
-            let lb_light = UniformBuffer::new(state.device(), create_light());
-            let pipe_light = LightRenderPipeline::new(state.device(), config, &cb_light, &lb_light);
+            let pipe_light = LightRenderPipeline::new(state.device(), config, &ub_cam, &ub_light);
 
             Self {
                 pipe_render,
                 pipe_light,
                 cam,
                 cc,
-                cb_render,
-                cb_light,
-                lb_light,
+                ub_cam,
+                ub_light,
                 m0,
                 model,
             }
@@ -381,14 +377,13 @@ pub mod tutorial {
         pub fn resize(&mut self, state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) {
             self.cam
                 .set_aspect(config.width as f32 / config.height as f32);
-            self.cb_render.set(state.queue(), &into_camuni(&self.cam));
+            self.ub_cam.set(state.queue(), &into_camuni(&self.cam));
         }
 
         pub fn update(&mut self, state: &impl WgpuContext, _ts: &super::Timestamp) {
             self.cc.update_camera(&mut self.cam);
             let cb = into_camuni(&self.cam);
-            self.cb_render.set(state.queue(), &cb);
-            self.cb_light.set(state.queue(), &cb.into());
+            self.ub_cam.set(state.queue(), &cb);
         }
 
         pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
@@ -402,6 +397,7 @@ pub mod tutorial {
                 let r = &self.pipe_render;
                 rp.set_pipeline(r.pipe());
                 r.bg1.set(rp);
+                r.bg2.set(rp);
                 self.m0.draw(rp);
                 self.model.material.bg.set(rp);
                 self.model.mesh.vb.draw(rp, 0..1);

@@ -5,6 +5,12 @@ pub struct Camera {
     pub view_proj: glam::Mat4,
 }
 #[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
+pub struct Light {
+    pub position: glam::Vec3,
+    pub color: glam::Vec3,
+}
+#[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct VertexInput {
     pub position: glam::Vec3,
@@ -113,15 +119,56 @@ pub mod bind_groups {
             pass.set_bind_group(1, &self.0, &[]);
         }
     }
+    #[derive(Debug)]
+    pub struct BindGroup2(wgpu::BindGroup);
+    #[derive(Debug)]
+    pub struct BindGroupLayout2<'a> {
+        pub light: wgpu::BufferBinding<'a>,
+    }
+    const LAYOUT_DESCRIPTOR2: wgpu::BindGroupLayoutDescriptor = wgpu::BindGroupLayoutDescriptor {
+        label: Some("LayoutDescriptor2"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    };
+    impl BindGroup2 {
+        pub fn get_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+            device.create_bind_group_layout(&LAYOUT_DESCRIPTOR2)
+        }
+        pub fn from_bindings(device: &wgpu::Device, bindings: BindGroupLayout2) -> Self {
+            let bind_group_layout = device.create_bind_group_layout(&LAYOUT_DESCRIPTOR2);
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(bindings.light),
+                }],
+                label: Some("BindGroup2"),
+            });
+            Self(bind_group)
+        }
+        pub fn set<P: SetBindGroup>(&self, pass: &mut P) {
+            pass.set_bind_group(2, &self.0, &[]);
+        }
+    }
     #[derive(Debug, Copy, Clone)]
     pub struct BindGroups<'a> {
         pub bind_group0: &'a BindGroup0,
         pub bind_group1: &'a BindGroup1,
+        pub bind_group2: &'a BindGroup2,
     }
     impl BindGroups<'_> {
         pub fn set<P: SetBindGroup>(&self, pass: &mut P) {
             self.bind_group0.set(pass);
             self.bind_group1.set(pass);
+            self.bind_group2.set(pass);
         }
     }
     pub trait SetBindGroup {
@@ -157,9 +204,11 @@ pub fn set_bind_groups<P: bind_groups::SetBindGroup>(
     pass: &mut P,
     bind_group0: &bind_groups::BindGroup0,
     bind_group1: &bind_groups::BindGroup1,
+    bind_group2: &bind_groups::BindGroup2,
 ) {
     bind_group0.set(pass);
     bind_group1.set(pass);
+    bind_group2.set(pass);
 }
 impl InstanceInput {
     pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
@@ -298,6 +347,7 @@ pub fn create_pipeline_layout(device: &wgpu::Device) -> wgpu::PipelineLayout {
         bind_group_layouts: &[
             &bind_groups::BindGroup0::get_bind_group_layout(device),
             &bind_groups::BindGroup1::get_bind_group_layout(device),
+            &bind_groups::BindGroup2::get_bind_group_layout(device),
         ],
         push_constant_ranges: &[],
     })

@@ -1,4 +1,3 @@
-use glam::Mat4;
 use wgpu::{RenderPipeline, TextureView};
 
 use crate::{uniform::UniformBuffer, vertex::ViBuffer, WgpuContext};
@@ -6,20 +5,27 @@ use crate::{uniform::UniformBuffer, vertex::ViBuffer, WgpuContext};
 pub mod light;
 pub mod shader;
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct InstanceRaw {
+    pub model: [[f32; 4]; 4],
+    // pub normal: [[f32; 3]; 3],
+}
+
 /// レンダリング対象の整理
 ///
 /// 頂点とインスタンスとそのテクスチャで一つのレンダリング対象なのでまとめて扱う
 pub struct Model {
     pub bg0: shader::bind_groups::BindGroup0,
     pub tex: TextureInst,
-    pub vb: ViBuffer<shader::VertexInput, shader::InstanceInput>,
+    pub vb: ViBuffer<shader::VertexInput, InstanceRaw>,
 }
 
 impl Model {
     pub fn new(
         device: &wgpu::Device,
         tex: TextureInst,
-        vb: ViBuffer<shader::VertexInput, shader::InstanceInput>,
+        vb: ViBuffer<shader::VertexInput, InstanceRaw>,
     ) -> Self {
         let bg0 = shader::bind_groups::BindGroup0::from_bindings(device, tex.desc());
 
@@ -142,18 +148,7 @@ impl shader::VertexInput {
         Self {
             position,
             tex_coords: uv,
-            normal: glam::Vec3::ZERO,
-        }
-    }
-}
-
-impl From<Mat4> for shader::InstanceInput {
-    fn from(mat: Mat4) -> Self {
-        Self {
-            model_matrix_0: mat.x_axis,
-            model_matrix_1: mat.y_axis,
-            model_matrix_2: mat.z_axis,
-            model_matrix_3: mat.w_axis,
+            normal: glam::Vec3::Z,
         }
     }
 }

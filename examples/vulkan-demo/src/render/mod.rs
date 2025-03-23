@@ -176,11 +176,7 @@ pub mod tutorial {
     use nalgebra::{Rotation3, Translation3, Vector3};
     use wgpu_shader::{
         prelude::*,
-        tutorial::{
-            self,
-            shader::{InstanceInput, VertexInput},
-            *,
-        },
+        tutorial::{self, shader::VertexInput, *},
         uniform::UniformBuffer,
         vertex::{VertexBuffer, ViBuffer},
         WgpuContext,
@@ -218,12 +214,16 @@ pub mod tutorial {
 
     const PENTAGON_INDEXIES: &[u16] = &[0, 1, 4, 1, 2, 4, 2, 3, 4];
 
-    fn instances() -> Vec<InstanceInput> {
+    // ライトの位置の時間変化
+    const LIGHT_PASS: &[Vec3; 2] = &[glam::Vec3::new(2.0, 2.0, 2.0), Vec3::new(-2.0, 1.0, -2.0)];
+
+    fn instances() -> Vec<InstanceRaw> {
         let mut instances = vec![];
+        let len = 10;
         let step = 0.6;
-        let offset = 5.0 * -0.5;
-        for z in 0..10 {
-            for x in 0..10 {
+        let offset = (len as f32 * 0.5) * -0.5;
+        for z in 0..len {
+            for x in 0..len {
                 let pos: nalgebra::Matrix<
                     f32,
                     nalgebra::Const<3>,
@@ -235,9 +235,14 @@ pub mod tutorial {
                     (z as f32 * 0.1).to_degrees(),
                     0.0,
                 );
-                instances.push(InstanceInput::from(glam::Mat4::from(
-                    Translation3::from(pos).to_homogeneous() * rot.to_homogeneous(),
-                )));
+                instances.push(InstanceRaw {
+                    model: (Translation3::from(pos).to_homogeneous() * rot.to_homogeneous()).into(),
+                    // normal: [
+                    //     [rot[(0, 0)], rot[(0, 1)], rot[(0, 2)]],
+                    //     [rot[(1, 0)], rot[(1, 1)], rot[(1, 2)]],
+                    //     [rot[(2, 0)], rot[(2, 1)], rot[(2, 2)]],
+                    // ],
+                });
             }
         }
         instances
@@ -366,7 +371,7 @@ pub mod tutorial {
             }
         }
 
-        fn pentagon(state: &impl WgpuContext) -> ViBuffer<VertexInput, InstanceInput> {
+        fn pentagon(state: &impl WgpuContext) -> ViBuffer<VertexInput, InstanceRaw> {
             ViBuffer::new(state.device(), PENTAGON, PENTAGON_INDEXIES, &instances())
         }
 
@@ -380,10 +385,19 @@ pub mod tutorial {
             self.ub_cam.set(state.queue(), &into_camuni(&self.cam));
         }
 
-        pub fn update(&mut self, state: &impl WgpuContext, _ts: &super::Timestamp) {
+        pub fn update(&mut self, state: &impl WgpuContext, ts: &super::Timestamp) {
             self.cc.update_camera(&mut self.cam);
             let cb = into_camuni(&self.cam);
             self.ub_cam.set(state.queue(), &cb);
+
+            // 時間でライトの位置を変化させる
+            let w = ts.elapsed.as_secs_f32().sin();
+            let pos = LIGHT_PASS[0] * w + LIGHT_PASS[1] * (1.0 - w);
+            let light = shader::Light {
+                position: pos,
+                color: Vec3::new(1.0, 1.0, 1.0),
+            };
+            self.ub_light.set(state.queue(), &light);
         }
 
         pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {

@@ -96,7 +96,8 @@ impl Pipeline {
             });
 
             render_pass.set_pipeline(&self.pipe);
-            buf.draw(&mut render_pass, 0..1);
+            buf.set(&mut render_pass, 0);
+            render_pass.draw_indexed(0..buf.index_len(), 0, 0..1);
         }
 
         state.queue().submit(std::iter::once(encoder.finish()));

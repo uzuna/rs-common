@@ -172,13 +172,13 @@ pub mod tutorial {
 
     use std::path::Path;
 
-    use glam::{Vec2, Vec3, Vec4};
-    use nalgebra::{Rotation3, Translation3, Vector3};
+    use glam::{Vec3, Vec4};
+    use nalgebra::{Rotation3, Scale3, Translation3, Vector3};
     use wgpu_shader::{
         prelude::*,
-        tutorial::{self, shader::VertexInput, *},
+        tutorial::{shader::VertexInput, *},
         uniform::UniformBuffer,
-        vertex::{VertexBuffer, ViBuffer},
+        vertex::{InstanceBuffer, VertexBuffer},
         WgpuContext,
     };
 
@@ -191,54 +191,24 @@ pub mod tutorial {
 
     type Instance = shader::InstanceInput;
 
-    const PENTAGON: &[VertexInput] = &[
-        VertexInput::new(
-            Vec3::new(-0.0868241, 0.49240386, 0.0),
-            Vec2::new(0.4131759, 0.99240386),
-        ),
-        VertexInput::new(
-            Vec3::new(-0.49513406, 0.06958647, 0.0),
-            Vec2::new(0.0048659444, 0.56958647),
-        ),
-        VertexInput::new(
-            Vec3::new(-0.21918549, -0.44939706, 0.0),
-            Vec2::new(0.28081453, 0.05060294),
-        ),
-        VertexInput::new(
-            Vec3::new(0.35966998, -0.3473291, 0.0),
-            Vec2::new(0.85967, 0.1526709),
-        ),
-        VertexInput::new(
-            Vec3::new(0.44147372, 0.2347359, 0.0),
-            Vec2::new(0.9414737, 0.7347359),
-        ),
-    ];
-
-    const PENTAGON_INDEXIES: &[u16] = &[0, 1, 4, 1, 2, 4, 2, 3, 4];
-
     // ライトの位置の時間変化
     const LIGHT_PASS: &[Vec3; 2] = &[glam::Vec3::new(2.0, 2.0, 2.0), Vec3::new(-2.0, 1.0, -2.0)];
 
-    fn instances() -> Vec<Instance> {
+    fn instances(len: i32, scale: f32, step: f32, translate: Vector3<f32>) -> Vec<Instance> {
         let mut instances = vec![];
-        let len = 10;
-        let step = 0.6;
-        let offset = (len as f32 * 0.5) * -0.5;
         for z in 0..len {
             for x in 0..len {
-                let pos: nalgebra::Matrix<
-                    f32,
-                    nalgebra::Const<3>,
-                    nalgebra::Const<1>,
-                    nalgebra::ArrayStorage<f32, 3, 1>,
-                > = Vector3::new(x as f32 * step + offset, 0.0, z as f32 * step + offset);
+                let pos = Vector3::new(x as f32 * step, 0.0, z as f32 * step) + translate;
                 let rot = Rotation3::from_euler_angles(
                     (x as f32 * 0.1).to_degrees(),
                     (z as f32 * 0.1).to_degrees(),
                     0.0,
                 );
+                let scale = Scale3::new(scale, scale, scale);
                 let mat = glam::Mat4::from(
-                    Translation3::from(pos).to_homogeneous() * rot.to_homogeneous(),
+                    Translation3::from(pos).to_homogeneous()
+                        * rot.to_homogeneous()
+                        * scale.to_homogeneous(),
                 );
                 let normal = glam::Mat4::from(rot.to_homogeneous());
                 instances.push(Instance::from((mat, normal)));
@@ -272,6 +242,16 @@ pub mod tutorial {
         material: Material,
     }
 
+    impl Model {
+        pub fn set(&self, rp: &mut wgpu::RenderPass<'_>) {
+            self.material.bg.set(rp);
+        }
+
+        pub fn index_len(&self) -> u32 {
+            self.mesh.vb.index_len()
+        }
+    }
+
     #[allow(dead_code)]
     pub struct Context {
         pipe_render: Pipeline,
@@ -280,8 +260,8 @@ pub mod tutorial {
         cc: CameraController,
         ub_cam: UniformBuffer<shader::Camera>,
         ub_light: UniformBuffer<shader::Light>,
-        m0: tutorial::Model,
         model: Model,
+        ib: InstanceBuffer<Instance>,
     }
 
     impl Context {
@@ -290,9 +270,6 @@ pub mod tutorial {
             config: &wgpu::SurfaceConfiguration,
             assets_dir: &Path,
         ) -> Self {
-            let texture_path = assets_dir.join("webgpu.png");
-            let tex = load_texture(state, &texture_path).expect("Failed to load texture");
-
             let cam = Camera::with_aspect(config.width as f32 / config.height as f32);
             let cc = CameraController::new(0.01);
             let cam_mat = into_camuni(&cam);
@@ -301,12 +278,12 @@ pub mod tutorial {
 
             let pipe_render = Pipeline::new(state.device(), config, &ub_cam, &ub_light);
 
-            let vb = Self::pentagon(state);
-
-            let m0 = tutorial::Model::new(state.device(), tex, vb);
             let model = Self::load_model(state, &assets_dir.join("models/cube/cube.obj"));
-
             let pipe_light = LightRenderPipeline::new(state.device(), config, &ub_cam, &ub_light);
+            let ib = InstanceBuffer::new(
+                state.device(),
+                &instances(10, 0.1, 0.3, Vector3::new(-2.0, 0.0, -2.0)),
+            );
 
             Self {
                 pipe_render,
@@ -315,8 +292,8 @@ pub mod tutorial {
                 cc,
                 ub_cam,
                 ub_light,
-                m0,
                 model,
+                ib,
             }
         }
 
@@ -370,10 +347,6 @@ pub mod tutorial {
             }
         }
 
-        fn pentagon(state: &impl WgpuContext) -> ViBuffer<VertexInput, Instance> {
-            ViBuffer::new(state.device(), PENTAGON, PENTAGON_INDEXIES, &instances())
-        }
-
         pub fn input(&mut self, event: &winit::event::WindowEvent) -> bool {
             self.cc.process_events(event)
         }
@@ -392,7 +365,7 @@ pub mod tutorial {
             // 時間でライトの位置を変化させる
             let w = ts.elapsed.as_secs_f32().sin();
             let pos = LIGHT_PASS[0] * w + LIGHT_PASS[1] * (1.0 - w);
-            let light = shader::Light {
+            let light: shader::Light = shader::Light {
                 position: pos,
                 color: Vec3::new(1.0, 1.0, 1.0),
             };
@@ -402,18 +375,14 @@ pub mod tutorial {
         pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
             render(state, BG_COLOR, state.depth(), |rp| {
                 let r = &self.pipe_light;
-                rp.set_pipeline(r.pipe());
-                r.bg0.set(rp);
-                r.bg1.set(rp);
-                self.model.mesh.vb.draw(rp, 0..1);
+                let vb = &self.model.mesh.vb;
+                r.set(rp, vb);
+                rp.draw_indexed(0..vb.index_len(), 0, 0..1);
 
                 let r = &self.pipe_render;
-                rp.set_pipeline(r.pipe());
-                r.bg1.set(rp);
-                r.bg2.set(rp);
-                self.m0.draw(rp);
-                self.model.material.bg.set(rp);
-                self.model.mesh.vb.draw(rp, 0..1);
+                r.set(rp, vb, &self.ib);
+                self.model.set(rp);
+                rp.draw_indexed(0..vb.index_len(), 0, 0..self.ib.len());
             })
         }
     }

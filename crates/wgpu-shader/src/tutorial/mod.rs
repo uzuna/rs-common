@@ -1,7 +1,11 @@
 use glam::Mat4;
-use wgpu::{RenderPipeline, TextureView};
+use wgpu::TextureView;
 
-use crate::{uniform::UniformBuffer, vertex::ViBuffer, WgpuContext};
+use crate::{
+    uniform::UniformBuffer,
+    vertex::{InstanceBuffer, VertexBuffer},
+    WgpuContext,
+};
 
 pub mod light;
 pub mod shader;
@@ -19,23 +23,23 @@ pub mod shader;
 pub struct Model {
     pub bg0: shader::bind_groups::BindGroup0,
     pub tex: TextureInst,
-    pub vb: ViBuffer<shader::VertexInput, shader::InstanceInput>,
+    pub vb: VertexBuffer<shader::VertexInput>,
 }
 
 impl Model {
     pub fn new(
         device: &wgpu::Device,
         tex: TextureInst,
-        vb: ViBuffer<shader::VertexInput, shader::InstanceInput>,
+        vb: VertexBuffer<shader::VertexInput>,
     ) -> Self {
         let bg0 = shader::bind_groups::BindGroup0::from_bindings(device, tex.desc());
 
         Self { bg0, tex, vb }
     }
 
-    pub fn draw(&self, pass: &mut wgpu::RenderPass) {
+    pub fn set(&self, pass: &mut wgpu::RenderPass) {
         self.bg0.set(pass);
-        self.vb.draw(pass);
+        self.vb.set(pass, 0);
     }
 }
 
@@ -139,8 +143,17 @@ impl Pipeline {
         }
     }
 
-    pub fn pipe(&self) -> &RenderPipeline {
-        &self.pipe
+    pub fn set(
+        &self,
+        pass: &mut wgpu::RenderPass,
+        vb: &VertexBuffer<shader::VertexInput>,
+        ib: &InstanceBuffer<shader::InstanceInput>,
+    ) {
+        pass.set_pipeline(&self.pipe);
+        self.bg1.set(pass);
+        self.bg2.set(pass);
+        vb.set(pass, 0);
+        ib.set(pass, 1);
     }
 }
 
@@ -207,8 +220,11 @@ impl LightRenderPipeline {
         }
     }
 
-    pub fn pipe(&self) -> &RenderPipeline {
-        &self.pipe
+    pub fn set(&self, pass: &mut wgpu::RenderPass, vb: &VertexBuffer<shader::VertexInput>) {
+        pass.set_pipeline(&self.pipe);
+        self.bg0.set(pass);
+        self.bg1.set(pass);
+        vb.set(pass, 0);
     }
 }
 

@@ -1,3 +1,4 @@
+use glam::Mat4;
 use wgpu::{RenderPipeline, TextureView};
 
 use crate::{uniform::UniformBuffer, vertex::ViBuffer, WgpuContext};
@@ -5,12 +6,12 @@ use crate::{uniform::UniformBuffer, vertex::ViBuffer, WgpuContext};
 pub mod light;
 pub mod shader;
 
-#[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct InstanceRaw {
-    pub model: [[f32; 4]; 4],
-    // pub normal: [[f32; 3]; 3],
-}
+// #[repr(C)]
+// #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+// pub struct InstanceRaw {
+//     pub model: [[f32; 4]; 4],
+//     // pub normal: [[f32; 3]; 3],
+// }
 
 /// レンダリング対象の整理
 ///
@@ -18,14 +19,14 @@ pub struct InstanceRaw {
 pub struct Model {
     pub bg0: shader::bind_groups::BindGroup0,
     pub tex: TextureInst,
-    pub vb: ViBuffer<shader::VertexInput, InstanceRaw>,
+    pub vb: ViBuffer<shader::VertexInput, shader::InstanceInput>,
 }
 
 impl Model {
     pub fn new(
         device: &wgpu::Device,
         tex: TextureInst,
-        vb: ViBuffer<shader::VertexInput, InstanceRaw>,
+        vb: ViBuffer<shader::VertexInput, shader::InstanceInput>,
     ) -> Self {
         let bg0 = shader::bind_groups::BindGroup0::from_bindings(device, tex.desc());
 
@@ -242,7 +243,7 @@ fn create_render_pipeline<'a>(
             topology: wgpu::PrimitiveTopology::default(),
             strip_index_format: None,
             front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None,
+            cull_mode: Some(wgpu::Face::Back),
             polygon_mode: wgpu::PolygonMode::Fill,
             unclipped_depth: false,
             conservative: false,
@@ -318,5 +319,20 @@ pub fn create_light() -> shader::Light {
     shader::Light {
         position: glam::Vec3::new(2.0, 2.0, 2.0),
         color: glam::Vec3::new(1.0, 1.0, 1.0),
+    }
+}
+
+impl From<(Mat4, Mat4)> for shader::InstanceInput {
+    fn from((model, normal): (Mat4, Mat4)) -> Self {
+        Self {
+            model_matrix_0: model.x_axis,
+            model_matrix_1: model.y_axis,
+            model_matrix_2: model.z_axis,
+            model_matrix_3: model.w_axis,
+            normal_matrix_0: normal.x_axis,
+            normal_matrix_1: normal.y_axis,
+            normal_matrix_2: normal.z_axis,
+            normal_matrix_3: normal.w_axis,
+        }
     }
 }

@@ -189,6 +189,8 @@ pub mod tutorial {
 
     use super::BG_COLOR;
 
+    type Instance = shader::InstanceInput;
+
     const PENTAGON: &[VertexInput] = &[
         VertexInput::new(
             Vec3::new(-0.0868241, 0.49240386, 0.0),
@@ -217,7 +219,7 @@ pub mod tutorial {
     // ライトの位置の時間変化
     const LIGHT_PASS: &[Vec3; 2] = &[glam::Vec3::new(2.0, 2.0, 2.0), Vec3::new(-2.0, 1.0, -2.0)];
 
-    fn instances() -> Vec<InstanceRaw> {
+    fn instances() -> Vec<Instance> {
         let mut instances = vec![];
         let len = 10;
         let step = 0.6;
@@ -235,14 +237,11 @@ pub mod tutorial {
                     (z as f32 * 0.1).to_degrees(),
                     0.0,
                 );
-                instances.push(InstanceRaw {
-                    model: (Translation3::from(pos).to_homogeneous() * rot.to_homogeneous()).into(),
-                    // normal: [
-                    //     [rot[(0, 0)], rot[(0, 1)], rot[(0, 2)]],
-                    //     [rot[(1, 0)], rot[(1, 1)], rot[(1, 2)]],
-                    //     [rot[(2, 0)], rot[(2, 1)], rot[(2, 2)]],
-                    // ],
-                });
+                let mat = glam::Mat4::from(
+                    Translation3::from(pos).to_homogeneous() * rot.to_homogeneous(),
+                );
+                let normal = glam::Mat4::from(rot.to_homogeneous());
+                instances.push(Instance::from((mat, normal)));
             }
         }
         instances
@@ -371,7 +370,7 @@ pub mod tutorial {
             }
         }
 
-        fn pentagon(state: &impl WgpuContext) -> ViBuffer<VertexInput, InstanceRaw> {
+        fn pentagon(state: &impl WgpuContext) -> ViBuffer<VertexInput, Instance> {
             ViBuffer::new(state.device(), PENTAGON, PENTAGON_INDEXIES, &instances())
         }
 

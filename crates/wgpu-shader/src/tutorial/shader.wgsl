@@ -33,10 +33,11 @@ struct InstanceInput {
     @location(7) model_matrix_2: vec4<f32>,
     @location(8) model_matrix_3: vec4<f32>,
     // 法線マトリックス
-    // こちらもvec3<f32>で渡す
-    // @location(9) normal_matrix_0: vec3<f32>,
-    // @location(10) normal_matrix_1: vec3<f32>,
-    // @location(11) normal_matrix_2: vec3<f32>,
+    // vec3で良いが、bytemuck::Podの仕様の関係でvec4<f32>で渡す
+    @location(9) normal_matrix_0: vec4<f32>,
+    @location(10) normal_matrix_1: vec4<f32>,
+    @location(11) normal_matrix_2: vec4<f32>,
+    @location(12) normal_matrix_3: vec4<f32>,
 }
 
 struct VertexOutput {
@@ -57,16 +58,15 @@ fn vs_main(
         instance.model_matrix_2,
         instance.model_matrix_3,
     );
-    // let normal_matrix = mat3x3<f32>(
-    //     instance.normal_matrix_0,
-    //     instance.normal_matrix_1,
-    //     instance.normal_matrix_2,
-    // );
+    let normal_matrix = mat3x3<f32>(
+        instance.normal_matrix_0.xyz,
+        instance.normal_matrix_1.xyz,
+        instance.normal_matrix_2.xyz,
+    );
     var out: VertexOutput;
     out.tex_coords = model.tex_coords;
     // 法線も移動・回転に合わせて変換
-    // out.world_normal = normal_matrix * model.normal;
-    out.world_normal = model.normal;
+    out.world_normal = normal_matrix * model.normal;
     // 頂点座標の移動・回転
     var world_position: vec4<f32> = model_matrix * vec4<f32>(model.position, 1.0);
     // 光源計算のためにワールド座標を渡す

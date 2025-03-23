@@ -24,6 +24,10 @@ pub struct InstanceInput {
     pub model_matrix_1: glam::Vec4,
     pub model_matrix_2: glam::Vec4,
     pub model_matrix_3: glam::Vec4,
+    pub normal_matrix_0: glam::Vec4,
+    pub normal_matrix_1: glam::Vec4,
+    pub normal_matrix_2: glam::Vec4,
+    pub normal_matrix_3: glam::Vec4,
 }
 pub mod bind_groups {
     #[derive(Debug)]
@@ -211,7 +215,7 @@ pub fn set_bind_groups<P: bind_groups::SetBindGroup>(
     bind_group2.set(pass);
 }
 impl InstanceInput {
-    pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
+    pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 8] = [
         wgpu::VertexAttribute {
             format: wgpu::VertexFormat::Float32x4,
             offset: std::mem::offset_of!(InstanceInput, model_matrix_0) as u64,
@@ -231,6 +235,26 @@ impl InstanceInput {
             format: wgpu::VertexFormat::Float32x4,
             offset: std::mem::offset_of!(InstanceInput, model_matrix_3) as u64,
             shader_location: 8,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: std::mem::offset_of!(InstanceInput, normal_matrix_0) as u64,
+            shader_location: 9,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: std::mem::offset_of!(InstanceInput, normal_matrix_1) as u64,
+            shader_location: 10,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: std::mem::offset_of!(InstanceInput, normal_matrix_2) as u64,
+            shader_location: 11,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: std::mem::offset_of!(InstanceInput, normal_matrix_3) as u64,
+            shader_location: 12,
         },
     ];
     pub const fn vertex_buffer_layout(

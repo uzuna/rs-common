@@ -20,6 +20,7 @@ impl shader::VertexInput {
     }
 }
 
+/// 2Dの位置を持つ点を描画するパイプライン
 pub struct Pipeline {
     pipe: wgpu::RenderPipeline,
     bg_color: wgpu::Color,

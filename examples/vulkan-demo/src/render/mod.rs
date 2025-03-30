@@ -84,7 +84,7 @@ pub mod particle {
             }
         }
 
-        pub fn input(&mut self, event: &winit::event::WindowEvent) -> bool {
+        pub fn input(&mut self, _event: &winit::event::WindowEvent) -> bool {
             false
         }
 
@@ -345,7 +345,7 @@ pub mod colored {
     use std::ops::RangeInclusive;
 
     use glam::Vec3;
-    use nalgebra::Vector3;
+    use nalgebra::{UnitQuaternion, Vector3};
 
     use wgpu_shader::{
         colored::{shader, Pipeline, PipelineInstanced},
@@ -392,6 +392,83 @@ pub mod colored {
         }
     }
 
+    /// カメラから見えているものを投影するテスト
+    struct Recam {
+        x: f32,
+        z: f32,
+        q: UnitQuaternion<f32>,
+    }
+
+    impl Recam {
+        fn new(x: f32, z: f32) -> Self {
+            let q = Self::quatenion(x, z);
+            Self { x, z, q }
+        }
+
+        fn update(&mut self) {
+            self.q = Self::quatenion(self.x, self.z);
+        }
+
+        fn quatenion(x: f32, z: f32) -> UnitQuaternion<f32> {
+            UnitQuaternion::from_euler_angles(0.0, x, z)
+        }
+    }
+
+    struct Recams {
+        // カメラとその軸表示
+        recam: Recam,
+        recam_inst: InstanceBuffer<types::instance::Isometry>,
+        // カメラから見えている物体とその表示
+        object: ObjectPrim,
+        object_inst: InstanceBuffer<types::instance::Isometry>,
+    }
+
+    impl Recams {
+        fn new(device: &wgpu::Device) -> Self {
+            let recam = Recam::new(30_f32.to_radians(), 0.0);
+            let mat = recam.q.inverse().to_homogeneous().into();
+            let recam_inst = InstanceBuffer::new(device, &[types::instance::Isometry::new(mat)]);
+            let object = ObjectPrim::new(
+                Vector3::new(3.0, 0.0, 0.0),
+                Vector3::new(3.0, 3.0, 0.0),
+                Vector3::z(),
+            );
+            // カメラの行列で変換をかけることカメラ視野 -> ワールド座標になる
+            let mat = mat * object.isometry();
+            let object_inst = InstanceBuffer::new(device, &[types::instance::Isometry::new(mat)]);
+            Self {
+                recam,
+                recam_inst,
+                object,
+                object_inst,
+            }
+        }
+
+        fn update(&mut self, queue: &wgpu::Queue) {
+            self.recam.update();
+            let mat = self.recam.q.inverse().to_homogeneous().into();
+            let inst = types::instance::Isometry::new(mat);
+            self.recam_inst.update(queue, &[inst]);
+            let mat = mat * self.object.isometry();
+            let inst = types::instance::Isometry::new(mat);
+            self.object_inst.update(queue, &[inst]);
+        }
+
+        fn draw_guide(&self, rp: &mut wgpu::RenderPass<'_>, hand: &HandBuffer) {
+            self.recam_inst.set(rp, 1);
+            rp.draw(0..hand.len(), 0..self.recam_inst.len());
+        }
+
+        fn draw_cube(
+            &self,
+            rp: &mut wgpu::RenderPass<'_>,
+            cube_vb: &VertexBuffer<types::vertex::Color4>,
+        ) {
+            self.object_inst.set(rp, 1);
+            rp.draw_indexed(0..cube_vb.index_len(), 0, 0..self.recam_inst.len());
+        }
+    }
+
     pub struct Context {
         p0: Pipeline,
         p1_line: PipelineInstanced,
@@ -400,11 +477,11 @@ pub mod colored {
         cc: CameraController,
         ub_cam: UniformBuffer<types::uniform::Camera>,
         vb: VertexBufferSimple<shader::VertexInput>,
-        // 原点の方向表示
         hand: HandBuffer,
         hands: Vec<ObjectPrim>,
         hi: InstanceBuffer<types::instance::Isometry>,
         cube_vb: VertexBuffer<types::vertex::Color4>,
+        recams: Recams,
     }
 
     impl Context {
@@ -446,6 +523,8 @@ pub mod colored {
             let hi = hands_instance(state.device(), &hands);
             let cube_vb = VertexBuffer::new(state.device(), &cube(0.2), &CUBE_INDEX);
 
+            let recams = Recams::new(state.device());
+
             Self {
                 p0,
                 p1_line: p1,
@@ -458,6 +537,7 @@ pub mod colored {
                 hands,
                 hi,
                 cube_vb,
+                recams,
             }
         }
 
@@ -468,18 +548,18 @@ pub mod colored {
                 // 頂点バッファをセットして描画
                 self.vb.set(rp, 0);
                 rp.draw(0..self.vb.len(), 0..1);
-                self.hand.set(rp, 0);
-                rp.draw(0..self.hand.len(), 0..1);
 
                 self.p1_line.set(rp);
                 self.hand.set(rp, 0);
                 self.hi.set(rp, 1);
                 rp.draw(0..self.hand.len(), 0..self.hi.len());
+                self.recams.draw_guide(rp, &self.hand);
 
                 self.p1_plane.set(rp);
                 self.cube_vb.set(rp, 0);
                 self.hi.set(rp, 1);
                 rp.draw_indexed(0..self.cube_vb.index_len(), 0, 0..self.hi.len());
+                self.recams.draw_cube(rp, &self.cube_vb);
             })
         }
 
@@ -501,6 +581,10 @@ pub mod colored {
                 .map(|h| types::instance::Isometry::new(h.offset_isometry(offset)))
                 .collect::<Vec<_>>();
             self.hi.update(state.queue(), &hands);
+
+            // カメラの向きを変える
+            self.recams.recam.z = (s * 1.5).sin() * 30_f32.to_radians();
+            self.recams.update(state.queue());
         }
     }
 

@@ -428,13 +428,13 @@ pub mod lines {
         WgpuContext,
     };
 
-    use crate::camera::{Camera, CameraController};
+    use crate::camera::{Camera, CameraController, FollowCamera};
 
     use super::{into_camuni, BG_COLOR};
 
     pub struct Context {
         pipe_render: Pipeline,
-        cam: Camera,
+        cam: FollowCamera,
         cc: CameraController,
         ub_cam: UniformBuffer<types::Camera>,
         vb: VertexBufferSimple<shader::VertexInput>,
@@ -445,8 +445,9 @@ pub mod lines {
     impl Context {
         pub fn new(state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) -> Self {
             let cam = Camera::with_aspect(config.width as f32 / config.height as f32);
-            let cc = CameraController::new(0.5);
-            let cam_mat = into_camuni(&cam);
+            let cam = FollowCamera::new(cam);
+            let cc = CameraController::new(0.05);
+            let cam_mat = into_camuni(cam.camera());
             let ub_cam = UniformBuffer::new(state.device(), cam_mat);
 
             let pipe_render = Pipeline::new(state.device(), config, &ub_cam);
@@ -480,8 +481,8 @@ pub mod lines {
         }
 
         pub fn update(&mut self, state: &impl WgpuContext, _ts: &super::Timestamp) {
-            self.cc.update_camera(&mut self.cam);
-            let cb = into_camuni(&self.cam);
+            self.cc.update_follow_camera(&mut self.cam);
+            let cb = into_camuni(self.cam.camera());
             self.ub_cam.set(state.queue(), &cb);
         }
     }

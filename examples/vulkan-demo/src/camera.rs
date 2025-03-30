@@ -1,4 +1,4 @@
-use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, Vector3};
+use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, UnitQuaternion, Vector3};
 use winit::{
     event::{ElementState, KeyEvent, WindowEvent},
     keyboard::{KeyCode, PhysicalKey},
@@ -78,9 +78,53 @@ impl Camera {
     }
 }
 
-/// winitに異存してカメラを操作する
+/// targetを中心に行って距離と周囲の移動を行うカメラ
+/// XY平面でZをUpとするカメラ
+pub struct FollowCamera {
+    camera: Camera,
+    distance: f32,
+    yaw: f32,
+    pitch: f32,
+}
+
+impl FollowCamera {
+    /// 真上と真下の回転を避けるために、pitchの範囲を制限する
+    const PITCH_MARGIN: f32 = 0.001;
+    pub fn new(camera: Camera) -> Self {
+        let distance = (camera.eye - camera.target).magnitude();
+        let pitch = (camera.target.z - camera.eye.z).atan2(distance);
+        let yaw = (camera.target.y - camera.eye.y).atan2(camera.target.x - camera.eye.x);
+        Self {
+            camera,
+            distance,
+            yaw,
+            pitch,
+        }
+    }
+
+    pub fn camera(&self) -> &Camera {
+        &self.camera
+    }
+
+    pub fn update(&mut self, up_down: f32, left_right: f32, front_back: f32) {
+        use std::f32::consts::FRAC_PI_2;
+        self.distance += front_back;
+        self.yaw += left_right;
+        self.pitch += up_down;
+        self.pitch = self
+            .pitch
+            .clamp(-FRAC_PI_2 + Self::PITCH_MARGIN, Self::PITCH_MARGIN);
+        let q = UnitQuaternion::from_euler_angles(0.0, self.pitch, self.yaw);
+        let point = self.camera.target + q * Vector3::new(self.distance, 0.0, 0.0);
+        self.camera.eye = point;
+    }
+}
+
+/// キー入力を元にカメラを操作するコントローラー
 pub struct CameraController {
     speed: f32,
+    is_up_pressed: bool,
+    is_down_pressed: bool,
     is_forward_pressed: bool,
     is_backward_pressed: bool,
     is_left_pressed: bool,
@@ -91,6 +135,8 @@ impl CameraController {
     pub fn new(speed: f32) -> Self {
         Self {
             speed,
+            is_up_pressed: false,
+            is_down_pressed: false,
             is_forward_pressed: false,
             is_backward_pressed: false,
             is_left_pressed: false,
@@ -98,6 +144,7 @@ impl CameraController {
         }
     }
 
+    /// キーイベントの読み取り
     pub fn process_events(&mut self, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::KeyboardInput {
@@ -127,6 +174,14 @@ impl CameraController {
                         self.is_right_pressed = is_pressed;
                         true
                     }
+                    KeyCode::PageUp => {
+                        self.is_up_pressed = is_pressed;
+                        true
+                    }
+                    KeyCode::PageDown => {
+                        self.is_down_pressed = is_pressed;
+                        true
+                    }
                     _ => false,
                 }
             }
@@ -134,6 +189,7 @@ impl CameraController {
         }
     }
 
+    /// カメラの位置を更新する
     pub fn update_camera(&self, camera: &mut Camera) {
         // 対象までの距離に応じてカメラの前後移動速度を変える
         let forward = camera.target - camera.eye;
@@ -161,5 +217,31 @@ impl CameraController {
         if self.is_left_pressed {
             camera.eye = camera.target - (forward - right * self.speed).normalize() * forward_mag;
         }
+    }
+
+    /// target基準でカメラの位置を更新する
+    pub fn update_follow_camera(&self, camera: &mut FollowCamera) {
+        let up_down = if self.is_up_pressed {
+            -self.speed
+        } else if self.is_down_pressed {
+            self.speed
+        } else {
+            0.0
+        };
+        let left_right = if self.is_left_pressed {
+            -self.speed
+        } else if self.is_right_pressed {
+            self.speed
+        } else {
+            0.0
+        };
+        let front_back = if self.is_forward_pressed {
+            -self.speed
+        } else if self.is_backward_pressed {
+            self.speed
+        } else {
+            0.0
+        };
+        camera.update(up_down, left_right, front_back);
     }
 }

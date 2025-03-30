@@ -345,8 +345,8 @@ pub mod colored {
     use nalgebra::{UnitQuaternion, Vector3};
 
     use wgpu_shader::{
-        colored::{Pipeline, PipelineInstanced},
-        model::{cube, hand4, CUBE_INDEX},
+        colored::{compress, Pipeline, PipelineComp, PipelineInstanced},
+        model::{cube, hand4, rect, CUBE_INDEX, RECT_INDEX},
         types,
         uniform::UniformBuffer,
         util::{render, GridDrawer},
@@ -476,21 +476,33 @@ pub mod colored {
             self.object_inst.set(rp, 1);
             rp.draw_indexed(0..cube_vb.index_len(), 0, 0..self.recam_inst.len());
         }
+
+        fn draw_shadow(
+            &self,
+            rp: &mut wgpu::RenderPass<'_>,
+            rect_vb: &VertexBuffer<types::vertex::Color4>,
+        ) {
+            self.object_inst.set(rp, 1);
+            rp.draw_indexed(0..rect_vb.index_len(), 0, 0..self.recam_inst.len());
+        }
     }
 
     pub struct Context {
         p0: Pipeline,
         p1_line: PipelineInstanced,
         p1_plane: PipelineInstanced,
+        p2_plane: PipelineComp,
         cam: FollowCamera,
         cc: CameraController,
         ub_cam: UniformBuffer<types::uniform::Camera>,
+        _ub_comp: UniformBuffer<compress::Compression>,
         vb: VertexBufferSimple<types::vertex::Color4>,
         hand: HandBuffer,
         hands: Vec<ObjectPrim>,
         hi: InstanceBuffer<types::instance::Isometry>,
         cube_vb: VertexBuffer<types::vertex::Color4>,
         recams: Recams,
+        rect_vb: VertexBuffer<types::vertex::Color4>,
     }
 
     impl Context {
@@ -514,6 +526,16 @@ pub mod colored {
                 &ub_cam,
                 wgpu::PrimitiveTopology::TriangleList,
             );
+
+            let c = compress::Compression::xy();
+            let ub_comp = UniformBuffer::new(state.device(), c);
+            let p2_plane = PipelineComp::new(
+                state.device(),
+                config,
+                &ub_cam,
+                &ub_comp,
+                wgpu::PrimitiveTopology::TriangleList,
+            );
             let vb = GridDrawer::default().gen(state.device());
             let hand = hand_arrow(state.device());
             let hands = vec![
@@ -530,6 +552,7 @@ pub mod colored {
             ];
             let hi = hands_instance(state.device(), &hands);
             let cube_vb = VertexBuffer::new(state.device(), &cube(0.2), &CUBE_INDEX);
+            let rect_vb = VertexBuffer::new(state.device(), &rect(0.2), &RECT_INDEX);
 
             let recams = Recams::new(state.device());
 
@@ -537,15 +560,18 @@ pub mod colored {
                 p0,
                 p1_line: p1,
                 p1_plane,
+                p2_plane,
                 cam,
                 cc,
                 ub_cam,
+                _ub_comp: ub_comp,
                 vb,
                 hand,
                 hands,
                 hi,
                 cube_vb,
                 recams,
+                rect_vb,
             }
         }
 
@@ -568,6 +594,12 @@ pub mod colored {
                 self.hi.set(rp, 1);
                 rp.draw_indexed(0..self.cube_vb.index_len(), 0, 0..self.hi.len());
                 self.recams.draw_cube(rp, &self.cube_vb);
+
+                self.p2_plane.set(rp);
+                self.rect_vb.set(rp, 0);
+                self.hi.set(rp, 1);
+                rp.draw_indexed(0..self.rect_vb.index_len(), 0, 0..self.hi.len());
+                self.recams.draw_shadow(rp, &self.rect_vb);
             })
         }
 

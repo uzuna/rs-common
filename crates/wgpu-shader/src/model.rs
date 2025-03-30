@@ -93,3 +93,17 @@ pub fn cube(length: f32) -> [Color4; 8] {
     }
     cube
 }
+
+// XY平面の四角形の頂点データ
+pub fn rect(length: f32) -> [Color4; 4] {
+    let l = length / 2.0;
+    [
+        Color4::new(Vec4::new(-l, -l, 0.0, 1.0), V4Y),
+        Color4::new(Vec4::new(l, -l, 0.0, 1.0), V4X),
+        Color4::new(Vec4::new(-l, l, 0.0, 1.0), V4Y),
+        Color4::new(Vec4::new(l, l, 0.0, 1.0), V4X),
+    ]
+}
+
+/// [rect]のインデックスデータ
+pub const RECT_INDEX: [u16; 6] = [0, 1, 2, 1, 3, 2];

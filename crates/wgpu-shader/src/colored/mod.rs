@@ -6,6 +6,8 @@ use crate::{common, types, uniform::UniformBuffer};
 pub mod instanced;
 #[rustfmt::skip]
 pub mod shader;
+#[rustfmt::skip]
+pub mod compress;
 
 pub struct Pipeline {
     pipe: wgpu::RenderPipeline,
@@ -108,5 +110,80 @@ impl PipelineInstanced {
     pub fn set(&self, pass: &mut wgpu::RenderPass) {
         pass.set_pipeline(&self.pipe);
         self.bg0.set(pass);
+    }
+}
+
+/// 特定の座標データを圧縮、伸長するシェーダー
+/// Zを0にすることでシャドウの代わりに使うことを想定している
+pub struct PipelineComp {
+    pipe: wgpu::RenderPipeline,
+    bg0: compress::bind_groups::BindGroup0,
+    bg1: compress::bind_groups::BindGroup1,
+    _topology: PrimitiveTopology,
+}
+
+impl PipelineComp {
+    /// パイプラインの構築
+    pub fn new(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        camera: &UniformBuffer<types::uniform::Camera>,
+        comp: &UniformBuffer<compress::Compression>,
+        topology: PrimitiveTopology,
+    ) -> Self {
+        use compress as s;
+        let shader = s::create_shader_module(device);
+
+        let layout = s::create_pipeline_layout(device);
+        let fs_target = common::create_fs_target(config.format);
+        let ve = s::vs_main_entry(wgpu::VertexStepMode::Vertex, wgpu::VertexStepMode::Instance);
+        let vs = s::vertex_state(&shader, &ve);
+        let fe = s::fs_main_entry(fs_target);
+        let fs = s::fragment_state(&shader, &fe);
+
+        let pipeline = common::create_render_pipeline(
+            device,
+            &layout,
+            vs,
+            Some(fs),
+            Some(crate::texture::Texture::DEPTH_FORMAT),
+            topology,
+        );
+
+        let bg0 = s::bind_groups::BindGroup0::from_bindings(
+            device,
+            s::bind_groups::BindGroupLayout0 {
+                camera: camera.buffer().as_entire_buffer_binding(),
+            },
+        );
+
+        let bg1 = s::bind_groups::BindGroup1::from_bindings(
+            device,
+            s::bind_groups::BindGroupLayout1 {
+                comp: comp.buffer().as_entire_buffer_binding(),
+            },
+        );
+
+        Self {
+            pipe: pipeline,
+            bg0,
+            bg1,
+            _topology: topology,
+        }
+    }
+
+    /// レンダリング前のバインドグループ設定など
+    pub fn set(&self, pass: &mut wgpu::RenderPass) {
+        pass.set_pipeline(&self.pipe);
+        self.bg0.set(pass);
+        self.bg1.set(pass);
+    }
+}
+
+impl compress::Compression {
+    pub fn xy() -> Self {
+        Self {
+            position: glam::Vec4::new(1.0, 1.0, 0.0, 1.0),
+        }
     }
 }

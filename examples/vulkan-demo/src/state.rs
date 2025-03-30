@@ -77,7 +77,7 @@ impl<'a> State<'a> {
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: surface_caps.present_modes[0],
+            present_mode: wgpu::PresentMode::AutoVsync, // 垂直同期60fpsなどに制限
             alpha_mode: surface_caps.alpha_modes[0],
             desired_maximum_frame_latency: 2,
             view_formats: vec![],

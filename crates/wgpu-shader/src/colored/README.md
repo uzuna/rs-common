@@ -25,3 +25,10 @@ Shaderとしては上だけあれば残りの表現は可能
 こちらを参考にする。
 https://mattdesl.svbtle.com/drawing-lines-is-hard
 https://github.com/spite/THREE.MeshLine
+
+### 法線とマイター結合
+
+頂点に対して行きと帰りの法線を描く。
+法線方向に頂点を動かすことで先の厚みを表現できる。
+角の形状がいくるかあり、マイター(miter)、ラウンド、ベベルとある。
+一般的なのはマイターのようなのでこれを使う

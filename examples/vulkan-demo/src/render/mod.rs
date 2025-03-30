@@ -345,7 +345,7 @@ pub mod colored {
     use nalgebra::{UnitQuaternion, Vector3};
 
     use wgpu_shader::{
-        colored::{compress, Pipeline, PipelineComp, PipelineInstanced},
+        colored::{compress, PipelineComp, PipelineInstanced, PipelinePrim},
         model::{cube, hand4, rect, CUBE_INDEX, RECT_INDEX},
         types,
         uniform::UniformBuffer,
@@ -488,7 +488,7 @@ pub mod colored {
     }
 
     pub struct Context {
-        p0: Pipeline,
+        p0: PipelinePrim,
         p1_line: PipelineInstanced,
         p1_plane: PipelineInstanced,
         p2_plane: PipelineComp,
@@ -513,7 +513,7 @@ pub mod colored {
             let cam_mat = into_camuni(cam.camera());
             let ub_cam = UniformBuffer::new(state.device(), cam_mat);
 
-            let p0 = Pipeline::new(state.device(), config, &ub_cam);
+            let p0 = PipelinePrim::new(state.device(), config, &ub_cam);
             let p1 = PipelineInstanced::new(
                 state.device(),
                 config,

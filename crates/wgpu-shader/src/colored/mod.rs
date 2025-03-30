@@ -9,12 +9,14 @@ pub mod shader;
 #[rustfmt::skip]
 pub mod compress;
 
-pub struct Pipeline {
+/// LinePrimitiveによる描画用のパイプライン
+/// 処理負荷は少ないがデバイス依存があり演出的な表現が難しい
+pub struct PipelinePrim {
     pipe: wgpu::RenderPipeline,
     bg0: shader::bind_groups::BindGroup0,
 }
 
-impl Pipeline {
+impl PipelinePrim {
     /// パイプラインの構築
     pub fn new(
         device: &wgpu::Device,
@@ -59,6 +61,7 @@ impl Pipeline {
     }
 }
 
+/// 頂点とインスタンスを用いた描画用のパイプライン
 pub struct PipelineInstanced {
     pipe: wgpu::RenderPipeline,
     bg0: instanced::bind_groups::BindGroup0,

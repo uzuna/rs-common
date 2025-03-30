@@ -29,7 +29,13 @@ pub mod instance {
     /// インスタンスごとに異なるTRS(Translation, Rotation, Scale)を持つ場合の型
     #[repr(C)]
     #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-    pub struct Position {
-        pub model: glam::Mat4,
+    pub struct Isometry {
+        pub iso: glam::Mat4,
+    }
+
+    impl Isometry {
+        pub const fn new(iso: glam::Mat4) -> Self {
+            Self { iso }
+        }
     }
 }

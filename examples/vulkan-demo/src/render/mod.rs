@@ -419,30 +419,64 @@ pub mod lines {
     use std::ops::RangeInclusive;
 
     use glam::Vec3;
+    use nalgebra::Vector3;
+
     use wgpu_shader::{
-        lines::{shader, Pipeline},
+        lines::{shader, Pipeline, PipelineInstanced},
         model::hand4,
         types,
         uniform::UniformBuffer,
         util::render,
-        vertex::VertexBufferSimple,
+        vertex::{InstanceBuffer, VertexBufferSimple},
         WgpuContext,
     };
 
-    use crate::camera::{Camera, CameraController, FollowCamera};
+    use crate::camera::{Camera, CameraController, FollowCamera, ROTATION_FACE_Z_TO_X};
 
     use super::{into_camuni, BG_COLOR};
 
     type HandBuffer = VertexBufferSimple<types::vertex::Color4>;
 
+    pub struct ObjectPrim {
+        // 位置
+        pub pos: Vector3<f32>,
+        pub target: Vector3<f32>,
+        // 上方向
+        pub up: Vector3<f32>,
+    }
+
+    impl ObjectPrim {
+        pub fn new(pos: Vector3<f32>, target: Vector3<f32>, up: Vector3<f32>) -> Self {
+            Self { pos, target, up }
+        }
+
+        pub fn isometry(&self) -> glam::Mat4 {
+            let t = nalgebra::Translation3::from(self.pos);
+            let r = nalgebra::Rotation3::look_at_rh(&(self.target - self.pos), &self.up).inverse();
+            glam::Mat4::from(t.to_homogeneous() * r.to_homogeneous() * ROTATION_FACE_Z_TO_X)
+        }
+
+        /// レンダリング時に与えられるオフセットを考慮して位置補正行列を返す
+        pub fn offset_isometry(&self, offset: Vector3<f32>) -> glam::Mat4 {
+            let pos = self.pos + offset;
+            let t = nalgebra::Translation3::from(pos);
+            // ターゲットの方向を向かせるため、ターゲット向けのベクトルを作成、look_at_rhしてその逆行列を取る
+            let r = nalgebra::Rotation3::look_at_rh(&(pos - self.target), &self.up).inverse();
+            glam::Mat4::from(t.to_homogeneous() * r.to_homogeneous() * ROTATION_FACE_Z_TO_X)
+        }
+    }
+
     pub struct Context {
-        pipe_render: Pipeline,
+        p0: Pipeline,
+        p1: PipelineInstanced,
         cam: FollowCamera,
         cc: CameraController,
         ub_cam: UniformBuffer<types::uniform::Camera>,
         vb: VertexBufferSimple<shader::VertexInput>,
         // 原点の方向表示
         hand: HandBuffer,
+        hands: Vec<ObjectPrim>,
+        hi: InstanceBuffer<types::instance::Isometry>,
     }
 
     impl Context {
@@ -453,30 +487,52 @@ pub mod lines {
             let cam_mat = into_camuni(cam.camera());
             let ub_cam = UniformBuffer::new(state.device(), cam_mat);
 
-            let pipe_render = Pipeline::new(state.device(), config, &ub_cam);
+            let p0 = Pipeline::new(state.device(), config, &ub_cam);
+            let p1 = PipelineInstanced::new(state.device(), config, &ub_cam);
 
             let vb = grid_lines(state.device());
             let hand = hand_arrow(state.device());
+            let hands = vec![
+                ObjectPrim::new(
+                    Vector3::new(1.0, 0.0, 0.0),
+                    Vector3::new(0.0, 0.0, 0.0),
+                    Vector3::z(),
+                ),
+                ObjectPrim::new(
+                    Vector3::new(0.0, 1.0, 0.5),
+                    Vector3::new(0.0, 0.0, 0.0),
+                    Vector3::z(),
+                ),
+            ];
+            let hi = hands_instance(state.device(), &hands);
 
             Self {
-                pipe_render,
+                p0,
+                p1,
                 cam,
                 cc,
                 ub_cam,
                 vb,
                 hand,
+                hands,
+                hi,
             }
         }
 
         /// レンダリング
         pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
             render(state, BG_COLOR, state.depth(), |rp| {
-                self.pipe_render.set(rp);
+                self.p0.set(rp);
                 // 頂点バッファをセットして描画
                 self.vb.set(rp, 0);
                 rp.draw(0..self.vb.len(), 0..1);
                 self.hand.set(rp, 0);
                 rp.draw(0..self.hand.len(), 0..1);
+
+                self.p1.set(rp);
+                self.hand.set(rp, 0);
+                self.hi.set(rp, 1);
+                rp.draw(0..self.hand.len(), 0..self.hi.len());
             })
         }
 
@@ -484,10 +540,20 @@ pub mod lines {
             self.cc.process_events(event)
         }
 
-        pub fn update(&mut self, state: &impl WgpuContext, _ts: &super::Timestamp) {
+        pub fn update(&mut self, state: &impl WgpuContext, ts: &super::Timestamp) {
             self.cc.update_follow_camera(&mut self.cam);
             let cb = into_camuni(self.cam.camera());
             self.ub_cam.set(state.queue(), &cb);
+
+            // 時間経過でXY平面方向に移動
+            let s = ts.elapsed.as_secs_f32();
+            let offset = Vector3::new(s.sin() * 2.0, s.cos(), 0.0);
+            let hands = self
+                .hands
+                .iter()
+                .map(|h| types::instance::Isometry::new(h.offset_isometry(offset)))
+                .collect::<Vec<_>>();
+            self.hi.update(state.queue(), &hands);
         }
     }
 
@@ -579,6 +645,17 @@ pub mod lines {
     /// 3D空間での矢印を描画する。原点からXYZ方向にそれぞれ0.3mの長さを持つ
     pub fn hand_arrow(device: &wgpu::Device) -> HandBuffer {
         VertexBufferSimple::new(device, &hand4(0.3), Some("Hand Arrow"))
+    }
+
+    pub fn hands_instance(
+        device: &wgpu::Device,
+        hands: &[ObjectPrim],
+    ) -> InstanceBuffer<types::instance::Isometry> {
+        let mut instances = vec![];
+        for h in hands.iter() {
+            instances.push(types::instance::Isometry::new(h.isometry()));
+        }
+        InstanceBuffer::new(device, &instances)
     }
 }
 

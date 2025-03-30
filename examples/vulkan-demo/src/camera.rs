@@ -12,6 +12,15 @@ pub const OPENGL_TO_WGPU_MATRIX: Matrix4<f32> = Matrix4::new(
     0.0, 0.0, 0.0, 1.0,
 );
 
+/// CG系のZ軸前からROS系のX軸前に変換する行列
+#[rustfmt::skip]
+pub const ROTATION_FACE_Z_TO_X: Matrix4<f32> = Matrix4::new(
+    0.0, 1.0, 0.0, 0.0,
+    0.0, 0.0, 1.0, 0.0,
+    1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 1.0,
+);
+
 pub struct Camera {
     eye: Point3<f32>,
     target: Point3<f32>,
@@ -26,8 +35,8 @@ impl Camera {
     /// アスペクト比を指定してよく使う設定値でカメラを作成する
     pub fn with_aspect(aspect: f32) -> Self {
         Self {
-            eye: Point3::new(-2.0, 0.0, 1.0),
-            target: Point3::new(0.0, 0.0, 0.0),
+            eye: Point3::new(-3.0, 0.0, 1.7),
+            target: Point3::new(0.0, 0.0, 0.2),
             up: Vector3::z(),
             aspect,
             fovy: 45.0,
@@ -93,7 +102,8 @@ impl FollowCamera {
     pub fn new(camera: Camera) -> Self {
         let distance = (camera.eye - camera.target).magnitude();
         let pitch = (camera.target.z - camera.eye.z).atan2(distance);
-        let yaw = (camera.target.y - camera.eye.y).atan2(camera.target.x - camera.eye.x);
+        let yaw = (camera.target.y - camera.eye.y).atan2(camera.target.x - camera.eye.x)
+            + std::f32::consts::PI;
         Self {
             camera,
             distance,

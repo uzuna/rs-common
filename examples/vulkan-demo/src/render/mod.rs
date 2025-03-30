@@ -414,7 +414,7 @@ pub mod tutorial {
     }
 }
 
-pub mod lines {
+pub mod colored {
 
     use std::ops::RangeInclusive;
 
@@ -422,12 +422,12 @@ pub mod lines {
     use nalgebra::Vector3;
 
     use wgpu_shader::{
-        lines::{shader, Pipeline, PipelineInstanced},
-        model::hand4,
+        colored::{shader, Pipeline, PipelineInstanced},
+        model::{cube, hand4, CUBE_INDEX},
         types,
         uniform::UniformBuffer,
         util::render,
-        vertex::{InstanceBuffer, VertexBufferSimple},
+        vertex::{InstanceBuffer, VertexBuffer, VertexBufferSimple},
         WgpuContext,
     };
 
@@ -468,7 +468,8 @@ pub mod lines {
 
     pub struct Context {
         p0: Pipeline,
-        p1: PipelineInstanced,
+        p1_line: PipelineInstanced,
+        p1_plane: PipelineInstanced,
         cam: FollowCamera,
         cc: CameraController,
         ub_cam: UniformBuffer<types::uniform::Camera>,
@@ -477,6 +478,7 @@ pub mod lines {
         hand: HandBuffer,
         hands: Vec<ObjectPrim>,
         hi: InstanceBuffer<types::instance::Isometry>,
+        cube_vb: VertexBuffer<types::vertex::Color4>,
     }
 
     impl Context {
@@ -488,7 +490,18 @@ pub mod lines {
             let ub_cam = UniformBuffer::new(state.device(), cam_mat);
 
             let p0 = Pipeline::new(state.device(), config, &ub_cam);
-            let p1 = PipelineInstanced::new(state.device(), config, &ub_cam);
+            let p1 = PipelineInstanced::new(
+                state.device(),
+                config,
+                &ub_cam,
+                wgpu::PrimitiveTopology::LineList,
+            );
+            let p1_plane = PipelineInstanced::new(
+                state.device(),
+                config,
+                &ub_cam,
+                wgpu::PrimitiveTopology::TriangleList,
+            );
 
             let vb = grid_lines(state.device());
             let hand = hand_arrow(state.device());
@@ -505,10 +518,12 @@ pub mod lines {
                 ),
             ];
             let hi = hands_instance(state.device(), &hands);
+            let cube_vb = VertexBuffer::new(state.device(), &cube(0.2), &CUBE_INDEX);
 
             Self {
                 p0,
-                p1,
+                p1_line: p1,
+                p1_plane,
                 cam,
                 cc,
                 ub_cam,
@@ -516,6 +531,7 @@ pub mod lines {
                 hand,
                 hands,
                 hi,
+                cube_vb,
             }
         }
 
@@ -529,10 +545,15 @@ pub mod lines {
                 self.hand.set(rp, 0);
                 rp.draw(0..self.hand.len(), 0..1);
 
-                self.p1.set(rp);
+                self.p1_line.set(rp);
                 self.hand.set(rp, 0);
                 self.hi.set(rp, 1);
                 rp.draw(0..self.hand.len(), 0..self.hi.len());
+
+                self.p1_plane.set(rp);
+                self.cube_vb.set(rp, 0);
+                self.hi.set(rp, 1);
+                rp.draw_indexed(0..self.cube_vb.index_len(), 0, 0..self.hi.len());
             })
         }
 

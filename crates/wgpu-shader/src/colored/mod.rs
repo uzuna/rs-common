@@ -2,7 +2,9 @@ use wgpu::PrimitiveTopology;
 
 use crate::{common, types, uniform::UniformBuffer};
 
+#[rustfmt::skip]
 pub mod instanced;
+#[rustfmt::skip]
 pub mod shader;
 
 pub struct Pipeline {
@@ -58,6 +60,7 @@ impl Pipeline {
 pub struct PipelineInstanced {
     pipe: wgpu::RenderPipeline,
     bg0: instanced::bind_groups::BindGroup0,
+    _topology: PrimitiveTopology,
 }
 
 impl PipelineInstanced {
@@ -66,6 +69,7 @@ impl PipelineInstanced {
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
         camera: &UniformBuffer<types::uniform::Camera>,
+        topology: PrimitiveTopology,
     ) -> Self {
         let shader = instanced::create_shader_module(device);
 
@@ -83,7 +87,7 @@ impl PipelineInstanced {
             vs,
             Some(fs),
             Some(crate::texture::Texture::DEPTH_FORMAT),
-            PrimitiveTopology::LineList,
+            topology,
         );
 
         let bg0 = instanced::bind_groups::BindGroup0::from_bindings(
@@ -96,6 +100,7 @@ impl PipelineInstanced {
         Self {
             pipe: pipeline,
             bg0,
+            _topology: topology,
         }
     }
 

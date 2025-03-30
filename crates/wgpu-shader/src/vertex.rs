@@ -40,8 +40,8 @@ where
 
 /// 頂点とインデックスで構成するVertexBuffer
 pub struct VertexBuffer<V> {
-    pub buf: wgpu::Buffer,
-    pub index: wgpu::Buffer,
+    buf: wgpu::Buffer,
+    index: wgpu::Buffer,
     index_len: u32,
     phantom: std::marker::PhantomData<V>,
 }

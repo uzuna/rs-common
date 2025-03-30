@@ -60,3 +60,36 @@ pub fn hand4(length: f32) -> [Color4; 6] {
     }
     hand
 }
+
+/// 幅1.0の立方体の頂点データ
+/// 前方が赤、後方上が青、後方下が緑となっている
+pub const CUBE: [Color4; 8] = [
+    Color4::new(Vec4::new(-0.5, -0.5, -0.5, 1.0), V4Y),
+    Color4::new(Vec4::new(0.5, -0.5, -0.5, 1.0), V4X),
+    Color4::new(Vec4::new(-0.5, -0.5, 0.5, 1.0), V4Z),
+    Color4::new(Vec4::new(0.5, -0.5, 0.5, 1.0), V4X),
+    Color4::new(Vec4::new(-0.5, 0.5, -0.5, 1.0), V4Y),
+    Color4::new(Vec4::new(0.5, 0.5, -0.5, 1.0), V4X),
+    Color4::new(Vec4::new(-0.5, 0.5, 0.5, 1.0), V4Z),
+    Color4::new(Vec4::new(0.5, 0.5, 0.5, 1.0), V4X),
+];
+
+/// [CUBE]のインデックスデータ
+pub const CUBE_INDEX: [u16; 36] = [
+    0, 1, 2, 1, 3, 2, // left
+    6, 4, 2, 4, 0, 2, // front
+    6, 7, 4, 7, 5, 4, // right
+    4, 5, 0, 5, 1, 0, // bottom
+    5, 7, 1, 7, 3, 1, // back
+    7, 6, 3, 6, 2, 3, // top
+];
+
+/// [CUBE]の長さを指定して頂点データを生成する
+pub fn cube(length: f32) -> [Color4; 8] {
+    let mut cube = CUBE;
+    for c in cube.iter_mut() {
+        c.position *= length;
+        c.position.w = 1.0;
+    }
+    cube
+}

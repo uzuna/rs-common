@@ -107,7 +107,8 @@ pub async fn run(c: RunConfig) -> Result<(), JsError> {
     // init render uniform
 
     let u_w = particle::shader::Window {
-        resolution: [width as f32, height as f32, 1.0, 0.0].into(),
+        resolution: [width as f32, height as f32].into(),
+        pixel_size: [10.0, 10.0].into(),
     };
 
     let uniform = UniformBuffer::new(state.device(), u_w);

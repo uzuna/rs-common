@@ -7,7 +7,8 @@ pub struct VertexInput {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
 pub struct Window {
-    pub resolution: glam::Vec4,
+    pub resolution: glam::Vec2,
+    pub pixel_size: glam::Vec2,
 }
 pub mod bind_groups {
     #[derive(Debug)]

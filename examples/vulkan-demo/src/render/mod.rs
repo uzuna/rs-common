@@ -56,7 +56,8 @@ pub mod particle {
     impl Context {
         pub fn new(state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) -> Self {
             let u_w = shader::Window {
-                resolution: [800.0, 600.0, 1.0, 0.0].into(),
+                resolution: [800.0, 600.0].into(),
+                pixel_size: [12.0, 12.0].into(),
             };
             let uniform = UniformBuffer::new(state.device(), u_w);
             let mut pipe = Pipeline::new(state.device(), config, &uniform);
@@ -81,6 +82,10 @@ pub mod particle {
                 vertexies: verts,
                 vb,
             }
+        }
+
+        pub fn input(&mut self, event: &winit::event::WindowEvent) -> bool {
+            false
         }
 
         pub fn update(&mut self, _state: &impl WgpuContext, _ts: &Timestamp) {}

@@ -342,17 +342,14 @@ pub mod tutorial {
 
 pub mod colored {
 
-    use std::ops::RangeInclusive;
-
-    use glam::Vec3;
     use nalgebra::{UnitQuaternion, Vector3};
 
     use wgpu_shader::{
-        colored::{shader, Pipeline, PipelineInstanced},
+        colored::{Pipeline, PipelineInstanced},
         model::{cube, hand4, CUBE_INDEX},
         types,
         uniform::UniformBuffer,
-        util::render,
+        util::{render, GridDrawer},
         vertex::{InstanceBuffer, VertexBuffer, VertexBufferSimple},
         WgpuContext,
     };
@@ -397,12 +394,13 @@ pub mod colored {
         x: f32,
         z: f32,
         q: UnitQuaternion<f32>,
+        pos: Vector3<f32>,
     }
 
     impl Recam {
-        fn new(x: f32, z: f32) -> Self {
+        fn new(x: f32, z: f32, pos: Vector3<f32>) -> Self {
             let q = Self::quatenion(x, z);
-            Self { x, z, q }
+            Self { x, z, q, pos }
         }
 
         fn update(&mut self) {
@@ -411,6 +409,17 @@ pub mod colored {
 
         fn quatenion(x: f32, z: f32) -> UnitQuaternion<f32> {
             UnitQuaternion::from_euler_angles(0.0, x, z)
+        }
+
+        fn translate(&self) -> glam::Mat4 {
+            let t = nalgebra::Translation3::from(self.pos);
+            glam::Mat4::from(t.to_homogeneous())
+        }
+
+        fn isometry(&self) -> glam::Mat4 {
+            let t = self.translate();
+            let r = glam::Mat4::from(self.q.inverse().to_homogeneous());
+            t * r
         }
     }
 
@@ -425,8 +434,8 @@ pub mod colored {
 
     impl Recams {
         fn new(device: &wgpu::Device) -> Self {
-            let recam = Recam::new(30_f32.to_radians(), 0.0);
-            let mat = recam.q.inverse().to_homogeneous().into();
+            let recam = Recam::new(30_f32.to_radians(), 0.0, Vector3::new(0.0, 0.0, 0.4));
+            let mat = recam.isometry();
             let recam_inst = InstanceBuffer::new(device, &[types::instance::Isometry::new(mat)]);
             let object = ObjectPrim::new(
                 Vector3::new(3.0, 0.0, 0.0),
@@ -446,7 +455,7 @@ pub mod colored {
 
         fn update(&mut self, queue: &wgpu::Queue) {
             self.recam.update();
-            let mat = self.recam.q.inverse().to_homogeneous().into();
+            let mat = self.recam.isometry();
             let inst = types::instance::Isometry::new(mat);
             self.recam_inst.update(queue, &[inst]);
             let mat = mat * self.object.isometry();
@@ -476,7 +485,7 @@ pub mod colored {
         cam: FollowCamera,
         cc: CameraController,
         ub_cam: UniformBuffer<types::uniform::Camera>,
-        vb: VertexBufferSimple<shader::VertexInput>,
+        vb: VertexBufferSimple<types::vertex::Color4>,
         hand: HandBuffer,
         hands: Vec<ObjectPrim>,
         hi: InstanceBuffer<types::instance::Isometry>,
@@ -505,8 +514,7 @@ pub mod colored {
                 &ub_cam,
                 wgpu::PrimitiveTopology::TriangleList,
             );
-
-            let vb = grid_lines(state.device());
+            let vb = GridDrawer::default().gen(state.device());
             let hand = hand_arrow(state.device());
             let hands = vec![
                 ObjectPrim::new(
@@ -582,95 +590,11 @@ pub mod colored {
                 .collect::<Vec<_>>();
             self.hi.update(state.queue(), &hands);
 
-            // カメラの向きを変える
+            // カメラの位置と向きを変える
+            self.recams.recam.pos = Vector3::new(s.cos() * 0.5, 0.0, 0.2);
             self.recams.recam.z = (s * 1.5).sin() * 30_f32.to_radians();
             self.recams.update(state.queue());
         }
-    }
-
-    // 1m間隔で10m分XYのグリッドを描画する
-    // Y軸は緑、X軸は赤、Z軸は青
-    pub fn grid_lines(device: &wgpu::Device) -> VertexBufferSimple<shader::VertexInput> {
-        #[allow(unused)]
-        enum Axis {
-            X,
-            Y,
-            Z,
-        }
-
-        struct Loop {
-            v: Axis,
-            range: (i32, i32),
-        }
-
-        impl Loop {
-            fn with_unit_x(x: i32) -> Self {
-                Self {
-                    v: Axis::X,
-                    range: (-x, x),
-                }
-            }
-            fn with_unit_y(y: i32) -> Self {
-                Self {
-                    v: Axis::Y,
-                    range: (-y, y),
-                }
-            }
-
-            fn unit(&self) -> Vec3 {
-                match self.v {
-                    Axis::X => Vec3::new(1.0, 0.0, 0.0),
-                    Axis::Y => Vec3::new(0.0, 1.0, 0.0),
-                    Axis::Z => Vec3::new(0.0, 0.0, 1.0),
-                }
-            }
-
-            fn range(&self) -> RangeInclusive<i32> {
-                self.range.0..=self.range.1
-            }
-
-            fn min_max_vec(&self) -> (Vec3, Vec3) {
-                let unit = match self.v {
-                    Axis::X => Vec3::new(1.0, 0.0, 0.0),
-                    Axis::Y => Vec3::new(0.0, 1.0, 0.0),
-                    Axis::Z => Vec3::new(0.0, 0.0, 1.0),
-                };
-                let min = unit * self.range.0 as f32;
-                let max = unit * self.range.1 as f32;
-                (min, max)
-            }
-
-            fn range_vec(&self) -> impl Iterator<Item = Vec3> {
-                let mut v = vec![];
-                for i in self.range() {
-                    v.push(self.unit() * i as f32);
-                }
-                v.into_iter()
-            }
-        }
-
-        let mut lines = vec![];
-        let loops = [
-            (Loop::with_unit_x(10), Loop::with_unit_y(10)),
-            (Loop::with_unit_y(10), Loop::with_unit_x(10)),
-        ];
-        for (fixed, moving) in loops.iter() {
-            let color = fixed.unit().extend(1.0);
-            for v in moving.range_vec() {
-                let (min, max) = fixed.min_max_vec();
-                let min = v + min;
-                let max = v + max;
-                lines.push(shader::VertexInput {
-                    position: min.extend(1.0),
-                    color,
-                });
-                lines.push(shader::VertexInput {
-                    position: max.extend(1.0),
-                    color,
-                });
-            }
-        }
-        VertexBufferSimple::new(device, &lines, Some("Grid Lines"))
     }
 
     /// 3D空間での矢印を描画する。原点からXYZ方向にそれぞれ0.3mの長さを持つ

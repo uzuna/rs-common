@@ -9,6 +9,21 @@ pub mod uniform {
 }
 
 pub mod vertex {
+
+    /// 色付き頂点型
+    #[repr(C)]
+    #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+    pub struct Color3 {
+        pub position: glam::Vec3,
+        pub color: glam::Vec3,
+    }
+
+    impl Color3 {
+        pub const fn new(position: glam::Vec3, color: glam::Vec3) -> Self {
+            Self { position, color }
+        }
+    }
+
     /// 色付き頂点型
     #[repr(C)]
     #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]

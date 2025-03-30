@@ -1,6 +1,5 @@
 pub mod colored;
 pub(crate) mod common;
-pub mod introduction;
 pub mod model;
 pub mod particle;
 pub mod prelude;

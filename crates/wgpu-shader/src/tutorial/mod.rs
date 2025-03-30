@@ -13,13 +13,6 @@ pub mod light;
 #[rustfmt::skip]
 pub mod shader;
 
-// #[repr(C)]
-// #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-// pub struct InstanceRaw {
-//     pub model: [[f32; 4]; 4],
-//     // pub normal: [[f32; 3]; 3],
-// }
-
 /// レンダリング対象の整理
 ///
 /// 頂点とインスタンスとそのテクスチャで一つのレンダリング対象なのでまとめて扱う

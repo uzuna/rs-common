@@ -58,9 +58,8 @@ pub async fn run(app_env: env::AppEnv, timeout: Option<Duration>) {
     let mut surface_configured = false;
     let timer = render::Timer::new();
 
-    // let mut r = render::particle::Context::new(&state, state.config());
-    // let mut r = render::introduction::Context::new(&state, state.config());
-    let r = render::tutorial::Context::new(&state, state.config(), &app_env.assets);
+    let _r = render::particle::Context::new(&state, state.config());
+    let _r = render::tutorial::Context::new(&state, state.config(), &app_env.assets);
 
     // 有効なのは1つだけ
     let mut r = render::colored::Context::new(&state, state.config());

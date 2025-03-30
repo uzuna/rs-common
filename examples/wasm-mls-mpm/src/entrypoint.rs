@@ -2,7 +2,7 @@ use mls_mpm::ElasticConfig;
 use nalgebra::Vector2;
 use rand::Rng;
 use wasm_util::util::get_performance;
-use wgpu_shader::{particle, prelude::*, uniform::UniformBuffer, vertex::VertexBufferInstanced};
+use wgpu_shader::{particle, prelude::*, uniform::UniformBuffer, vertex::VertexBufferSimple};
 use winit::{
     event::*,
     event_loop::EventLoop,
@@ -116,7 +116,7 @@ pub async fn run(c: RunConfig) -> Result<(), JsError> {
     let pipe = particle::Pipeline::new(state.device(), state.config(), &uniform);
 
     // init vertex
-    let vb = VertexBufferInstanced::new(state.device(), &verts, Some("Vertex Buffer"));
+    let vb = VertexBufferSimple::new(state.device(), &verts, Some("Vertex Buffer"));
 
     event_loop
         .run(move |event, control_flow| {

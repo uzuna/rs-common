@@ -1,5 +1,5 @@
 use crate::{
-    common::create_fs_target, uniform::UniformBuffer, vertex::VertexBufferInstanced, WgpuContext,
+    common::create_fs_target, uniform::UniformBuffer, vertex::VertexBufferSimple, WgpuContext,
 };
 
 #[rustfmt::skip]
@@ -91,7 +91,7 @@ impl Pipeline {
     pub fn render(
         &self,
         state: &impl WgpuContext,
-        buf: &VertexBufferInstanced<shader::VertexInput>,
+        buf: &VertexBufferSimple<shader::VertexInput>,
     ) -> Result<(), wgpu::SurfaceError> {
         let output = state.surface().get_current_texture()?;
         let view = output
@@ -123,7 +123,8 @@ impl Pipeline {
             render_pass.set_pipeline(&self.pipe);
             self.bind_group.set(&mut render_pass);
             // shaderが6頂点を描画する仕様になっている
-            buf.draw(&mut render_pass, 0..6);
+            buf.set(&mut render_pass, 0);
+            render_pass.draw(0..6, 0..buf.len());
         }
 
         state.queue().submit(std::iter::once(encoder.finish()));

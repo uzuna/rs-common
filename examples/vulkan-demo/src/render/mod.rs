@@ -40,7 +40,7 @@ pub struct Timestamp {
 
 pub mod particle {
     use wgpu_shader::{
-        particle::*, uniform::UniformBuffer, vertex::VertexBufferInstanced, WgpuContext,
+        particle::*, uniform::UniformBuffer, vertex::VertexBufferSimple, WgpuContext,
     };
 
     use super::Timestamp;
@@ -50,7 +50,7 @@ pub mod particle {
         pipe: Pipeline,
         uniform: UniformBuffer<shader::Window>,
         vertexies: Vec<shader::VertexInput>,
-        vb: VertexBufferInstanced<shader::VertexInput>,
+        vb: VertexBufferSimple<shader::VertexInput>,
     }
 
     impl Context {
@@ -74,7 +74,7 @@ pub mod particle {
                 }
             }
 
-            let vb = VertexBufferInstanced::new(state.device(), &verts, Some("Vertex Buffer"));
+            let vb = VertexBufferSimple::new(state.device(), &verts, Some("Vertex Buffer"));
 
             Self {
                 pipe,

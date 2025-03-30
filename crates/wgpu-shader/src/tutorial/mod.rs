@@ -8,7 +8,9 @@ use crate::{
     vertex::{InstanceBuffer, VertexBuffer},
 };
 
+#[rustfmt::skip]
 pub mod light;
+#[rustfmt::skip]
 pub mod shader;
 
 // #[repr(C)]

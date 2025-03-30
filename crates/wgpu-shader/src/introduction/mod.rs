@@ -1,5 +1,6 @@
 use crate::{common::create_fs_target, vertex::VertexBuffer, WgpuContext};
 
+#[rustfmt::skip]
 pub mod shader;
 
 pub struct Pipeline {

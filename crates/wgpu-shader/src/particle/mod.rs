@@ -2,6 +2,7 @@ use crate::{
     common::create_fs_target, uniform::UniformBuffer, vertex::VertexBufferInstanced, WgpuContext,
 };
 
+#[rustfmt::skip]
 pub mod shader;
 
 impl Default for shader::VertexInput {

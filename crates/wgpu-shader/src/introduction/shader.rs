@@ -86,15 +86,19 @@ pub fn fs_main_entry(targets: [Option<wgpu::ColorTargetState>; 1]) -> FragmentEn
 pub const SOURCE: &str = include_str!("shader.wgsl");
 pub fn create_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
     let source = std::borrow::Cow::Borrowed(SOURCE);
-    device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: None,
-        source: wgpu::ShaderSource::Wgsl(source),
-    })
+    device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(source),
+        })
 }
 pub fn create_pipeline_layout(device: &wgpu::Device) -> wgpu::PipelineLayout {
-    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: None,
-        bind_group_layouts: &[],
-        push_constant_ranges: &[],
-    })
+    device
+        .create_pipeline_layout(
+            &wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[],
+                push_constant_ranges: &[],
+            },
+        )
 }

@@ -103,7 +103,7 @@ impl Pipeline {
     pub fn new(
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
-        camera: &UniformBuffer<types::Camera>,
+        camera: &UniformBuffer<types::uniform::Camera>,
         light: &UniformBuffer<shader::Light>,
     ) -> Self {
         let shader = shader::create_shader_module(device);
@@ -181,7 +181,7 @@ impl LightRenderPipeline {
     pub fn new(
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
-        camera: &UniformBuffer<types::Camera>,
+        camera: &UniformBuffer<types::uniform::Camera>,
         light: &UniformBuffer<shader::Light>,
     ) -> Self {
         let shader = light::create_shader_module(device);

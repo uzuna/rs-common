@@ -1,6 +1,8 @@
 use std::ops::Range;
 
-use crate::texture;
+use glam::Vec4;
+
+use crate::{texture, types::vertex::Color4};
 
 /// マテリアル情報
 pub struct Material {
@@ -33,4 +35,28 @@ impl<'a> DrawModel<'a> for wgpu::RenderPass<'a> {
         self.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         self.draw_indexed(0..mesh.num_indices, 0, instances);
     }
+}
+
+const ROOT: Vec4 = Vec4::new(0.0, 0.0, 0.0, 1.0);
+const V4X: Vec4 = Vec4::new(1.0, 0.0, 0.0, 1.0);
+const V4Y: Vec4 = Vec4::new(0.0, 1.0, 0.0, 1.0);
+const V4Z: Vec4 = Vec4::new(0.0, 0.0, 1.0, 1.0);
+/// 右手系左手系確認用の単位ベクトルの頂点データ
+pub const HAND4: [Color4; 6] = [
+    Color4::new(ROOT, V4X),
+    Color4::new(V4X, V4X),
+    Color4::new(ROOT, V4Y),
+    Color4::new(V4Y, V4Y),
+    Color4::new(ROOT, V4Z),
+    Color4::new(V4Z, V4Z),
+];
+
+/// [HAND4]の長さを指定して頂点データを生成する
+pub fn hand4(length: f32) -> [Color4; 6] {
+    let mut hand = HAND4;
+    for h in hand.iter_mut() {
+        h.position *= length;
+        h.position.w = 1.0;
+    }
+    hand
 }

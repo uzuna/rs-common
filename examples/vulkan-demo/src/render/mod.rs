@@ -254,7 +254,7 @@ pub mod tutorial {
         pipe_light: LightRenderPipeline,
         cam: Camera,
         cc: CameraController,
-        ub_cam: UniformBuffer<types::Camera>,
+        ub_cam: UniformBuffer<types::uniform::Camera>,
         ub_light: UniformBuffer<shader::Light>,
         model: Model,
         ib: InstanceBuffer<Instance>,
@@ -418,9 +418,10 @@ pub mod lines {
 
     use std::ops::RangeInclusive;
 
-    use glam::{Vec3, Vec4};
+    use glam::Vec3;
     use wgpu_shader::{
         lines::{shader, Pipeline},
+        model::hand4,
         types,
         uniform::UniformBuffer,
         util::render,
@@ -432,14 +433,16 @@ pub mod lines {
 
     use super::{into_camuni, BG_COLOR};
 
+    type HandBuffer = VertexBufferSimple<types::vertex::Color4>;
+
     pub struct Context {
         pipe_render: Pipeline,
         cam: FollowCamera,
         cc: CameraController,
-        ub_cam: UniformBuffer<types::Camera>,
+        ub_cam: UniformBuffer<types::uniform::Camera>,
         vb: VertexBufferSimple<shader::VertexInput>,
         // 原点の方向表示
-        hand: VertexBufferSimple<shader::VertexInput>,
+        hand: HandBuffer,
     }
 
     impl Context {
@@ -464,6 +467,7 @@ pub mod lines {
                 hand,
             }
         }
+
         /// レンダリング
         pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
             render(state, BG_COLOR, state.depth(), |rp| {
@@ -538,6 +542,7 @@ pub mod lines {
                 let max = unit * self.range.1 as f32;
                 (min, max)
             }
+
             fn range_vec(&self) -> impl Iterator<Item = Vec3> {
                 let mut v = vec![];
                 for i in self.range() {
@@ -572,27 +577,14 @@ pub mod lines {
     }
 
     /// 3D空間での矢印を描画する。原点からXYZ方向にそれぞれ0.3mの長さを持つ
-    pub fn hand_arrow(device: &wgpu::Device) -> VertexBufferSimple<shader::VertexInput> {
-        const LENGTH: f32 = 0.3;
-        let list = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        let mut lines = vec![];
-        for target in list {
-            let color = Vec4::new(target[0], target[1], target[2], 1.0);
-            lines.push(shader::VertexInput {
-                position: [0.0, 0.0, 0.0, 1.0].into(),
-                color,
-            });
-            let pos = Vec3::new(target[0], target[1], target[2]) * LENGTH;
-            let position = pos.extend(1.0);
-            lines.push(shader::VertexInput { position, color });
-        }
-        VertexBufferSimple::new(device, &lines, Some("Hand Arrow"))
+    pub fn hand_arrow(device: &wgpu::Device) -> HandBuffer {
+        VertexBufferSimple::new(device, &hand4(0.3), Some("Hand Arrow"))
     }
 }
 
-pub(super) fn into_camuni(cam: &crate::camera::Camera) -> wgpu_shader::types::Camera {
+pub(super) fn into_camuni(cam: &crate::camera::Camera) -> wgpu_shader::types::uniform::Camera {
     let pos = cam.pos();
-    wgpu_shader::types::Camera {
+    wgpu_shader::types::uniform::Camera {
         view_pos: Vec4::new(pos.x, pos.y, pos.z, 1.0),
         view_proj: cam.build_view_projection_matrix().into(),
     }

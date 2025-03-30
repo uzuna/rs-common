@@ -60,7 +60,9 @@ pub async fn run(app_env: env::AppEnv, timeout: Option<Duration>) {
 
     // let mut r = render::particle::Context::new(&state, state.config());
     // let mut r = render::introduction::Context::new(&state, state.config());
-    // let mut r = render::tutorial::Context::new(&state, state.config(), &app_env.assets);
+    let r = render::tutorial::Context::new(&state, state.config(), &app_env.assets);
+
+    // 有効なのは1つだけ
     let mut r = render::lines::Context::new(&state, state.config());
 
     event_loop

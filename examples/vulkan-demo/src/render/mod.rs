@@ -416,6 +416,9 @@ pub mod tutorial {
 
 pub mod lines {
 
+    use std::ops::RangeInclusive;
+
+    use glam::{Vec3, Vec4};
     use wgpu_shader::{
         lines::{shader, Pipeline},
         types,
@@ -435,18 +438,21 @@ pub mod lines {
         cc: CameraController,
         ub_cam: UniformBuffer<types::Camera>,
         vb: VertexBufferSimple<shader::VertexInput>,
+        // 原点の方向表示
+        hand: VertexBufferSimple<shader::VertexInput>,
     }
 
     impl Context {
         pub fn new(state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) -> Self {
             let cam = Camera::with_aspect(config.width as f32 / config.height as f32);
-            let cc = CameraController::new(0.01);
+            let cc = CameraController::new(0.5);
             let cam_mat = into_camuni(&cam);
             let ub_cam = UniformBuffer::new(state.device(), cam_mat);
 
             let pipe_render = Pipeline::new(state.device(), config, &ub_cam);
 
             let vb = grid_lines(state.device());
+            let hand = hand_arrow(state.device());
 
             Self {
                 pipe_render,
@@ -454,6 +460,7 @@ pub mod lines {
                 cc,
                 ub_cam,
                 vb,
+                hand,
             }
         }
         /// レンダリング
@@ -463,12 +470,15 @@ pub mod lines {
                 // 頂点バッファをセットして描画
                 self.vb.set(rp, 0);
                 rp.draw(0..self.vb.len(), 0..1);
+                self.hand.set(rp, 0);
+                rp.draw(0..self.hand.len(), 0..1);
             })
         }
 
         pub fn input(&mut self, event: &winit::event::WindowEvent) -> bool {
             self.cc.process_events(event)
         }
+
         pub fn update(&mut self, state: &impl WgpuContext, _ts: &super::Timestamp) {
             self.cc.update_camera(&mut self.cam);
             let cb = into_camuni(&self.cam);
@@ -479,33 +489,103 @@ pub mod lines {
     // 1m間隔で10m分XYのグリッドを描画する
     // Y軸は緑、X軸は赤、Z軸は青
     pub fn grid_lines(device: &wgpu::Device) -> VertexBufferSimple<shader::VertexInput> {
-        const COLOR_X: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
-        const COLOR_Y: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
-        const COLOR_GLAY: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
-        let mut lines = vec![];
-        for x in -10..=10 {
-            let c = if x % 10 == 0 { COLOR_X } else { COLOR_GLAY };
-            lines.push(shader::VertexInput {
-                position: [x as f32, 0.0, -10.0, 1.0].into(),
-                color: c.into(),
-            });
-            lines.push(shader::VertexInput {
-                position: [x as f32, 0.0, 10.0, 1.0].into(),
-                color: c.into(),
-            });
+        #[allow(unused)]
+        enum Axis {
+            X,
+            Y,
+            Z,
         }
-        for y in -10..=10 {
-            let c = if y % 10 == 0 { COLOR_Y } else { COLOR_GLAY };
-            lines.push(shader::VertexInput {
-                position: [-10.0, 0.0, y as f32, 1.0].into(),
-                color: c.into(),
-            });
-            lines.push(shader::VertexInput {
-                position: [10.0, 0.0, y as f32, 1.0].into(),
-                color: c.into(),
-            });
+
+        struct Loop {
+            v: Axis,
+            range: (i32, i32),
+        }
+
+        impl Loop {
+            fn with_unit_x(x: i32) -> Self {
+                Self {
+                    v: Axis::X,
+                    range: (-x, x),
+                }
+            }
+            fn with_unit_y(y: i32) -> Self {
+                Self {
+                    v: Axis::Y,
+                    range: (-y, y),
+                }
+            }
+
+            fn unit(&self) -> Vec3 {
+                match self.v {
+                    Axis::X => Vec3::new(1.0, 0.0, 0.0),
+                    Axis::Y => Vec3::new(0.0, 1.0, 0.0),
+                    Axis::Z => Vec3::new(0.0, 0.0, 1.0),
+                }
+            }
+
+            fn range(&self) -> RangeInclusive<i32> {
+                self.range.0..=self.range.1
+            }
+
+            fn min_max_vec(&self) -> (Vec3, Vec3) {
+                let unit = match self.v {
+                    Axis::X => Vec3::new(1.0, 0.0, 0.0),
+                    Axis::Y => Vec3::new(0.0, 1.0, 0.0),
+                    Axis::Z => Vec3::new(0.0, 0.0, 1.0),
+                };
+                let min = unit * self.range.0 as f32;
+                let max = unit * self.range.1 as f32;
+                (min, max)
+            }
+            fn range_vec(&self) -> impl Iterator<Item = Vec3> {
+                let mut v = vec![];
+                for i in self.range() {
+                    v.push(self.unit() * i as f32);
+                }
+                v.into_iter()
+            }
+        }
+
+        let mut lines = vec![];
+        let loops = [
+            (Loop::with_unit_x(10), Loop::with_unit_y(10)),
+            (Loop::with_unit_y(10), Loop::with_unit_x(10)),
+        ];
+        for (fixed, moving) in loops.iter() {
+            let color = fixed.unit().extend(1.0);
+            for v in moving.range_vec() {
+                let (min, max) = fixed.min_max_vec();
+                let min = v + min;
+                let max = v + max;
+                lines.push(shader::VertexInput {
+                    position: min.extend(1.0),
+                    color,
+                });
+                lines.push(shader::VertexInput {
+                    position: max.extend(1.0),
+                    color,
+                });
+            }
         }
         VertexBufferSimple::new(device, &lines, Some("Grid Lines"))
+    }
+
+    /// 3D空間での矢印を描画する。原点からXYZ方向にそれぞれ0.3mの長さを持つ
+    pub fn hand_arrow(device: &wgpu::Device) -> VertexBufferSimple<shader::VertexInput> {
+        const LENGTH: f32 = 0.3;
+        let list = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let mut lines = vec![];
+        for target in list {
+            let color = Vec4::new(target[0], target[1], target[2], 1.0);
+            lines.push(shader::VertexInput {
+                position: [0.0, 0.0, 0.0, 1.0].into(),
+                color,
+            });
+            let pos = Vec3::new(target[0], target[1], target[2]) * LENGTH;
+            let position = pos.extend(1.0);
+            lines.push(shader::VertexInput { position, color });
+        }
+        VertexBufferSimple::new(device, &lines, Some("Hand Arrow"))
     }
 }
 

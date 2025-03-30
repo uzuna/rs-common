@@ -26,9 +26,9 @@ impl Camera {
     /// アスペクト比を指定してよく使う設定値でカメラを作成する
     pub fn with_aspect(aspect: f32) -> Self {
         Self {
-            eye: Point3::new(0.0, 1.0, 2.0),
+            eye: Point3::new(-2.0, 0.0, 1.0),
             target: Point3::new(0.0, 0.0, 0.0),
-            up: Vector3::y(),
+            up: Vector3::z(),
             aspect,
             fovy: 45.0,
             znear: 0.1,

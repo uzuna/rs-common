@@ -1,5 +1,7 @@
 use std::time::{Duration, Instant};
 
+use glam::Vec4;
+
 pub const BG_COLOR: wgpu::Color = wgpu::Color {
     r: 0.1,
     g: 0.2,
@@ -172,12 +174,14 @@ pub mod tutorial {
 
     use std::path::Path;
 
-    use glam::{Vec3, Vec4};
+    use glam::Vec3;
     use nalgebra::{Rotation3, Scale3, Translation3, Vector3};
     use wgpu_shader::{
         prelude::*,
         tutorial::{shader::VertexInput, *},
+        types,
         uniform::UniformBuffer,
+        util::render,
         vertex::{InstanceBuffer, VertexBuffer},
         WgpuContext,
     };
@@ -187,7 +191,7 @@ pub mod tutorial {
         resources::ModelData,
     };
 
-    use super::BG_COLOR;
+    use super::{into_camuni, BG_COLOR};
 
     type Instance = shader::InstanceInput;
 
@@ -215,14 +219,6 @@ pub mod tutorial {
             }
         }
         instances
-    }
-
-    fn into_camuni(cam: &Camera) -> shader::Camera {
-        let pos = cam.pos();
-        shader::Camera {
-            view_pos: Vec4::new(pos.x, pos.y, pos.z, 1.0),
-            view_proj: cam.build_view_projection_matrix().into(),
-        }
     }
 
     pub struct Mesh {
@@ -258,7 +254,7 @@ pub mod tutorial {
         pipe_light: LightRenderPipeline,
         cam: Camera,
         cc: CameraController,
-        ub_cam: UniformBuffer<shader::Camera>,
+        ub_cam: UniformBuffer<types::Camera>,
         ub_light: UniformBuffer<shader::Light>,
         model: Model,
         ib: InstanceBuffer<Instance>,
@@ -415,5 +411,108 @@ pub mod tutorial {
         inst.write(state.queue(), &img, dimensions, texture_size);
 
         Ok(inst)
+    }
+}
+
+pub mod lines {
+
+    use wgpu_shader::{
+        lines::{shader, Pipeline},
+        types,
+        uniform::UniformBuffer,
+        util::render,
+        vertex::VertexBufferSimple,
+        WgpuContext,
+    };
+
+    use crate::camera::{Camera, CameraController};
+
+    use super::{into_camuni, BG_COLOR};
+
+    pub struct Context {
+        pipe_render: Pipeline,
+        cam: Camera,
+        cc: CameraController,
+        ub_cam: UniformBuffer<types::Camera>,
+        vb: VertexBufferSimple<shader::VertexInput>,
+    }
+
+    impl Context {
+        pub fn new(state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) -> Self {
+            let cam = Camera::with_aspect(config.width as f32 / config.height as f32);
+            let cc = CameraController::new(0.01);
+            let cam_mat = into_camuni(&cam);
+            let ub_cam = UniformBuffer::new(state.device(), cam_mat);
+
+            let pipe_render = Pipeline::new(state.device(), config, &ub_cam);
+
+            let vb = grid_lines(state.device());
+
+            Self {
+                pipe_render,
+                cam,
+                cc,
+                ub_cam,
+                vb,
+            }
+        }
+        /// レンダリング
+        pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
+            render(state, BG_COLOR, state.depth(), |rp| {
+                self.pipe_render.set(rp);
+                // 頂点バッファをセットして描画
+                self.vb.set(rp, 0);
+                rp.draw(0..self.vb.len(), 0..1);
+            })
+        }
+
+        pub fn input(&mut self, event: &winit::event::WindowEvent) -> bool {
+            self.cc.process_events(event)
+        }
+        pub fn update(&mut self, state: &impl WgpuContext, _ts: &super::Timestamp) {
+            self.cc.update_camera(&mut self.cam);
+            let cb = into_camuni(&self.cam);
+            self.ub_cam.set(state.queue(), &cb);
+        }
+    }
+
+    // 1m間隔で10m分XYのグリッドを描画する
+    // Y軸は緑、X軸は赤、Z軸は青
+    pub fn grid_lines(device: &wgpu::Device) -> VertexBufferSimple<shader::VertexInput> {
+        const COLOR_X: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+        const COLOR_Y: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
+        const COLOR_GLAY: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
+        let mut lines = vec![];
+        for x in -10..=10 {
+            let c = if x % 10 == 0 { COLOR_X } else { COLOR_GLAY };
+            lines.push(shader::VertexInput {
+                position: [x as f32, 0.0, -10.0, 1.0].into(),
+                color: c.into(),
+            });
+            lines.push(shader::VertexInput {
+                position: [x as f32, 0.0, 10.0, 1.0].into(),
+                color: c.into(),
+            });
+        }
+        for y in -10..=10 {
+            let c = if y % 10 == 0 { COLOR_Y } else { COLOR_GLAY };
+            lines.push(shader::VertexInput {
+                position: [-10.0, 0.0, y as f32, 1.0].into(),
+                color: c.into(),
+            });
+            lines.push(shader::VertexInput {
+                position: [10.0, 0.0, y as f32, 1.0].into(),
+                color: c.into(),
+            });
+        }
+        VertexBufferSimple::new(device, &lines, Some("Grid Lines"))
+    }
+}
+
+pub(super) fn into_camuni(cam: &crate::camera::Camera) -> wgpu_shader::types::Camera {
+    let pos = cam.pos();
+    wgpu_shader::types::Camera {
+        view_pos: Vec4::new(pos.x, pos.y, pos.z, 1.0),
+        view_proj: cam.build_view_projection_matrix().into(),
     }
 }

@@ -1,5 +1,43 @@
 use std::ops::Range;
 
+/// 頂点のみで構成するVertexBuffer
+/// 修飾のないlineやpointの描画に使うことを想定
+pub struct VertexBufferSimple<V> {
+    buf: wgpu::Buffer,
+    vertex_len: u32,
+    phantom: std::marker::PhantomData<V>,
+}
+impl<V> VertexBufferSimple<V>
+where
+    V: bytemuck::Pod,
+{
+    pub fn new(device: &wgpu::Device, verts: &[V], label: Option<&str>) -> Self {
+        use wgpu::util::DeviceExt;
+        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label,
+            contents: bytemuck::cast_slice(verts),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
+        Self {
+            buf,
+            vertex_len: verts.len() as u32,
+            phantom: std::marker::PhantomData,
+        }
+    }
+
+    pub fn update(&self, queue: &wgpu::Queue, verts: &[V]) {
+        queue.write_buffer(&self.buf, 0, bytemuck::cast_slice(verts));
+    }
+
+    pub fn set(&self, rpass: &mut wgpu::RenderPass, slot: u32) {
+        rpass.set_vertex_buffer(slot, self.buf.slice(..));
+    }
+
+    pub fn len(&self) -> u32 {
+        self.vertex_len
+    }
+}
+
 /// 頂点とインデックスで構成するVertexBuffer
 pub struct VertexBuffer<V> {
     pub buf: wgpu::Buffer,

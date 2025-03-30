@@ -1,10 +1,11 @@
 use glam::Mat4;
-use wgpu::TextureView;
+use wgpu::PrimitiveTopology;
 
 use crate::{
+    common::{create_fs_target, create_render_pipeline},
+    types,
     uniform::UniformBuffer,
     vertex::{InstanceBuffer, VertexBuffer},
-    WgpuContext,
 };
 
 pub mod light;
@@ -102,7 +103,7 @@ impl Pipeline {
     pub fn new(
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
-        camera: &UniformBuffer<shader::Camera>,
+        camera: &UniformBuffer<types::Camera>,
         light: &UniformBuffer<shader::Light>,
     ) -> Self {
         let shader = shader::create_shader_module(device);
@@ -121,6 +122,7 @@ impl Pipeline {
             vs,
             Some(fs),
             Some(crate::texture::Texture::DEPTH_FORMAT),
+            PrimitiveTopology::default(),
         );
 
         let bg1 = shader::bind_groups::BindGroup1::from_bindings(
@@ -179,7 +181,7 @@ impl LightRenderPipeline {
     pub fn new(
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
-        camera: &UniformBuffer<shader::Camera>,
+        camera: &UniformBuffer<types::Camera>,
         light: &UniformBuffer<shader::Light>,
     ) -> Self {
         let shader = light::create_shader_module(device);
@@ -197,6 +199,7 @@ impl LightRenderPipeline {
             vs,
             Some(fs),
             Some(crate::texture::Texture::DEPTH_FORMAT),
+            PrimitiveTopology::TriangleList,
         );
 
         let bg0 = light::bind_groups::BindGroup0::from_bindings(
@@ -226,109 +229,6 @@ impl LightRenderPipeline {
         self.bg1.set(pass);
         vb.set(pass, 0);
     }
-}
-
-// ColorTargetStateの作成の共通化
-// FragmentShaderのターゲットで常に上書きをするブレンドモードを指定
-fn create_fs_target(format: wgpu::TextureFormat) -> [Option<wgpu::ColorTargetState>; 1] {
-    [Some(wgpu::ColorTargetState {
-        format,
-        blend: Some(wgpu::BlendState {
-            color: wgpu::BlendComponent::REPLACE,
-            alpha: wgpu::BlendComponent::REPLACE,
-        }),
-        write_mask: wgpu::ColorWrites::ALL,
-    })]
-}
-
-// パイプライン構築の共通化
-// primitiveやdepthの利用の設定などほとんどの場合共通
-fn create_render_pipeline<'a>(
-    device: &wgpu::Device,
-    layout: &wgpu::PipelineLayout,
-    vstate: wgpu::VertexState<'a>,
-    fstate: Option<wgpu::FragmentState<'a>>,
-    depth_format: Option<wgpu::TextureFormat>,
-) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("Render Pipeline"),
-        layout: Some(layout),
-        vertex: vstate,
-        fragment: fstate,
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::default(),
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
-            polygon_mode: wgpu::PolygonMode::Fill,
-            unclipped_depth: false,
-            conservative: false,
-        },
-        depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
-            format,
-            depth_write_enabled: true,
-            depth_compare: wgpu::CompareFunction::Less,
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
-        multiview: None,
-        cache: None,
-    })
-}
-
-// レンダリングの共通化
-pub fn render(
-    state: &impl WgpuContext,
-    bg_color: wgpu::Color,
-    dv: &TextureView,
-    f: impl FnOnce(&mut wgpu::RenderPass),
-) -> Result<(), wgpu::SurfaceError> {
-    let output = state.surface().get_current_texture()?;
-    let view = output
-        .texture
-        .create_view(&wgpu::TextureViewDescriptor::default());
-
-    let mut encoder = state
-        .device()
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Render Encoder"),
-        });
-
-    {
-        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Render Pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(bg_color),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: dv,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
-            occlusion_query_set: None,
-            timestamp_writes: None,
-        });
-
-        f(&mut render_pass);
-    }
-
-    state.queue().submit(std::iter::once(encoder.finish()));
-    output.present();
-
-    Ok(())
 }
 
 pub fn create_light() -> shader::Light {

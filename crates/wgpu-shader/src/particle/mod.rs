@@ -1,4 +1,6 @@
-use crate::{uniform::UniformBuffer, vertex::VertexBufferInstanced, WgpuContext};
+use crate::{
+    common::create_fs_target, uniform::UniformBuffer, vertex::VertexBufferInstanced, WgpuContext,
+};
 
 pub mod shader;
 
@@ -33,14 +35,7 @@ impl Pipeline {
         let shader = shader::create_shader_module(device);
 
         let render_pipeline_layout = shader::create_pipeline_layout(device);
-        let fs_target = [Some(wgpu::ColorTargetState {
-            format: config.format,
-            blend: Some(wgpu::BlendState {
-                color: wgpu::BlendComponent::REPLACE,
-                alpha: wgpu::BlendComponent::REPLACE,
-            }),
-            write_mask: wgpu::ColorWrites::ALL,
-        })];
+        let fs_target = create_fs_target(config.format);
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),

@@ -1,10 +1,14 @@
+pub(crate) mod common;
 pub mod introduction;
+pub mod lines;
 pub mod model;
 pub mod particle;
 pub mod prelude;
 pub mod texture;
 pub mod tutorial;
+pub mod types;
 pub mod uniform;
+pub mod util;
 pub mod vertex;
 
 pub trait WgpuContext {

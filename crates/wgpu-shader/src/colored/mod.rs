@@ -193,6 +193,8 @@ impl compress::Compression {
     }
 }
 
+pub type ObjectInfoBindGroup = unif::bind_groups::BindGroup1;
+
 /// SceneGraphデータ構造向けのUniformを使った値の変更を行うパイプライン
 pub struct PlUnif {
     pipe: wgpu::RenderPipeline,
@@ -240,6 +242,18 @@ impl PlUnif {
             bg0,
             _topology: topology,
         }
+    }
+
+    pub fn make_bg1(
+        device: &wgpu::Device,
+        object: &UniformBuffer<unif::ObjectInfo>,
+    ) -> unif::bind_groups::BindGroup1 {
+        unif::bind_groups::BindGroup1::from_bindings(
+            device,
+            unif::bind_groups::BindGroupLayout1 {
+                object_info: object.buffer().as_entire_buffer_binding(),
+            },
+        )
     }
 
     /// レンダリング前のバインドグループ設定など

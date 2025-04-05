@@ -167,7 +167,7 @@ pub mod tutorial {
         }
 
         pub fn index_len(&self) -> u32 {
-            self.mesh.vb.index_len()
+            self.mesh.vb.len()
         }
     }
 
@@ -295,12 +295,12 @@ pub mod tutorial {
                 let r = &self.pipe_light;
                 let vb = &self.model.mesh.vb;
                 r.set(rp, vb);
-                rp.draw_indexed(0..vb.index_len(), 0, 0..1);
+                rp.draw_indexed(0..vb.len(), 0, 0..1);
 
                 let r = &self.pipe_render;
                 r.set(rp, vb, &self.ib);
                 self.model.set(rp);
-                rp.draw_indexed(0..vb.index_len(), 0, 0..self.ib.len());
+                rp.draw_indexed(0..vb.len(), 0, 0..self.ib.len());
             })
         }
     }
@@ -470,7 +470,7 @@ pub mod colored {
             cube_vb: &VertexBuffer<types::vertex::Color4>,
         ) {
             self.object_inst.set(rp, 1);
-            rp.draw_indexed(0..cube_vb.index_len(), 0, 0..self.recam_inst.len());
+            rp.draw_indexed(0..cube_vb.len(), 0, 0..self.recam_inst.len());
         }
 
         fn draw_shadow(
@@ -479,7 +479,7 @@ pub mod colored {
             rect_vb: &VertexBuffer<types::vertex::Color4>,
         ) {
             self.object_inst.set(rp, 1);
-            rp.draw_indexed(0..rect_vb.index_len(), 0, 0..self.recam_inst.len());
+            rp.draw_indexed(0..rect_vb.len(), 0, 0..self.recam_inst.len());
         }
     }
 
@@ -584,13 +584,13 @@ pub mod colored {
                 self.p1_plane.set(rp);
                 self.cube_vb.set(rp, 0);
                 self.hi.set(rp, 1);
-                rp.draw_indexed(0..self.cube_vb.index_len(), 0, 0..self.hi.len());
+                rp.draw_indexed(0..self.cube_vb.len(), 0, 0..self.hi.len());
                 self.recams.draw_cube(rp, &self.cube_vb);
 
                 self.p2_plane.set(rp);
                 self.rect_vb.set(rp, 0);
                 self.hi.set(rp, 1);
-                rp.draw_indexed(0..self.rect_vb.index_len(), 0, 0..self.hi.len());
+                rp.draw_indexed(0..self.rect_vb.len(), 0, 0..self.hi.len());
                 self.recams.draw_shadow(rp, &self.rect_vb);
             })
         }
@@ -634,5 +634,127 @@ pub mod colored {
             instances.push(types::instance::Isometry::new(h.isometry()));
         }
         InstanceBuffer::new(device, &instances)
+    }
+}
+
+pub mod unif {
+
+    use wgpu_shader::{
+        colored::PlUnif, model, types, uniform::UniformBuffer, util::render, vertex::VertexBuffer,
+        WgpuContext,
+    };
+
+    use crate::camera::{Camera, CameraController, Cams};
+
+    use super::BG_COLOR;
+
+    struct ObjectUnif {
+        translate: glam::Vec3,
+        color: glam::Vec4,
+        buffer: UniformBuffer<wgpu_shader::colored::unif::ObjectInfo>,
+        bg: wgpu_shader::colored::ObjectInfoBindGroup,
+    }
+
+    impl ObjectUnif {
+        fn new(device: &wgpu::Device, translate: glam::Vec3, color: glam::Vec4) -> Self {
+            let mat = glam::Mat4::from_translation(translate);
+            let buffer = wgpu_shader::colored::unif::ObjectInfo { matrix: mat, color };
+            let buffer = UniformBuffer::new(device, buffer);
+            let bg = wgpu_shader::colored::PlUnif::make_bg1(device, &buffer);
+            Self {
+                translate,
+                color,
+                buffer,
+                bg,
+            }
+        }
+
+        fn update(&mut self, queue: &wgpu::Queue, translate: glam::Vec3, color: glam::Vec4) {
+            self.translate = translate;
+            self.color = color;
+            let mat = glam::Mat4::from_translation(translate);
+            let buffer = wgpu_shader::colored::unif::ObjectInfo { matrix: mat, color };
+            self.buffer.set(queue, &buffer);
+        }
+
+        fn draw(&self, rp: &mut wgpu::RenderPass<'_>, vb: &VertexBuffer<types::vertex::Color4>) {
+            self.bg.set(rp);
+            rp.draw_indexed(0..vb.len(), 0, 0..1);
+        }
+    }
+
+    pub struct Context {
+        p0: PlUnif,
+        cam: Cams,
+        cc: CameraController,
+        vb: VertexBuffer<types::vertex::Color4>,
+        objs: Vec<ObjectUnif>,
+    }
+
+    impl Context {
+        pub fn new(state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) -> Self {
+            let cam = Camera::with_aspect(config.width as f32 / config.height as f32);
+            let cam = Cams::new(state.device(), cam);
+            let cc = CameraController::new(0.05);
+            let p0 = PlUnif::new(
+                state.device(),
+                config,
+                cam.buffer(),
+                wgpu::PrimitiveTopology::TriangleList,
+            );
+            let vb = VertexBuffer::new(state.device(), &model::cube(0.2), &model::CUBE_INDEX);
+            let objs = Self::create_object(state.device());
+            Self {
+                p0,
+                cam,
+                cc,
+                vb,
+                objs,
+            }
+        }
+
+        pub fn input(&mut self, event: &winit::event::WindowEvent) -> bool {
+            self.cc.process_events(event)
+        }
+
+        pub fn update(&mut self, state: &impl WgpuContext, _ts: &super::Timestamp) {
+            self.cc.update_follow_camera(self.cam.camera_mut());
+            self.cam.update(state.queue());
+        }
+
+        /// レンダリング
+        pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
+            render(state, BG_COLOR, state.depth(), |rp| {
+                self.p0.set(rp);
+                // 頂点バッファをセットして描画
+                self.vb.set(rp, 0);
+
+                for obj in self.objs.iter() {
+                    obj.draw(rp, &self.vb);
+                }
+            })
+        }
+
+        fn create_object(device: &wgpu::Device) -> Vec<ObjectUnif> {
+            let len = 10;
+            let trans_rate = 0.4;
+            let color_rate = 1.0 / len as f32;
+            let offset = trans_rate * (len as f32 / 2.0);
+            let mut objs = vec![];
+            for i in 0..10 {
+                for j in 0..10 {
+                    let translate = glam::Vec3::new(
+                        i as f32 * trans_rate - offset,
+                        j as f32 * trans_rate - offset,
+                        0.0,
+                    );
+                    let color =
+                        glam::Vec4::new(i as f32 * color_rate, 0.0, i as f32 * color_rate, 1.0);
+                    let obj = ObjectUnif::new(device, translate, color);
+                    objs.push(obj);
+                }
+            }
+            objs
+        }
     }
 }

@@ -85,7 +85,7 @@ where
     }
 
     /// インデックスバッファの更新。描画は[wgpu::RenderPass::draw_indexed]を使う
-    pub fn index_len(&self) -> u32 {
+    pub fn len(&self) -> u32 {
         self.index_len
     }
 }

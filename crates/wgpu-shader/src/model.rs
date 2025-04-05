@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use glam::Vec4;
+use glam::{Vec3, Vec4};
 
 use crate::{texture, types::vertex::Color4};
 
@@ -63,15 +63,15 @@ pub fn hand4(length: f32) -> [Color4; 6] {
 
 /// 幅1.0の立方体の頂点データ
 /// 前方が赤、後方上が青、後方下が緑となっている
-pub const CUBE: [Color4; 8] = [
-    Color4::new(Vec4::new(-0.5, -0.5, -0.5, 1.0), V4Y),
-    Color4::new(Vec4::new(0.5, -0.5, -0.5, 1.0), V4X),
-    Color4::new(Vec4::new(-0.5, -0.5, 0.5, 1.0), V4Z),
-    Color4::new(Vec4::new(0.5, -0.5, 0.5, 1.0), V4X),
-    Color4::new(Vec4::new(-0.5, 0.5, -0.5, 1.0), V4Y),
-    Color4::new(Vec4::new(0.5, 0.5, -0.5, 1.0), V4X),
-    Color4::new(Vec4::new(-0.5, 0.5, 0.5, 1.0), V4Z),
-    Color4::new(Vec4::new(0.5, 0.5, 0.5, 1.0), V4X),
+pub const CUBE: [Vec4; 8] = [
+    Vec4::new(-0.5, -0.5, -0.5, 1.0),
+    Vec4::new(0.5, -0.5, -0.5, 1.0),
+    Vec4::new(-0.5, -0.5, 0.5, 1.0),
+    Vec4::new(0.5, -0.5, 0.5, 1.0),
+    Vec4::new(-0.5, 0.5, -0.5, 1.0),
+    Vec4::new(0.5, 0.5, -0.5, 1.0),
+    Vec4::new(-0.5, 0.5, 0.5, 1.0),
+    Vec4::new(0.5, 0.5, 0.5, 1.0),
 ];
 
 /// [CUBE]のインデックスデータ
@@ -84,12 +84,22 @@ pub const CUBE_INDEX: [u16; 36] = [
     7, 6, 3, 6, 2, 3, // top
 ];
 
+pub const CUBE_COLOR: [Vec3; 6] = [
+    Vec3::new(200.0, 70.0, 120.0),  // left
+    Vec3::new(70.0, 200.0, 210.0),  // front
+    Vec3::new(80.0, 70.0, 200.0),   // right
+    Vec3::new(90.0, 130.0, 110.0),  // bottom
+    Vec3::new(160.0, 160.0, 220.0), // back
+    Vec3::new(200.0, 200.0, 70.0),  //top
+];
+
 /// [CUBE]の長さを指定して頂点データを生成する
-pub fn cube(length: f32) -> [Color4; 8] {
-    let mut cube = CUBE;
-    for c in cube.iter_mut() {
-        c.position *= length;
-        c.position.w = 1.0;
+pub fn cube(length: f32) -> Vec<Color4> {
+    let mut cube = Vec::with_capacity(36);
+    for (index, c) in CUBE_INDEX.into_iter().enumerate() {
+        let pos = CUBE[c as usize] * length;
+        let color = CUBE_COLOR[index / 6] / 255.0;
+        cube.push(Color4::new(pos, Vec4::new(color.x, color.y, color.z, 1.0)));
     }
     cube
 }

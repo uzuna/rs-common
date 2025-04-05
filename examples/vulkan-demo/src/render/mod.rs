@@ -639,9 +639,10 @@ pub mod colored {
 
 pub mod unif {
 
+    use glam::Vec3;
     use wgpu_shader::{
-        colored::PlUnif, model, types, uniform::UniformBuffer, util::render, vertex::VertexBuffer,
-        WgpuContext,
+        colored::PlUnif, model, types, uniform::UniformBuffer, util::render,
+        vertex::VertexBufferSimple, WgpuContext,
     };
 
     use crate::camera::{Camera, CameraController, Cams};
@@ -650,36 +651,57 @@ pub mod unif {
 
     struct ObjectUnif {
         translate: glam::Vec3,
+        scale: glam::Vec3,
         color: glam::Vec4,
         buffer: UniformBuffer<wgpu_shader::colored::unif::ObjectInfo>,
         bg: wgpu_shader::colored::ObjectInfoBindGroup,
     }
 
+    #[allow(unused)]
     impl ObjectUnif {
-        fn new(device: &wgpu::Device, translate: glam::Vec3, color: glam::Vec4) -> Self {
-            let mat = glam::Mat4::from_translation(translate);
+        fn new(
+            device: &wgpu::Device,
+            translate: glam::Vec3,
+            scale: glam::Vec3,
+            color: glam::Vec4,
+        ) -> Self {
+            let mat = glam::Mat4::from_translation(translate) * glam::Mat4::from_scale(scale);
             let buffer = wgpu_shader::colored::unif::ObjectInfo { matrix: mat, color };
             let buffer = UniformBuffer::new(device, buffer);
             let bg = wgpu_shader::colored::PlUnif::make_bg1(device, &buffer);
             Self {
                 translate,
+                scale,
                 color,
                 buffer,
                 bg,
             }
         }
 
-        fn update(&mut self, queue: &wgpu::Queue, translate: glam::Vec3, color: glam::Vec4) {
+        fn set_trans(&mut self, translate: glam::Vec3) {
             self.translate = translate;
+        }
+
+        fn set_scale(&mut self, scale: glam::Vec3) {
+            self.scale = scale;
+        }
+
+        fn set_color(&mut self, color: glam::Vec4) {
             self.color = color;
-            let mat = glam::Mat4::from_translation(translate);
-            let buffer = wgpu_shader::colored::unif::ObjectInfo { matrix: mat, color };
+        }
+
+        fn update(&mut self, queue: &wgpu::Queue) {
+            let mat =
+                glam::Mat4::from_translation(self.translate) * glam::Mat4::from_scale(self.scale);
+            let buffer = wgpu_shader::colored::unif::ObjectInfo {
+                matrix: mat,
+                color: self.color,
+            };
             self.buffer.set(queue, &buffer);
         }
 
-        fn draw(&self, rp: &mut wgpu::RenderPass<'_>, vb: &VertexBuffer<types::vertex::Color4>) {
+        fn draw(&self, rp: &mut wgpu::RenderPass<'_>) {
             self.bg.set(rp);
-            rp.draw_indexed(0..vb.len(), 0, 0..1);
         }
     }
 
@@ -687,7 +709,7 @@ pub mod unif {
         p0: PlUnif,
         cam: Cams,
         cc: CameraController,
-        vb: VertexBuffer<types::vertex::Color4>,
+        vb: VertexBufferSimple<types::vertex::Color4>,
         objs: Vec<ObjectUnif>,
     }
 
@@ -702,7 +724,7 @@ pub mod unif {
                 cam.buffer(),
                 wgpu::PrimitiveTopology::TriangleList,
             );
-            let vb = VertexBuffer::new(state.device(), &model::cube(0.2), &model::CUBE_INDEX);
+            let vb = VertexBufferSimple::new(state.device(), &model::cube(1.0), None);
             let objs = Self::create_object(state.device());
             Self {
                 p0,
@@ -730,7 +752,8 @@ pub mod unif {
                 self.vb.set(rp, 0);
 
                 for obj in self.objs.iter() {
-                    obj.draw(rp, &self.vb);
+                    obj.draw(rp);
+                    rp.draw(0..self.vb.len(), 0..1);
                 }
             })
         }
@@ -738,19 +761,17 @@ pub mod unif {
         fn create_object(device: &wgpu::Device) -> Vec<ObjectUnif> {
             let len = 10;
             let trans_rate = 0.4;
-            let color_rate = 1.0 / len as f32;
             let offset = trans_rate * (len as f32 / 2.0);
             let mut objs = vec![];
-            for i in 0..10 {
-                for j in 0..10 {
+            for i in 0..len {
+                for j in 0..len {
                     let translate = glam::Vec3::new(
                         i as f32 * trans_rate - offset,
                         j as f32 * trans_rate - offset,
                         0.0,
                     );
-                    let color =
-                        glam::Vec4::new(i as f32 * color_rate, 0.0, i as f32 * color_rate, 1.0);
-                    let obj = ObjectUnif::new(device, translate, color);
+                    let color = glam::Vec4::ONE;
+                    let obj = ObjectUnif::new(device, translate, Vec3::ONE * 0.1, color);
                     objs.push(obj);
                 }
             }

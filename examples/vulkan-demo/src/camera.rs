@@ -288,7 +288,7 @@ impl Cams {
     }
 
     pub fn update(&mut self, queue: &wgpu::Queue) {
-        self.buffer.set(queue, &self.cam.camera().build_buffer());
+        self.buffer.write(queue, &self.cam.camera().build_buffer());
     }
 
     pub fn buffer(&self) -> &UniformBuffer<types::uniform::Camera> {

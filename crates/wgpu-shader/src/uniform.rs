@@ -30,7 +30,7 @@ where
     }
 
     /// バッファ内容の更新
-    pub fn set(&mut self, queue: &wgpu::Queue, u: &U) {
+    pub fn write(&mut self, queue: &wgpu::Queue, u: &U) {
         self.ub.write(u).expect("Failed to write uniform buffer");
         queue.write_buffer(&self.buffer, 0, self.ub.as_ref());
     }

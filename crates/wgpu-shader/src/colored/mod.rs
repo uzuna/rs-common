@@ -8,6 +8,8 @@ pub mod instanced;
 pub mod shader;
 #[rustfmt::skip]
 pub mod compress;
+#[rustfmt::skip]
+pub mod unif;
 
 /// LinePrimitiveによる描画用のパイプライン
 /// 処理負荷は少ないがデバイス依存があり演出的な表現が難しい
@@ -188,5 +190,49 @@ impl compress::Compression {
         Self {
             position: glam::Vec4::new(1.0, 1.0, 0.0, 1.0),
         }
+    }
+}
+
+/// SceneGraphデータ構造向けのUniformを使った値の変更を行うパイプライン
+pub struct PlUnif {
+    pipe: wgpu::RenderPipeline,
+    _topology: PrimitiveTopology,
+}
+
+impl PlUnif {
+    /// パイプラインの構築
+    pub fn new(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        topology: PrimitiveTopology,
+    ) -> Self {
+        use compress as s;
+        let shader = s::create_shader_module(device);
+
+        let layout = s::create_pipeline_layout(device);
+        let fs_target = common::create_fs_target(config.format);
+        let ve = s::vs_main_entry(wgpu::VertexStepMode::Vertex, wgpu::VertexStepMode::Instance);
+        let vs = s::vertex_state(&shader, &ve);
+        let fe = s::fs_main_entry(fs_target);
+        let fs = s::fragment_state(&shader, &fe);
+
+        let pipeline = common::create_render_pipeline(
+            device,
+            &layout,
+            vs,
+            Some(fs),
+            Some(crate::texture::Texture::DEPTH_FORMAT),
+            topology,
+        );
+
+        Self {
+            pipe: pipeline,
+            _topology: topology,
+        }
+    }
+
+    /// レンダリング前のバインドグループ設定など
+    pub fn set(&self, pass: &mut wgpu::RenderPass) {
+        pass.set_pipeline(&self.pipe);
     }
 }

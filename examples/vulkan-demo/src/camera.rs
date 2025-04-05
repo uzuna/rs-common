@@ -1,4 +1,6 @@
+use glam::Vec4;
 use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, UnitQuaternion, Vector3};
+use wgpu_shader::{types, uniform::UniformBuffer};
 use winit::{
     event::{ElementState, KeyEvent, WindowEvent},
     keyboard::{KeyCode, PhysicalKey},
@@ -85,6 +87,15 @@ impl Camera {
     pub fn pos(&self) -> Point3<f32> {
         self.eye
     }
+
+    pub fn build_buffer(&self) -> types::uniform::Camera {
+        let view_proj = self.build_view_projection_matrix().into();
+        let view_pos = Vec4::new(self.eye.x, self.eye.y, self.eye.z, 1.0);
+        types::uniform::Camera {
+            view_pos,
+            view_proj,
+        }
+    }
 }
 
 /// targetを中心に行って距離と周囲の移動を行うカメラ
@@ -114,6 +125,10 @@ impl FollowCamera {
 
     pub fn camera(&self) -> &Camera {
         &self.camera
+    }
+
+    pub fn camera_mut(&mut self) -> &mut Camera {
+        &mut self.camera
     }
 
     pub fn update(&mut self, up_down: f32, left_right: f32, front_back: f32) {
@@ -253,5 +268,30 @@ impl CameraController {
             0.0
         };
         camera.update(up_down, left_right, front_back);
+    }
+}
+
+pub struct Cams {
+    cam: FollowCamera,
+    buffer: UniformBuffer<types::uniform::Camera>,
+}
+
+impl Cams {
+    pub fn new(device: &wgpu::Device, camera: Camera) -> Self {
+        let cam = FollowCamera::new(camera);
+        let buffer = UniformBuffer::new(device, cam.camera().build_buffer());
+        Self { cam, buffer }
+    }
+
+    pub fn camera_mut(&mut self) -> &mut FollowCamera {
+        &mut self.cam
+    }
+
+    pub fn update(&mut self, queue: &wgpu::Queue) {
+        self.buffer.set(queue, &self.cam.camera().build_buffer());
+    }
+
+    pub fn buffer(&self) -> &UniformBuffer<types::uniform::Camera> {
+        &self.buffer
     }
 }

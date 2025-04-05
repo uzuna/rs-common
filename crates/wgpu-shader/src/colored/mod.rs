@@ -196,6 +196,8 @@ impl compress::Compression {
 /// SceneGraphデータ構造向けのUniformを使った値の変更を行うパイプライン
 pub struct PlUnif {
     pipe: wgpu::RenderPipeline,
+    // カメラはグローバルな設定で変更することはまず無いのでパイプラインと同じところで保持
+    bg0: unif::bind_groups::BindGroup0,
     _topology: PrimitiveTopology,
 }
 
@@ -204,14 +206,15 @@ impl PlUnif {
     pub fn new(
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
+        camera: &UniformBuffer<types::uniform::Camera>,
         topology: PrimitiveTopology,
     ) -> Self {
-        use compress as s;
+        use unif as s;
         let shader = s::create_shader_module(device);
 
         let layout = s::create_pipeline_layout(device);
         let fs_target = common::create_fs_target(config.format);
-        let ve = s::vs_main_entry(wgpu::VertexStepMode::Vertex, wgpu::VertexStepMode::Instance);
+        let ve = s::vs_main_entry(wgpu::VertexStepMode::Vertex);
         let vs = s::vertex_state(&shader, &ve);
         let fe = s::fs_main_entry(fs_target);
         let fs = s::fragment_state(&shader, &fe);
@@ -225,8 +228,16 @@ impl PlUnif {
             topology,
         );
 
+        let bg0 = s::bind_groups::BindGroup0::from_bindings(
+            device,
+            s::bind_groups::BindGroupLayout0 {
+                camera: camera.buffer().as_entire_buffer_binding(),
+            },
+        );
+
         Self {
             pipe: pipeline,
+            bg0,
             _topology: topology,
         }
     }
@@ -234,5 +245,6 @@ impl PlUnif {
     /// レンダリング前のバインドグループ設定など
     pub fn set(&self, pass: &mut wgpu::RenderPass) {
         pass.set_pipeline(&self.pipe);
+        self.bg0.set(pass);
     }
 }

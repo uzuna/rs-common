@@ -1,7 +1,5 @@
 use std::time::{Duration, Instant};
 
-use glam::Vec4;
-
 pub const BG_COLOR: wgpu::Color = wgpu::Color {
     r: 0.1,
     g: 0.2,
@@ -105,7 +103,6 @@ pub mod tutorial {
     use wgpu_shader::{
         prelude::*,
         tutorial::{shader::VertexInput, *},
-        types,
         uniform::UniformBuffer,
         util::render,
         vertex::{InstanceBuffer, VertexBuffer},
@@ -113,11 +110,11 @@ pub mod tutorial {
     };
 
     use crate::{
-        camera::{Camera, CameraController},
+        camera::{Camera, CameraController, Cams},
         resources::ModelData,
     };
 
-    use super::{into_camuni, BG_COLOR};
+    use super::BG_COLOR;
 
     type Instance = shader::InstanceInput;
 
@@ -178,9 +175,8 @@ pub mod tutorial {
     pub struct Context {
         pipe_render: Pipeline,
         pipe_light: LightRenderPipeline,
-        cam: Camera,
+        cam: Cams,
         cc: CameraController,
-        ub_cam: UniformBuffer<types::uniform::Camera>,
         ub_light: UniformBuffer<shader::Light>,
         model: Model,
         ib: InstanceBuffer<Instance>,
@@ -193,15 +189,15 @@ pub mod tutorial {
             assets_dir: &Path,
         ) -> Self {
             let cam = Camera::with_aspect(config.width as f32 / config.height as f32);
+            let cam = Cams::new(state.device(), cam);
             let cc = CameraController::new(0.01);
-            let cam_mat = into_camuni(&cam);
-            let ub_cam = UniformBuffer::new(state.device(), cam_mat);
             let ub_light = UniformBuffer::new(state.device(), create_light());
 
-            let pipe_render = Pipeline::new(state.device(), config, &ub_cam, &ub_light);
+            let pipe_render = Pipeline::new(state.device(), config, cam.buffer(), &ub_light);
 
             let model = Self::load_model(state, &assets_dir.join("models/cube/cube.obj"));
-            let pipe_light = LightRenderPipeline::new(state.device(), config, &ub_cam, &ub_light);
+            let pipe_light =
+                LightRenderPipeline::new(state.device(), config, cam.buffer(), &ub_light);
             let ib = InstanceBuffer::new(
                 state.device(),
                 &instances(10, 0.1, 0.3, Vector3::new(-2.0, 0.0, -2.0)),
@@ -212,7 +208,6 @@ pub mod tutorial {
                 pipe_light,
                 cam,
                 cc,
-                ub_cam,
                 ub_light,
                 model,
                 ib,
@@ -275,14 +270,15 @@ pub mod tutorial {
 
         pub fn resize(&mut self, state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) {
             self.cam
+                .camera_mut()
+                .camera_mut()
                 .set_aspect(config.width as f32 / config.height as f32);
-            self.ub_cam.set(state.queue(), &into_camuni(&self.cam));
+            self.cam.update(state.queue());
         }
 
         pub fn update(&mut self, state: &impl WgpuContext, ts: &super::Timestamp) {
-            self.cc.update_camera(&mut self.cam);
-            let cb = into_camuni(&self.cam);
-            self.ub_cam.set(state.queue(), &cb);
+            self.cc.update_follow_camera(self.cam.camera_mut());
+            self.cam.update(state.queue());
 
             // 時間でライトの位置を変化させる
             let w = ts.elapsed.as_secs_f32().sin();
@@ -354,9 +350,9 @@ pub mod colored {
         WgpuContext,
     };
 
-    use crate::camera::{Camera, CameraController, FollowCamera, ROTATION_FACE_Z_TO_X};
+    use crate::camera::{Camera, CameraController, Cams, ROTATION_FACE_Z_TO_X};
 
-    use super::{into_camuni, BG_COLOR};
+    use super::BG_COLOR;
 
     type HandBuffer = VertexBufferSimple<types::vertex::Color4>;
 
@@ -492,9 +488,8 @@ pub mod colored {
         p1_line: PipelineInstanced,
         p1_plane: PipelineInstanced,
         p2_plane: PipelineComp,
-        cam: FollowCamera,
+        cam: Cams,
         cc: CameraController,
-        ub_cam: UniformBuffer<types::uniform::Camera>,
         _ub_comp: UniformBuffer<compress::Compression>,
         vb: VertexBufferSimple<types::vertex::Color4>,
         hand: HandBuffer,
@@ -508,22 +503,20 @@ pub mod colored {
     impl Context {
         pub fn new(state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) -> Self {
             let cam = Camera::with_aspect(config.width as f32 / config.height as f32);
-            let cam = FollowCamera::new(cam);
+            let cam = Cams::new(state.device(), cam);
             let cc = CameraController::new(0.05);
-            let cam_mat = into_camuni(cam.camera());
-            let ub_cam = UniformBuffer::new(state.device(), cam_mat);
 
-            let p0 = PipelinePrim::new(state.device(), config, &ub_cam);
+            let p0 = PipelinePrim::new(state.device(), config, cam.buffer());
             let p1 = PipelineInstanced::new(
                 state.device(),
                 config,
-                &ub_cam,
+                cam.buffer(),
                 wgpu::PrimitiveTopology::LineList,
             );
             let p1_plane = PipelineInstanced::new(
                 state.device(),
                 config,
-                &ub_cam,
+                cam.buffer(),
                 wgpu::PrimitiveTopology::TriangleList,
             );
 
@@ -532,7 +525,7 @@ pub mod colored {
             let p2_plane = PipelineComp::new(
                 state.device(),
                 config,
-                &ub_cam,
+                cam.buffer(),
                 &ub_comp,
                 wgpu::PrimitiveTopology::TriangleList,
             );
@@ -563,7 +556,6 @@ pub mod colored {
                 p2_plane,
                 cam,
                 cc,
-                ub_cam,
                 _ub_comp: ub_comp,
                 vb,
                 hand,
@@ -608,9 +600,8 @@ pub mod colored {
         }
 
         pub fn update(&mut self, state: &impl WgpuContext, ts: &super::Timestamp) {
-            self.cc.update_follow_camera(&mut self.cam);
-            let cb = into_camuni(self.cam.camera());
-            self.ub_cam.set(state.queue(), &cb);
+            self.cc.update_follow_camera(self.cam.camera_mut());
+            self.cam.update(state.queue());
 
             // 時間経過でXY平面方向に移動
             let s = ts.elapsed.as_secs_f32();
@@ -643,13 +634,5 @@ pub mod colored {
             instances.push(types::instance::Isometry::new(h.isometry()));
         }
         InstanceBuffer::new(device, &instances)
-    }
-}
-
-pub(super) fn into_camuni(cam: &crate::camera::Camera) -> wgpu_shader::types::uniform::Camera {
-    let pos = cam.pos();
-    wgpu_shader::types::uniform::Camera {
-        view_pos: Vec4::new(pos.x, pos.y, pos.z, 1.0),
-        view_proj: cam.build_view_projection_matrix().into(),
     }
 }

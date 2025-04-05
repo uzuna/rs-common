@@ -647,9 +647,9 @@ pub mod unif {
 
     use crate::camera::{Camera, CameraController, Cams};
 
-    use super::BG_COLOR;
+    use super::{MatrixStack, BG_COLOR};
 
-    struct ObjectUnif {
+    struct DrawObject {
         translate: glam::Vec3,
         scale: glam::Vec3,
         color: glam::Vec4,
@@ -658,7 +658,7 @@ pub mod unif {
     }
 
     #[allow(unused)]
-    impl ObjectUnif {
+    impl DrawObject {
         fn new(
             device: &wgpu::Device,
             translate: glam::Vec3,
@@ -690,11 +690,11 @@ pub mod unif {
             self.color = color;
         }
 
-        fn update(&mut self, queue: &wgpu::Queue) {
+        fn update(&mut self, queue: &wgpu::Queue, ctx: &MatrixStack) {
             let mat =
                 glam::Mat4::from_translation(self.translate) * glam::Mat4::from_scale(self.scale);
             let buffer = wgpu_shader::colored::unif::ObjectInfo {
-                matrix: mat,
+                matrix: ctx.get() * mat,
                 color: self.color,
             };
             self.buffer.set(queue, &buffer);
@@ -710,7 +710,8 @@ pub mod unif {
         cam: Cams,
         cc: CameraController,
         vb: VertexBufferSimple<types::vertex::Color4>,
-        objs: Vec<ObjectUnif>,
+        objs: Vec<DrawObject>,
+        ctx: MatrixStack,
     }
 
     impl Context {
@@ -726,12 +727,14 @@ pub mod unif {
             );
             let vb = VertexBufferSimple::new(state.device(), &model::cube(1.0), None);
             let objs = Self::create_object(state.device());
+            let ctx = MatrixStack::new();
             Self {
                 p0,
                 cam,
                 cc,
                 vb,
                 objs,
+                ctx,
             }
         }
 
@@ -739,9 +742,20 @@ pub mod unif {
             self.cc.process_events(event)
         }
 
-        pub fn update(&mut self, state: &impl WgpuContext, _ts: &super::Timestamp) {
+        pub fn update(&mut self, state: &impl WgpuContext, ts: &super::Timestamp) {
             self.cc.update_follow_camera(self.cam.camera_mut());
             self.cam.update(state.queue());
+
+            let s = ts.elapsed.as_secs_f32();
+            self.ctx.save();
+            self.ctx.translate(Vec3::new(0.0, 0.0, s.sin()));
+            self.ctx.rotate_z(s * 0.1);
+            let scale = s.cos() * 0.25 + 1.0;
+            self.ctx.scale(Vec3::new(scale, scale, scale));
+            self.objs
+                .iter_mut()
+                .for_each(|obj| obj.update(state.queue(), &self.ctx));
+            self.ctx.restore();
         }
 
         /// レンダリング
@@ -758,7 +772,7 @@ pub mod unif {
             })
         }
 
-        fn create_object(device: &wgpu::Device) -> Vec<ObjectUnif> {
+        fn create_object(device: &wgpu::Device) -> Vec<DrawObject> {
             let len = 10;
             let trans_rate = 0.4;
             let offset = trans_rate * (len as f32 / 2.0);
@@ -771,11 +785,73 @@ pub mod unif {
                         0.0,
                     );
                     let color = glam::Vec4::ONE;
-                    let obj = ObjectUnif::new(device, translate, Vec3::ONE * 0.1, color);
+                    let obj = DrawObject::new(device, translate, Vec3::ONE * 0.1, color);
                     objs.push(obj);
                 }
             }
             objs
         }
+    }
+}
+
+/// シーン
+pub struct MatrixStack {
+    matrix: glam::Mat4,
+    stack: Vec<glam::Mat4>,
+}
+
+impl Default for MatrixStack {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MatrixStack {
+    pub fn new() -> Self {
+        Self {
+            matrix: glam::Mat4::IDENTITY,
+            stack: vec![],
+        }
+    }
+
+    /// 現在の行列をスタックに保存
+    pub fn save(&mut self) {
+        self.stack.push(self.matrix);
+    }
+
+    pub fn restore(&mut self) {
+        self.matrix = self.stack.pop().expect("Matrix stack is empty");
+    }
+
+    pub fn get(&self) -> glam::Mat4 {
+        self.matrix
+    }
+
+    pub fn set(&mut self, mat: glam::Mat4) {
+        self.matrix = mat;
+    }
+
+    pub fn dot(&mut self, mat: glam::Mat4) {
+        self.matrix *= mat
+    }
+
+    pub fn translate(&mut self, vec: glam::Vec3) {
+        self.matrix = glam::Mat4::from_translation(vec) * self.matrix;
+    }
+
+    pub fn rotate_x(&mut self, rad: f32) {
+        self.matrix = glam::Mat4::from_rotation_x(rad) * self.matrix;
+    }
+
+    pub fn rotate_y(&mut self, rad: f32) {
+        self.matrix = glam::Mat4::from_rotation_y(rad) * self.matrix;
+    }
+
+    pub fn rotate_z(&mut self, rad: f32) {
+        self.matrix = glam::Mat4::from_rotation_z(rad) * self.matrix;
+    }
+
+    pub fn scale(&mut self, vec: glam::Vec3) {
+        self.matrix = glam::Mat4::from_scale(vec) * self.matrix;
     }
 }

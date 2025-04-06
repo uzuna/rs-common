@@ -143,14 +143,30 @@ impl SceneGraphNode {
         }
     }
 
-    /// 子ノードの追加
-    pub fn add_child(&mut self, child: SceneGraphNode) -> anyhow::Result<()> {
+    // 子ノードの追加
+    fn add_child_inner(&mut self, child: SceneGraphNode) -> anyhow::Result<()> {
         if self.get_child(&child.name).is_some() {
             return Err(anyhow::anyhow!("Child with the same name already exists"));
         }
         self.children.push(child);
         self.set_fullname(self.fullname().to_string());
         Ok(())
+    }
+
+    /// 任意の親ノードの下に子ノードを追加する
+    pub fn add_child(&mut self, child: SceneGraphNode, parent_name: String) -> anyhow::Result<()> {
+        if self.contains(&child.name) {
+            return Err(anyhow::anyhow!("Child with the same name already exists"));
+        }
+        // 自身の子からその先もparent_nameを探して、見つかったら子ノードを追加する
+        match self.fine_by_name_mut(parent_name) {
+            Some(parent) => parent.add_child_inner(child),
+            None => Err(anyhow::anyhow!("Parent node not found")),
+        }
+    }
+
+    fn contains(&self, name: &str) -> bool {
+        self.name == name || self.children.iter().any(|c| c.contains(name))
     }
 
     /// 子ノードの削除
@@ -220,9 +236,21 @@ impl SceneGraphNode {
     }
 
     /// 配下から名前を指定してノードを取得する
-    pub fn find(&self, name: &str) -> Option<&SceneGraphNode> {
-        let keys: Vec<&str> = name.split('-').collect();
+    pub fn find(&self, fullname: &str) -> Option<&SceneGraphNode> {
+        let keys: Vec<&str> = fullname.split('-').collect();
         self.find_inner(&keys)
+    }
+
+    pub fn fine_by_name_mut(&mut self, name: String) -> Option<&mut SceneGraphNode> {
+        if self.name == name {
+            return Some(self);
+        }
+        for child in &mut self.children {
+            if let Some(found) = child.fine_by_name_mut(name.clone()) {
+                return Some(found);
+            }
+        }
+        None
     }
 }
 
@@ -264,21 +292,54 @@ mod tests {
         let child3 = SceneGraphNode::new("child3", Trs::with_t(Vec3::Z));
         let child3_dup = SceneGraphNode::new("child3", Trs::with_t(Vec3::Z));
 
-        child1.add_child(child2)?;
-        root.add_child(child1)?;
-        root.add_child(child3)?;
+        child1.add_child_inner(child2)?;
+        root.add_child_inner(child1)?;
+        root.add_child_inner(child3)?;
 
         // ルートから座標更新
         root.set_world(glam::Mat4::IDENTITY);
 
         // 同じ名前のノードは追加できない
-        assert!(root.add_child(child3_dup).is_err());
+        assert!(root.add_child_inner(child3_dup).is_err());
 
         // ツリー構造を表示する
         print_nodes(&root, 0, &fmt_node_fullname);
 
         // それぞれのノードにアクセスする
         assert!(root.iter().count() == 4);
+
+        // ノードフルネームで特定ノードにアクセスする
+        let expect = [
+            ("root", glam::Vec3::ZERO),
+            ("root-child1", glam::Vec3::X),
+            ("root-child1-child2", glam::Vec3::X + glam::Vec3::Y),
+            ("root-child3", glam::Vec3::Z),
+        ];
+        for (i, (name, pos)) in expect.iter().enumerate() {
+            let node = root
+                .find(name)
+                .unwrap_or_else(|| panic!("Node not found: [{i}] {}", name));
+            assert_eq!(node.fullname(), *name);
+            assert_eq!(node.vars.world, glam::Mat4::from_translation(*pos));
+        }
+
+        Ok(())
+    }
+
+    // nodeと親の名前のみで追加する
+    #[cfg(test)]
+    fn test_build_node_by_list() -> anyhow::Result<()> {
+        let mut root = SceneGraphNode::root();
+        let child1 = SceneGraphNode::new("child1", Trs::with_t(Vec3::X));
+        let child2 = SceneGraphNode::new("child2", Trs::with_t(Vec3::Y));
+        let child3 = SceneGraphNode::new("child3", Trs::with_t(Vec3::Z));
+
+        root.add_child(child1, "root".to_string())?;
+        root.add_child(child2, "child1".to_string())?;
+        root.add_child(child3, "root".to_string())?;
+
+        // ルートから座標更新
+        root.set_world(glam::Mat4::IDENTITY);
 
         // ノードフルネームで特定ノードにアクセスする
         let expect = [

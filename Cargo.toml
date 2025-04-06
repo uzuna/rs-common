@@ -29,6 +29,7 @@ num-traits = "0.2.19"
 rand = "0.9.0"
 rawproc = { path = "crates/rawproc" }
 serde = "1.0.218"
+serde_yaml = "0.9.33"
 thiserror = "2.0.12"
 tempfile = "3.18.0"
 tokio = "1.44.0"

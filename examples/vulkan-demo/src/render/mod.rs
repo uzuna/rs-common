@@ -723,6 +723,8 @@ pub mod unif {
         }
     }
 
+    // type NodeUniform = scene::NodeUniform<colored::unif::DrawInfo, colored::DrawInfoBindGroup>;
+
     pub struct Context {
         p0: colored::PlUnif,
         cam: Cams,

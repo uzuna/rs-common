@@ -1,5 +1,7 @@
 use std::time::{Duration, Instant};
 
+mod scene;
+
 pub const BG_COLOR: wgpu::Color = wgpu::Color {
     r: 0.1,
     g: 0.2,
@@ -817,7 +819,7 @@ pub mod unif {
     }
 }
 
-/// シーン
+/// 依存関係のあるオブジェクト位置変換に使う
 pub struct MatrixStack {
     matrix: glam::Mat4,
     stack: Vec<glam::Mat4>,

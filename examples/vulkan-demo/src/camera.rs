@@ -1,4 +1,4 @@
-use glam::Vec4;
+use glam::{Mat4, Vec4};
 use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, UnitQuaternion, Vector3};
 use wgpu_shader::{types, uniform::UniformBuffer};
 use winit::{
@@ -289,6 +289,18 @@ impl Cams {
 
     pub fn update(&mut self, queue: &wgpu::Queue) {
         self.buffer.write(queue, &self.cam.camera().build_buffer());
+    }
+
+    pub fn update_world(&mut self, queue: &wgpu::Queue, world: Mat4) {
+        let mut cam = self.cam.camera().build_buffer();
+        cam.update_world(world);
+        self.buffer.write(queue, &cam);
+    }
+
+    pub fn update_world_pos(&mut self, queue: &wgpu::Queue, world: Mat4) {
+        let mut cam = self.cam.camera().build_buffer();
+        cam.update_world_pos(world);
+        self.buffer.write(queue, &cam);
     }
 
     pub fn buffer(&self) -> &UniformBuffer<types::uniform::Camera> {

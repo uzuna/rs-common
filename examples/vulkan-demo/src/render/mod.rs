@@ -643,7 +643,7 @@ pub mod unif {
 
     use glam::{Mat4, Vec3};
     use wgpu_shader::{
-        colored::{self, unif, GlobalUnif},
+        colored::{self, GlobalUnif},
         model, types,
         uniform::UniformBuffer,
         util::render,
@@ -651,11 +651,11 @@ pub mod unif {
         WgpuContext,
     };
 
-    use crate::camera::{Camera, CameraController, Cams};
+    use crate::camera::{Camera, CameraController, Cams, FollowCamera};
 
     use super::{
         scene::{self, ModelNodeImpl, Trs},
-        MatrixStack, BG_COLOR,
+        BG_COLOR,
     };
 
     type ModelNode = scene::ModelNode<SlotType>;
@@ -666,6 +666,8 @@ pub mod unif {
         Draw(Drawable),
         // 表示位置を調整するための座標点としてのオブジェクト
         Bone,
+        // 親を視点とするカメラ
+        FollowCamera(CameraObj),
     }
 
     impl From<Drawable> for SlotType {
@@ -708,80 +710,34 @@ pub mod unif {
         }
     }
 
-    struct DrawObject {
-        // 配置位置変更
-        translate: glam::Vec3,
-        // 最後のスケール
-        scale: glam::Vec3,
-        color: glam::Vec4,
-        buffer: UniformBuffer<colored::unif::DrawInfo>,
-        bg: colored::DrawInfoBindGroup,
+    struct CameraObj {
+        cam: Cams,
     }
-
-    #[allow(unused)]
-    impl DrawObject {
-        fn new(
-            device: &wgpu::Device,
-            translate: glam::Vec3,
-            scale: glam::Vec3,
-            color: glam::Vec4,
-        ) -> Self {
-            let mat = glam::Mat4::from_translation(translate) * glam::Mat4::from_scale(scale);
-            let buffer = colored::unif::DrawInfo { matrix: mat, color };
-            let buffer = UniformBuffer::new(device, buffer);
-            let bg = colored::PlUnif::make_draw_unif(device, &buffer);
-            Self {
-                translate,
-                scale,
-                color,
-                buffer,
-                bg,
-            }
+    impl CameraObj {
+        fn new(cam: Cams) -> Self {
+            Self { cam }
         }
 
-        fn set_trans(&mut self, translate: glam::Vec3) {
-            self.translate = translate;
+        fn get_cam_mut(&mut self) -> &mut FollowCamera {
+            self.cam.camera_mut()
         }
 
-        fn set_scale(&mut self, scale: glam::Vec3) {
-            self.scale = scale;
-        }
-
-        fn set_color(&mut self, color: glam::Vec4) {
-            self.color = color;
-        }
-
-        fn update(&mut self, queue: &wgpu::Queue, ctx: &MatrixStack) {
-            // ローカルTranslate変換 -> 外部からの変形適用 -> 最終スケール合わせ
-            let mat = glam::Mat4::from_translation(self.translate);
-            let buffer = colored::unif::DrawInfo {
-                matrix: mat * ctx.get() * glam::Mat4::from_scale(self.scale),
-                color: self.color,
-            };
-            self.buffer.write(queue, &buffer);
-        }
-
-        fn draw(&self, rp: &mut wgpu::RenderPass<'_>) {
-            self.bg.set(rp);
+        fn update(&mut self, queue: &wgpu::Queue, matrix: Mat4) {
+            self.cam.update_world_pos(queue, matrix);
         }
     }
 
-    struct Objects {
-        global: GlobalUnif,
-        objs: Vec<DrawObject>,
-    }
-    impl Objects {
-        fn new(g2l: GlobalUnif, objs: Vec<DrawObject>) -> Self {
-            Self { global: g2l, objs }
+    impl From<Cams> for CameraObj {
+        fn from(cam: Cams) -> Self {
+            Self::new(cam)
         }
     }
 
     pub struct Context {
         p0: colored::PlUnif,
-        cam: Cams,
         cc: CameraController,
         vb: VertexBufferSimple<types::vertex::Color4>,
-        o: Objects,
+        g2l: GlobalUnif,
         scene: SceneNode,
     }
 
@@ -789,6 +745,7 @@ pub mod unif {
         pub fn new(state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) -> Self {
             let cam = Camera::with_aspect(config.width as f32 / config.height as f32);
             let cam = Cams::new(state.device(), cam);
+
             let cc = CameraController::new(0.05);
             let p0 = colored::PlUnif::new(
                 state.device(),
@@ -797,9 +754,15 @@ pub mod unif {
                 wgpu::PrimitiveTopology::TriangleList,
             );
             let vb = VertexBufferSimple::new(state.device(), &model::cube(1.0), None);
-            let objs = Self::create_object(state.device());
-            let g2l = GlobalUnif::new(state.device());
+            let g2l: GlobalUnif = GlobalUnif::new(state.device());
             let mut scene = Self::create_model(state.device()).unwrap();
+            scene
+                .model_mut()
+                .add_node(
+                    Some("b2"),
+                    ModelNode::new("cam", Trs::default(), SlotType::FollowCamera(cam.into())),
+                )
+                .unwrap();
             for node in scene.model_mut().iter_mut() {
                 let world = node.world();
                 if let SlotType::Draw(ref mut obj) = node.value_mut() {
@@ -808,10 +771,9 @@ pub mod unif {
             }
             Self {
                 p0,
-                cam,
                 cc,
                 vb,
-                o: Objects::new(g2l, objs),
+                g2l,
                 scene,
             }
         }
@@ -820,28 +782,20 @@ pub mod unif {
             self.cc.process_events(event)
         }
 
+        fn update_camera(&mut self, state: &impl WgpuContext) {
+            let node = self.scene.model_mut().get_must_mut("cam");
+
+            let matrix = node.world();
+            if let SlotType::FollowCamera(ref mut obj) = node.value_mut() {
+                self.cc.update_follow_camera(obj.get_cam_mut());
+                obj.update(state.queue(), matrix);
+            }
+        }
+
         pub fn update(&mut self, state: &impl WgpuContext, ts: &super::Timestamp) {
-            self.cc.update_follow_camera(self.cam.camera_mut());
-            self.cam.update(state.queue());
+            self.update_camera(state);
 
             let s = ts.elapsed.as_secs_f32();
-
-            // オブジェクトのグローバル座標を調整
-            let mut ms = MatrixStack::new();
-            ms.translate(Vec3::new(0.0, 0.0, s.sin()));
-            ms.rotate_z(s * 0.1);
-            let scale = s.cos() * 0.25 + 1.0;
-            ms.scale(Vec3::new(scale, scale, scale));
-            self.o
-                .global
-                .write(state.queue(), &unif::GlobalInfo { matrix: ms.get() });
-
-            // あとのobjectのほうがより回転がきつくなるような動作
-            let mut ms = MatrixStack::new();
-            for obj in self.o.objs.iter_mut() {
-                ms.rotate_y((s * 0.1).sin());
-                obj.update(state.queue(), &ms);
-            }
 
             // モデルの座標更新
             let models = self.scene.model_mut();
@@ -868,11 +822,9 @@ pub mod unif {
                 // 頂点バッファをセットして描画
                 self.vb.set(rp, 0);
 
-                self.o.global.set(rp);
-                for obj in self.o.objs.iter() {
-                    obj.draw(rp);
-                    rp.draw(0..self.vb.len(), 0..1);
-                }
+                // 全体移動
+                self.g2l.set(rp);
+
                 for obj in self.scene.model().iter() {
                     if let SlotType::Draw(obj) = obj.value() {
                         obj.draw(rp);
@@ -880,26 +832,6 @@ pub mod unif {
                     }
                 }
             })
-        }
-
-        fn create_object(device: &wgpu::Device) -> Vec<DrawObject> {
-            let len = 10;
-            let trans_rate = 0.4;
-            let offset = trans_rate * (len as f32 / 2.0);
-            let mut objs = vec![];
-            for i in 0..len {
-                for j in 0..len {
-                    let translate = glam::Vec3::new(
-                        i as f32 * trans_rate - offset,
-                        j as f32 * trans_rate - offset,
-                        0.0,
-                    );
-                    let color = glam::Vec4::ONE;
-                    let obj = DrawObject::new(device, translate, Vec3::ONE * 0.1, color);
-                    objs.push(obj);
-                }
-            }
-            objs
         }
 
         fn create_model(device: &wgpu::Device) -> anyhow::Result<SceneNode> {

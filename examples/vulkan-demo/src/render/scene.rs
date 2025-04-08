@@ -50,6 +50,14 @@ impl Trs {
         Self::new(translation, glam::Quat::IDENTITY, glam::Vec3::ONE)
     }
 
+    pub fn with_s(scale: f32) -> Self {
+        Self::new(
+            glam::Vec3::ZERO,
+            glam::Quat::IDENTITY,
+            glam::Vec3::splat(scale),
+        )
+    }
+
     pub fn set_translation(&mut self, translation: glam::Vec3) {
         self.translation = translation;
     }
@@ -97,93 +105,12 @@ pub struct DrawNode {
     trs: Trs,
 }
 
-// pub struct NodeUniform<U, B> {
-//     // 座標変換情報の保持
-//     buffer: UniformBuffer<U>,
-//     // レンダラとのリンク情報
-//     bg: B,
-//     //
-//     drawer: Vec<u32>,
-// }
-
-// impl<U, B> NodeUniform<U, B> {
-//     pub fn new(buffer: UniformBuffer<U>, bg: B) -> Self {
-//         Self { buffer, bg }
-//     }
-
-//     pub fn buffer(&self) -> &UniformBuffer<U> {
-//         &self.buffer
-//     }
-
-//     pub fn bg(&self) -> &B {
-//         &self.bg
-//     }
-// }
-
-// /// シーングラフと描画用のユニフォームバッファを合わせたコンテキスト
-// pub struct SceneContext<N> {
-//     map: FxHashMap<String, N>,
-//     graph: SceneGraphNode,
-// }
-
-// impl<N> SceneContext<N> {
-//     pub fn add_node(
-//         &mut self,
-//         node: SceneGraphNode,
-//         parent: impl Into<String>,
-//         f: impl Fn(&SceneGraphNode) -> N,
-//     ) -> anyhow::Result<()> {
-//         let full_name = self.graph.add_child(node, parent)?;
-//         let node = self.graph.find(&full_name).unwrap();
-//         self.map.insert(full_name, f(node));
-//         Ok(())
-//     }
-
-//     pub fn remove_node(&mut self, name: &str) {
-//         let fullname = self.graph.find(name).unwrap().fullname();
-//         if self.map.contains_key(fullname) {
-//             self.map.remove(fullname);
-//         }
-//         self.graph.remove_child(name);
-//     }
-
-//     /// ノードの取得
-//     pub fn find_mut(&mut self, name: &str) -> Option<&mut SceneGraphNode> {
-//         self.graph.find_mut(name)
-//     }
-
-//     /// ワールド座標の更新
-//     pub fn set_world(&mut self, world: glam::Mat4) {
-//         self.graph.set_world(world);
-//     }
-
-//     pub fn keys(&self) -> impl Iterator<Item = &String> {
-//         self.map.keys()
-//     }
-
-//     /// Uniform更新向けのノード取得関数
-//     pub fn get_mut(&mut self, full_name: &str) -> Option<(&SceneGraphNode, &mut N)> {
-//         let node = self.graph.find(full_name)?;
-//         let u = self.map.get_mut(full_name)?;
-//         Some((node, u))
-//     }
-// }
-
-/// 一時的な表示物としてワールド座標に生成、削除を繰り返すノードを管理する
-///
-/// このノードの子になるものはなく、親も基本はワールド座標で更新されることがない
-/// 頻繁に追加が行われ、一定条件で削除を行うことが多い
-pub struct OrphanNode {}
-
 /// ルートとなるノードでシーンに対して一つのみとなる
 pub struct SceneNode<M> {
     model: ModelNodes<M>,
 }
 
-impl<M> Default for SceneNode<M>
-where
-    M: Default,
-{
+impl<M> Default for SceneNode<M> {
     fn default() -> Self {
         Self {
             model: ModelNodes::new(),
@@ -191,7 +118,17 @@ where
     }
 }
 
-// モデルノードが実装するべき関数
+impl<M> SceneNode<M> {
+    pub fn model(&self) -> &ModelNodes<M> {
+        &self.model
+    }
+
+    pub fn model_mut(&mut self) -> &mut ModelNodes<M> {
+        &mut self.model
+    }
+}
+
+/// [ModelNodes]が期待するノードが実装するべき関数
 pub trait ModelNodeImpl {
     // ノードの名前
     fn name(&self) -> &str;
@@ -203,14 +140,18 @@ pub trait ModelNodeImpl {
     fn set_parent(&mut self, id: Option<u64>);
     fn parent(&self) -> Option<u64>;
 
-    // 座標更新
+    // 座標更新に関する実装
     fn world(&self) -> glam::Mat4;
     fn update_world(&mut self, world: glam::Mat4) -> glam::Mat4;
 }
 
-struct ModelNodes<M> {
+/// モデルノードの管理
+pub struct ModelNodes<M> {
+    // ノードの保持
     map: FxHashMap<u64, M>,
+    // 名前でノードにアクセスするためのマップ
     names: FxHashMap<String, u64>,
+    // ノードID割当のカウンタ
     counter: u64,
 }
 
@@ -223,10 +164,23 @@ impl<M> ModelNodes<M> {
         }
     }
 
+    /// ノードの取得
     pub fn get_node(&self, name: &str) -> Option<&M> {
         self.names.get(name).map(|v| self.map.get(v))?
     }
 
+    /// ノードの取得
+    pub fn get_node_mut(&mut self, name: &str) -> Option<&mut M> {
+        self.names.get(name).map(|v| self.map.get_mut(v))?
+    }
+
+    /// ノードが確実にある場合にunwrapを省略する。[Self::get_node_mut]
+    pub fn get_must_mut(&mut self, name: &str) -> &mut M {
+        self.get_node_mut(name)
+            .unwrap_or_else(|| panic!("not found node {name}"))
+    }
+
+    // NodeのIDを取得
     fn next_id(&mut self) -> u64 {
         let id = self.counter;
         self.counter += 1;
@@ -238,6 +192,10 @@ impl<M> ModelNodes<M>
 where
     M: ModelNodeImpl,
 {
+    /// ノードの追加
+    ///
+    /// parent: 親ノードの名前
+    /// node: 追加するノード
     pub fn add_node(&mut self, parent: Option<&str>, mut node: M) -> anyhow::Result<()> {
         if self.names.contains_key(node.name()) {
             return Err(anyhow::anyhow!(
@@ -273,6 +231,9 @@ where
         Ok(())
     }
 
+    /// ノードの削除
+    ///
+    /// name: ノードの名前
     pub fn remove_node(&mut self, name: &str) -> anyhow::Result<()> {
         let Some(node_id) = self.names.remove(name) else {
             return Err(anyhow::anyhow!("not found node-id {name}"));
@@ -295,12 +256,21 @@ where
         Ok(())
     }
 
-    /// 任意のノードのワールド座標を更新する
-    pub fn update_world(&mut self, name: &str, world: glam::Mat4) -> anyhow::Result<()> {
+    /// 特定ノードのlocalを更新した場合に、その下のノードのworldを更新する
+    pub fn update_world(&mut self, name: &str) -> anyhow::Result<()> {
         let Some(node_id) = self.names.get(name) else {
             return Err(anyhow::anyhow!("not found node {name}"));
         };
         let node_id = *node_id;
+        let world = {
+            let node = self.map.get_mut(&node_id).unwrap();
+            node.parent()
+                .map(|id| match self.map.get(&id) {
+                    Some(parent) => parent.world(),
+                    None => glam::Mat4::IDENTITY,
+                })
+                .unwrap_or(glam::Mat4::IDENTITY)
+        };
         self.update_world_inner(world, &[node_id]);
         Ok(())
     }
@@ -314,12 +284,22 @@ where
         }
     }
 
+    /// ノードの数を取得
     pub fn len(&self) -> usize {
         self.map.len()
     }
 
+    /// ノードを持っていないかどうか
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &M> {
+        self.map.values()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut M> {
+        self.map.values_mut()
     }
 
     /// ノードの表示
@@ -360,12 +340,23 @@ where
     }
 }
 
-struct ModelNode<T> {
+/// ノードの基本実装
+///
+/// ユーザーが持たせたい情報は[ModelNode<T>]に格納する
+pub struct ModelNode<T> {
+    // ノードの名前
     name: String,
+    // 親ノードのID
     parent: Option<u64>,
+    // 子ノードのID
     children: Vec<u64>,
-    local: glam::Mat4,
+    // ローカル座標
+    local: Trs,
+    // ノードグラフからたどって作られたワールド座標
     world: glam::Mat4,
+    // world座標を更新した場合にtrueになる
+    update_flag: bool,
+    // ユーザー固有データ
     value: T,
 }
 
@@ -375,34 +366,49 @@ impl<T: Default> Default for ModelNode<T> {
             name: String::new(),
             parent: None,
             children: vec![],
-            local: glam::Mat4::IDENTITY,
+            local: Trs::default(),
             world: glam::Mat4::IDENTITY,
+            update_flag: false,
             value: Default::default(),
         }
     }
 }
 
 impl<T> ModelNode<T> {
-    pub fn new(name: impl Into<String>, value: T) -> Self {
-        Self {
-            name: name.into(),
-            parent: None,
-            children: vec![],
-            local: glam::Mat4::IDENTITY,
-            world: glam::Mat4::IDENTITY,
-            value,
-        }
-    }
-
-    pub fn with_local(name: impl Into<String>, local: glam::Mat4, value: T) -> Self {
+    pub fn new(name: impl Into<String>, local: Trs, value: T) -> Self {
         Self {
             name: name.into(),
             parent: None,
             children: vec![],
             local,
             world: glam::Mat4::IDENTITY,
+            update_flag: false,
             value,
         }
+    }
+
+    pub fn with_value(name: impl Into<String>, value: T) -> Self {
+        Self::new(name, Trs::default(), value)
+    }
+
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+
+    pub fn value_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+
+    /// local座標を編集する
+    pub fn trs_mut(&mut self) -> &mut Trs {
+        &mut self.local
+    }
+
+    /// 更新フラグを確認して折る
+    pub fn get_update(&mut self) -> bool {
+        let flag = self.update_flag;
+        self.update_flag = false;
+        flag
     }
 }
 
@@ -436,7 +442,8 @@ impl<T> ModelNodeImpl for ModelNode<T> {
     }
 
     fn update_world(&mut self, world: glam::Mat4) -> glam::Mat4 {
-        self.world = world * self.local;
+        self.update_flag = true;
+        self.world = world * self.local.to_homogeneous();
         self.world
     }
 }
@@ -447,7 +454,7 @@ mod tests {
 
     use crate::render::scene::{ModelNodes, SceneNode};
 
-    use super::ModelNode;
+    use super::{ModelNode, Trs};
 
     type DummyModel = ModelNode<()>;
 
@@ -469,7 +476,7 @@ mod tests {
             (None, "r3"),
         ];
         for (parent, name) in names {
-            let node = DummyModel::new(name, ());
+            let node = DummyModel::with_value(name, ());
             scene.model.add_node(parent, node)?;
         }
 
@@ -512,8 +519,8 @@ mod tests {
             (None, "r2", Vec3::Y, Vec3::Y),
             (None, "r3", Vec3::Z, Vec3::Z),
         ];
-        for (parent, name, mat, _) in names {
-            let node = DummyModel::with_local(name, glam::Mat4::from_translation(mat), ());
+        for (parent, name, t, _) in names {
+            let node = DummyModel::new(name, Trs::with_t(t), ());
             scene.model.add_node(parent, node)?;
         }
 

@@ -641,7 +641,7 @@ pub mod colored {
 
 pub mod unif {
 
-    use glam::Vec3;
+    use glam::{Mat4, Vec3};
     use wgpu_shader::{
         colored::{self, unif, GlobalUnif},
         model, types,
@@ -653,7 +653,60 @@ pub mod unif {
 
     use crate::camera::{Camera, CameraController, Cams};
 
-    use super::{MatrixStack, BG_COLOR};
+    use super::{
+        scene::{self, ModelNodeImpl, Trs},
+        MatrixStack, BG_COLOR,
+    };
+
+    type ModelNode = scene::ModelNode<SlotType>;
+    type SceneNode = scene::SceneNode<ModelNode>;
+
+    enum SlotType {
+        // 表示内容を含むオブジェクト
+        Draw(Drawable),
+        // 表示位置を調整するための座標点としてのオブジェクト
+        Bone,
+    }
+
+    impl From<Drawable> for SlotType {
+        fn from(d: Drawable) -> Self {
+            Self::Draw(d)
+        }
+    }
+
+    struct Drawable {
+        color: glam::Vec4,
+        buffer: UniformBuffer<colored::unif::DrawInfo>,
+        bg: colored::DrawInfoBindGroup,
+    }
+
+    impl Drawable {
+        fn new(device: &wgpu::Device, color: glam::Vec4) -> Self {
+            let buffer = colored::unif::DrawInfo {
+                matrix: glam::Mat4::IDENTITY,
+                color,
+            };
+            let buffer = UniformBuffer::new(device, buffer);
+            let bg = colored::PlUnif::make_draw_unif(device, &buffer);
+            Self { color, buffer, bg }
+        }
+
+        fn color(&mut self, color: glam::Vec4) {
+            self.color = color;
+        }
+
+        fn update(&mut self, queue: &wgpu::Queue, matrix: Mat4) {
+            let buffer = colored::unif::DrawInfo {
+                matrix,
+                color: self.color,
+            };
+            self.buffer.write(queue, &buffer);
+        }
+
+        fn draw(&self, rp: &mut wgpu::RenderPass<'_>) {
+            self.bg.set(rp);
+        }
+    }
 
     struct DrawObject {
         // 配置位置変更
@@ -723,14 +776,13 @@ pub mod unif {
         }
     }
 
-    // type NodeUniform = scene::NodeUniform<colored::unif::DrawInfo, colored::DrawInfoBindGroup>;
-
     pub struct Context {
         p0: colored::PlUnif,
         cam: Cams,
         cc: CameraController,
         vb: VertexBufferSimple<types::vertex::Color4>,
         o: Objects,
+        scene: SceneNode,
     }
 
     impl Context {
@@ -747,12 +799,20 @@ pub mod unif {
             let vb = VertexBufferSimple::new(state.device(), &model::cube(1.0), None);
             let objs = Self::create_object(state.device());
             let g2l = GlobalUnif::new(state.device());
+            let mut scene = Self::create_model(state.device()).unwrap();
+            for node in scene.model_mut().iter_mut() {
+                let world = node.world();
+                if let SlotType::Draw(ref mut obj) = node.value_mut() {
+                    obj.update(state.queue(), world);
+                }
+            }
             Self {
                 p0,
                 cam,
                 cc,
                 vb,
                 o: Objects::new(g2l, objs),
+                scene,
             }
         }
 
@@ -782,6 +842,23 @@ pub mod unif {
                 ms.rotate_y((s * 0.1).sin());
                 obj.update(state.queue(), &ms);
             }
+
+            // モデルの座標更新
+            let models = self.scene.model_mut();
+            models.get_must_mut("b1").trs_mut().set_rot_y(s);
+            models.get_must_mut("b2").trs_mut().set_rot_z(s * 1.2);
+            models.get_must_mut("b3").trs_mut().set_rot_x(s * 1.4);
+            models.update_world("b1").unwrap();
+
+            // 更新対象のみuniformを更新
+            for node in models.iter_mut() {
+                if node.get_update() {
+                    let world = node.world();
+                    if let SlotType::Draw(ref mut obj) = node.value_mut() {
+                        obj.update(state.queue(), world);
+                    }
+                }
+            }
         }
 
         /// レンダリング
@@ -795,6 +872,12 @@ pub mod unif {
                 for obj in self.o.objs.iter() {
                     obj.draw(rp);
                     rp.draw(0..self.vb.len(), 0..1);
+                }
+                for obj in self.scene.model().iter() {
+                    if let SlotType::Draw(obj) = obj.value() {
+                        obj.draw(rp);
+                        rp.draw(0..self.vb.len(), 0..1);
+                    }
                 }
             })
         }
@@ -817,6 +900,48 @@ pub mod unif {
                 }
             }
             objs
+        }
+
+        fn create_model(device: &wgpu::Device) -> anyhow::Result<SceneNode> {
+            let l = [
+                (None, "b1", Trs::default(), SlotType::Bone),
+                (
+                    Some("b1"),
+                    "d1",
+                    Trs::with_s(0.1),
+                    Drawable::new(device, glam::Vec4::ONE).into(),
+                ),
+                (Some("b1"), "b2", Trs::with_t(Vec3::Z * 0.5), SlotType::Bone),
+                (
+                    Some("b2"),
+                    "d2",
+                    Trs::with_s(0.1),
+                    Drawable::new(device, glam::Vec4::ONE).into(),
+                ),
+                (Some("b2"), "b3", Trs::with_t(Vec3::Z * 0.5), SlotType::Bone),
+                (
+                    Some("b3"),
+                    "d3",
+                    Trs::with_s(0.1),
+                    Drawable::new(device, glam::Vec4::ONE).into(),
+                ),
+                (Some("b3"), "b4", Trs::with_t(Vec3::Z * 0.5), SlotType::Bone),
+                (
+                    Some("b4"),
+                    "d4",
+                    Trs::with_s(0.1),
+                    Drawable::new(device, glam::Vec4::ONE).into(),
+                ),
+            ];
+
+            let mut scene = SceneNode::default();
+
+            for (parent, name, trs, slot) in l.into_iter() {
+                let model = ModelNode::new(name, trs, slot);
+                scene.model_mut().add_node(parent, model)?;
+            }
+
+            Ok(scene)
         }
     }
 }

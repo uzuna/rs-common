@@ -1,6 +1,6 @@
 use wgpu::PrimitiveTopology;
 
-use crate::{common, types, uniform::UniformBuffer};
+use crate::{common, prelude::Blend, types, uniform::UniformBuffer};
 
 #[rustfmt::skip]
 pub mod instanced;
@@ -22,15 +22,21 @@ impl PipelinePrim {
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
         camera: &UniformBuffer<types::uniform::Camera>,
+        blend: Blend,
     ) -> Self {
         let shader = shader::create_shader_module(device);
 
         let layout = shader::create_pipeline_layout(device);
-        let fs_target = common::create_fs_target(config.format);
+        let fs_target = common::create_fs_target(config.format, blend);
         let ve = shader::vs_main_entry(wgpu::VertexStepMode::Vertex);
         let vs = shader::vertex_state(&shader, &ve);
         let fe = shader::fs_main_entry(fs_target);
         let fs = shader::fragment_state(&shader, &fe);
+
+        let depth_enabled = match blend {
+            Blend::Alpha => false,
+            _ => true,
+        };
 
         let pipeline = common::create_render_pipeline(
             device,
@@ -39,6 +45,7 @@ impl PipelinePrim {
             Some(fs),
             Some(crate::texture::Texture::DEPTH_FORMAT),
             PrimitiveTopology::LineList,
+            depth_enabled,
         );
 
         let bg0 = shader::bind_groups::BindGroup0::from_bindings(
@@ -75,16 +82,22 @@ impl PipelineInstanced {
         config: &wgpu::SurfaceConfiguration,
         camera: &UniformBuffer<types::uniform::Camera>,
         topology: PrimitiveTopology,
+        blend: Blend,
     ) -> Self {
         let shader = instanced::create_shader_module(device);
 
         let layout = instanced::create_pipeline_layout(device);
-        let fs_target = common::create_fs_target(config.format);
+        let fs_target = common::create_fs_target(config.format, blend);
         let ve =
             instanced::vs_main_entry(wgpu::VertexStepMode::Vertex, wgpu::VertexStepMode::Instance);
         let vs = instanced::vertex_state(&shader, &ve);
         let fe = instanced::fs_main_entry(fs_target);
         let fs = instanced::fragment_state(&shader, &fe);
+
+        let depth_enabled = match blend {
+            Blend::Alpha => false,
+            _ => true,
+        };
 
         let pipeline = common::create_render_pipeline(
             device,
@@ -93,6 +106,7 @@ impl PipelineInstanced {
             Some(fs),
             Some(crate::texture::Texture::DEPTH_FORMAT),
             topology,
+            depth_enabled,
         );
 
         let bg0 = instanced::bind_groups::BindGroup0::from_bindings(
@@ -134,16 +148,22 @@ impl PlUnif {
         config: &wgpu::SurfaceConfiguration,
         camera: &UniformBuffer<types::uniform::Camera>,
         topology: PrimitiveTopology,
+        blend: Blend,
     ) -> Self {
         use unif as s;
         let shader = s::create_shader_module(device);
 
         let layout = s::create_pipeline_layout(device);
-        let fs_target = common::create_fs_target(config.format);
+        let fs_target = common::create_fs_target(config.format, blend);
         let ve = s::vs_main_entry(wgpu::VertexStepMode::Vertex);
         let vs = s::vertex_state(&shader, &ve);
         let fe = s::fs_main_entry(fs_target);
         let fs = s::fragment_state(&shader, &fe);
+
+        let depth_enabled = match blend {
+            Blend::Alpha => false,
+            _ => true,
+        };
 
         let pipeline = common::create_render_pipeline(
             device,
@@ -152,6 +172,7 @@ impl PlUnif {
             Some(fs),
             Some(crate::texture::Texture::DEPTH_FORMAT),
             topology,
+            depth_enabled,
         );
 
         let bg0 = s::bind_groups::BindGroup0::from_bindings(

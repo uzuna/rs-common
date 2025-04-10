@@ -3,6 +3,7 @@ use wgpu::PrimitiveTopology;
 
 use crate::{
     common::{create_fs_target, create_render_pipeline},
+    prelude::Blend,
     types,
     uniform::UniformBuffer,
     vertex::{InstanceBuffer, VertexBuffer},
@@ -104,7 +105,7 @@ impl Pipeline {
         let shader = shader::create_shader_module(device);
 
         let layout = shader::create_pipeline_layout(device);
-        let fs_target = create_fs_target(config.format);
+        let fs_target = create_fs_target(config.format, Blend::Replace);
         let ve =
             shader::vs_main_entry(wgpu::VertexStepMode::Vertex, wgpu::VertexStepMode::Instance);
         let vs = shader::vertex_state(&shader, &ve);
@@ -118,6 +119,7 @@ impl Pipeline {
             Some(fs),
             Some(crate::texture::Texture::DEPTH_FORMAT),
             PrimitiveTopology::default(),
+            true,
         );
 
         let bg1 = shader::bind_groups::BindGroup1::from_bindings(
@@ -182,7 +184,7 @@ impl LightRenderPipeline {
         let shader = light::create_shader_module(device);
 
         let layout = light::create_pipeline_layout(device);
-        let fs_target = create_fs_target(config.format);
+        let fs_target = create_fs_target(config.format, Blend::Replace);
         let ve = light::vs_main_entry(wgpu::VertexStepMode::Vertex);
         let vs = light::vertex_state(&shader, &ve);
         let fe = light::fs_main_entry(fs_target);
@@ -195,6 +197,7 @@ impl LightRenderPipeline {
             Some(fs),
             Some(crate::texture::Texture::DEPTH_FORMAT),
             PrimitiveTopology::TriangleList,
+            true,
         );
 
         let bg0 = light::bind_groups::BindGroup0::from_bindings(

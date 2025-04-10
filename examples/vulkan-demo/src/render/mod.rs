@@ -342,7 +342,9 @@ pub mod unif {
 
     use glam::{Mat4, Vec3};
     use wgpu_shader::{
-        colored, model, types,
+        colored, model,
+        prelude::Blend,
+        types,
         uniform::UniformBuffer,
         util::{render, GridDrawer},
         vertex::{Topology, VbBinding, VertexBufferSimple},
@@ -368,6 +370,31 @@ pub mod unif {
         FollowCamera(CameraObj),
         // 影を描画するためのオブジェクト
         Shadow(FloorShadow),
+        Transparent(Drawable),
+    }
+
+    impl PartialEq for SlotType {
+        fn eq(&self, other: &Self) -> bool {
+            match (self, other) {
+                (SlotType::Draw(_), SlotType::Draw(_)) => true,
+                (SlotType::Bone, SlotType::Bone) => true,
+                (SlotType::FollowCamera(_), SlotType::FollowCamera(_)) => true,
+                (SlotType::Shadow(_), SlotType::Shadow(_)) => true,
+                (SlotType::Transparent(_), SlotType::Transparent(_)) => true,
+                _ => false,
+            }
+        }
+    }
+
+    impl PartialOrd for SlotType {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            match (self, other) {
+                (SlotType::Draw(_), SlotType::Shadow(_)) => Some(std::cmp::Ordering::Less),
+                (SlotType::Draw(_), SlotType::Transparent(_)) => Some(std::cmp::Ordering::Less),
+                (SlotType::Shadow(_), SlotType::Transparent(_)) => Some(std::cmp::Ordering::Less),
+                _ => Some(std::cmp::Ordering::Equal),
+            }
+        }
     }
 
     impl From<Drawable> for SlotType {
@@ -492,11 +519,13 @@ pub mod unif {
 
     pub struct Context {
         p_poly: colored::PlUnif,
+        p_poly_trans: colored::PlUnif,
         p_line: colored::PlUnif,
         cc: CameraController,
         // bufferは参照をノードに渡して使っており、直接参照しない
         _grid: VertexBufferSimple<types::vertex::Color4>,
         _vb: VertexBufferSimple<types::vertex::Color4>,
+        _frustum_vb: VertexBufferSimple<types::vertex::Color4>,
         scene: SceneNode,
     }
 
@@ -511,15 +540,34 @@ pub mod unif {
                 config,
                 cam.buffer(),
                 wgpu::PrimitiveTopology::TriangleList,
+                Blend::Replace,
             );
             let p_line = colored::PlUnif::new(
                 state.device(),
                 config,
                 cam.buffer(),
                 wgpu::PrimitiveTopology::LineList,
+                Blend::Replace,
+            );
+            let p_poly_trans = colored::PlUnif::new(
+                state.device(),
+                config,
+                cam.buffer(),
+                wgpu::PrimitiveTopology::TriangleList,
+                Blend::Alpha,
             );
             let grid_vb = GridDrawer::default().gen(state.device());
             let vb = VertexBufferSimple::new(state.device(), &model::cube(1.0), None);
+            let frustum_vb = VertexBufferSimple::new(
+                state.device(),
+                &model::frustum(model::FrustumParam::new(
+                    20_f32.to_radians(),
+                    1.33,
+                    0.2,
+                    6.0,
+                )),
+                Some("Camera frustum"),
+            );
             let mut scene = Self::create_model(
                 state.device(),
                 grid_vb.bind_buffer(0, Topology::LineList),
@@ -533,6 +581,35 @@ pub mod unif {
                     ModelNode::new("cam", Trs::default(), SlotType::FollowCamera(cam.into())),
                 )
                 .unwrap();
+            scene
+                .model_mut()
+                .add_node(
+                    Some("b4"),
+                    ModelNode::new(
+                        "cv",
+                        Trs::default(),
+                        SlotType::Transparent(Drawable::new(
+                            state.device(),
+                            glam::Vec4::new(1.0, 1.0, 1.0, 0.2),
+                            frustum_vb.bind_buffer(0, Topology::TriangleList),
+                        )),
+                    ),
+                )
+                .unwrap();
+            scene
+                .model_mut()
+                .add_node(
+                    Some("b4"),
+                    ModelNode::new(
+                        "cv-shadow",
+                        Trs::default(),
+                        SlotType::Shadow(FloorShadow::new(
+                            state.device(),
+                            frustum_vb.bind_buffer(0, Topology::TriangleList),
+                        )),
+                    ),
+                )
+                .unwrap();
             for node in scene.model_mut().iter_mut() {
                 let world = node.world();
                 if let SlotType::Draw(ref mut obj) = node.value_mut() {
@@ -542,9 +619,11 @@ pub mod unif {
             Self {
                 p_poly,
                 p_line,
+                p_poly_trans,
                 cc,
                 _grid: grid_vb,
                 _vb: vb,
+                _frustum_vb: frustum_vb,
                 scene,
             }
         }
@@ -586,6 +665,9 @@ pub mod unif {
                         SlotType::Shadow(ref mut obj) => {
                             obj.update(state.queue(), world);
                         }
+                        SlotType::Transparent(ref mut obj) => {
+                            obj.update(state.queue(), world);
+                        }
                         _ => {}
                     }
                 }
@@ -595,7 +677,9 @@ pub mod unif {
         /// レンダリング
         pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
             render(state, BG_COLOR, state.depth(), |rp| {
-                for obj in self.scene.model().iter() {
+                let mut objs = self.scene.model().iter().collect::<Vec<_>>();
+                objs.sort_by(|a, b| a.value().partial_cmp(b.value()).unwrap());
+                for obj in objs.into_iter() {
                     match obj.value() {
                         SlotType::Draw(obj) => {
                             match obj.vb.topology() {
@@ -607,6 +691,13 @@ pub mod unif {
                         SlotType::Shadow(obj) => {
                             match obj.vb.topology() {
                                 Topology::TriangleList => self.p_poly.set(rp),
+                                Topology::LineList => self.p_line.set(rp),
+                            }
+                            obj.draw(rp);
+                        }
+                        SlotType::Transparent(obj) => {
+                            match obj.vb.topology() {
+                                Topology::TriangleList => self.p_poly_trans.set(rp),
                                 Topology::LineList => self.p_line.set(rp),
                             }
                             obj.draw(rp);

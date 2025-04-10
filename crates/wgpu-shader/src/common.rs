@@ -1,12 +1,28 @@
+use crate::prelude::Blend;
+
 // ColorTargetStateの作成の共通化
 // FragmentShaderのターゲットで常に上書きをするブレンドモードを指定
-pub fn create_fs_target(format: wgpu::TextureFormat) -> [Option<wgpu::ColorTargetState>; 1] {
-    [Some(wgpu::ColorTargetState {
-        format,
-        blend: Some(wgpu::BlendState {
+pub fn create_fs_target(
+    format: wgpu::TextureFormat,
+    blend: Blend,
+) -> [Option<wgpu::ColorTargetState>; 1] {
+    let blend = match blend {
+        Blend::Replace => wgpu::BlendState {
             color: wgpu::BlendComponent::REPLACE,
             alpha: wgpu::BlendComponent::REPLACE,
-        }),
+        },
+        Blend::Alpha => wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::SrcAlpha,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent::OVER,
+        },
+    };
+    [Some(wgpu::ColorTargetState {
+        format,
+        blend: Some(blend),
         write_mask: wgpu::ColorWrites::ALL,
     })]
 }
@@ -20,6 +36,7 @@ pub fn create_render_pipeline<'a>(
     fstate: Option<wgpu::FragmentState<'a>>,
     depth_format: Option<wgpu::TextureFormat>,
     topology: wgpu::PrimitiveTopology,
+    depth_write_enabled: bool,
 ) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Render Pipeline"),
@@ -37,7 +54,7 @@ pub fn create_render_pipeline<'a>(
         },
         depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
             format,
-            depth_write_enabled: true,
+            depth_write_enabled,
             depth_compare: wgpu::CompareFunction::Less,
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),

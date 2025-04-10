@@ -64,14 +64,14 @@ pub fn hand4(length: f32) -> [Color4; 6] {
 /// 幅1.0の立方体の頂点データ
 /// 前方が赤、後方上が青、後方下が緑となっている
 pub const CUBE: [Vec4; 8] = [
-    Vec4::new(-0.5, -0.5, -0.5, 1.0),
-    Vec4::new(0.5, -0.5, -0.5, 1.0),
-    Vec4::new(-0.5, -0.5, 0.5, 1.0),
-    Vec4::new(0.5, -0.5, 0.5, 1.0),
-    Vec4::new(-0.5, 0.5, -0.5, 1.0),
-    Vec4::new(0.5, 0.5, -0.5, 1.0),
-    Vec4::new(-0.5, 0.5, 0.5, 1.0),
-    Vec4::new(0.5, 0.5, 0.5, 1.0),
+    Vec4::new(-0.5, -0.5, -0.5, 1.0), // L-B-B
+    Vec4::new(0.5, -0.5, -0.5, 1.0),  // L-F-B
+    Vec4::new(-0.5, -0.5, 0.5, 1.0),  // L-B-T
+    Vec4::new(0.5, -0.5, 0.5, 1.0),   // L-F-T
+    Vec4::new(-0.5, 0.5, -0.5, 1.0),  // R-B-B
+    Vec4::new(0.5, 0.5, -0.5, 1.0),   // R-F-B
+    Vec4::new(-0.5, 0.5, 0.5, 1.0),   // R-B-T
+    Vec4::new(0.5, 0.5, 0.5, 1.0),    // R-F-T
 ];
 
 /// [CUBE]のインデックスデータ
@@ -117,3 +117,58 @@ pub fn rect(length: f32) -> [Color4; 4] {
 
 /// [rect]のインデックスデータ
 pub const RECT_INDEX: [u16; 6] = [0, 1, 2, 1, 3, 2];
+
+pub struct FrustumParam {
+    pub yfov: f32,
+    pub aspect: f32,
+    pub near: f32,
+    pub far: f32,
+}
+
+impl FrustumParam {
+    /// 視推台のパラメータを生成する
+    pub fn new(yfov: f32, aspect: f32, near: f32, far: f32) -> Self {
+        Self {
+            yfov,
+            aspect,
+            near,
+            far,
+        }
+    }
+}
+
+/// 視推台の頂点データを返す。
+/// データの並びは[CUBE]と同じで、Left, Front, Right, Bottom, Back, Topの順
+pub fn frustum_vertex(p: FrustumParam) -> [Vec4; 8] {
+    let n = p.near;
+    let f = p.far;
+    let t = (p.yfov / 2.0).tan();
+    let nz = t * n;
+    let fz = t * f;
+    let t2 = (p.yfov * p.aspect / 2.0).tan();
+    let ny = n * t2;
+    let fy = f * t2;
+
+    [
+        Vec4::new(f, fy, -fz, 1.0),
+        Vec4::new(n, ny, -nz, 1.0),
+        Vec4::new(f, fy, fz, 1.0),
+        Vec4::new(n, ny, nz, 1.0),
+        Vec4::new(f, -fy, -fz, 1.0),
+        Vec4::new(n, -ny, -nz, 1.0),
+        Vec4::new(f, -fy, fz, 1.0),
+        Vec4::new(n, -ny, nz, 1.0),
+    ]
+}
+
+/// [CUBE_COLOR]の色を使って、視推台の頂点データを生成する
+pub fn frustum(p: FrustumParam) -> Vec<Color4> {
+    let vertex = frustum_vertex(p);
+    let mut cube = Vec::with_capacity(36);
+    for (index, c) in CUBE_INDEX.into_iter().enumerate() {
+        let pos = vertex[c as usize];
+        let color = CUBE_COLOR[index / 6] / 255.0;
+        cube.push(Color4::new(pos, Vec4::new(color.x, color.y, color.z, 1.0)));
+    }
+    cube
+}

@@ -1,5 +1,6 @@
 use crate::{
-    common::create_fs_target, uniform::UniformBuffer, vertex::VertexBufferSimple, WgpuContext,
+    common::create_fs_target, prelude::Blend, uniform::UniformBuffer, vertex::VertexBufferSimple,
+    WgpuContext,
 };
 
 #[rustfmt::skip]
@@ -37,7 +38,7 @@ impl Pipeline {
         let shader = shader::create_shader_module(device);
 
         let render_pipeline_layout = shader::create_pipeline_layout(device);
-        let fs_target = create_fs_target(config.format);
+        let fs_target = create_fs_target(config.format, Blend::Replace);
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),

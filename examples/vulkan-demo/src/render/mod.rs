@@ -646,8 +646,8 @@ pub mod unif {
         colored::{self, GlobalUnif},
         model, types,
         uniform::UniformBuffer,
-        util::render,
-        vertex::VertexBufferSimple,
+        util::{render, GridDrawer},
+        vertex::{Topology, VbBinding, VertexBufferSimple},
         WgpuContext,
     };
 
@@ -675,22 +675,27 @@ pub mod unif {
             Self::Draw(d)
         }
     }
-
     struct Drawable {
         color: glam::Vec4,
         buffer: UniformBuffer<colored::unif::DrawInfo>,
         bg: colored::DrawInfoBindGroup,
+        vb: VbBinding,
     }
 
     impl Drawable {
-        fn new(device: &wgpu::Device, color: glam::Vec4) -> Self {
+        fn new(device: &wgpu::Device, color: glam::Vec4, vb: VbBinding) -> Self {
             let buffer = colored::unif::DrawInfo {
                 matrix: glam::Mat4::IDENTITY,
                 color,
             };
             let buffer = UniformBuffer::new(device, buffer);
             let bg = colored::PlUnif::make_draw_unif(device, &buffer);
-            Self { color, buffer, bg }
+            Self {
+                color,
+                buffer,
+                bg,
+                vb,
+            }
         }
 
         fn color(&mut self, color: glam::Vec4) {
@@ -707,6 +712,8 @@ pub mod unif {
 
         fn draw(&self, rp: &mut wgpu::RenderPass<'_>) {
             self.bg.set(rp);
+            self.vb.set(rp);
+            rp.draw(0..self.vb.len(), 0..1);
         }
     }
 
@@ -734,9 +741,12 @@ pub mod unif {
     }
 
     pub struct Context {
-        p0: colored::PlUnif,
+        p_poly: colored::PlUnif,
+        p_line: colored::PlUnif,
         cc: CameraController,
-        vb: VertexBufferSimple<types::vertex::Color4>,
+        // bufferは参照をノードに渡して使っており、直接参照しない
+        _grid: VertexBufferSimple<types::vertex::Color4>,
+        _vb: VertexBufferSimple<types::vertex::Color4>,
         g2l: GlobalUnif,
         scene: SceneNode,
     }
@@ -747,15 +757,27 @@ pub mod unif {
             let cam = Cams::new(state.device(), cam);
 
             let cc = CameraController::new(0.05);
-            let p0 = colored::PlUnif::new(
+            let p_poly = colored::PlUnif::new(
                 state.device(),
                 config,
                 cam.buffer(),
                 wgpu::PrimitiveTopology::TriangleList,
             );
+            let p_line = colored::PlUnif::new(
+                state.device(),
+                config,
+                cam.buffer(),
+                wgpu::PrimitiveTopology::LineList,
+            );
+            let grid_vb = GridDrawer::default().gen(state.device());
             let vb = VertexBufferSimple::new(state.device(), &model::cube(1.0), None);
             let g2l: GlobalUnif = GlobalUnif::new(state.device());
-            let mut scene = Self::create_model(state.device()).unwrap();
+            let mut scene = Self::create_model(
+                state.device(),
+                grid_vb.bind_buffer(0, Topology::LineList),
+                vb.bind_buffer(0, Topology::TriangleList),
+            )
+            .unwrap();
             scene
                 .model_mut()
                 .add_node(
@@ -770,9 +792,11 @@ pub mod unif {
                 }
             }
             Self {
-                p0,
+                p_poly,
+                p_line,
                 cc,
-                vb,
+                _grid: grid_vb,
+                _vb: vb,
                 g2l,
                 scene,
             }
@@ -818,51 +842,64 @@ pub mod unif {
         /// レンダリング
         pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
             render(state, BG_COLOR, state.depth(), |rp| {
-                self.p0.set(rp);
-                // 頂点バッファをセットして描画
-                self.vb.set(rp, 0);
+                self.p_poly.set(rp);
+                self.g2l.set(rp);
 
-                // 全体移動
+                self.p_line.set(rp);
                 self.g2l.set(rp);
 
                 for obj in self.scene.model().iter() {
                     if let SlotType::Draw(obj) = obj.value() {
+                        match obj.vb.topology() {
+                            Topology::TriangleList => self.p_poly.set(rp),
+                            Topology::LineList => self.p_line.set(rp),
+                        }
                         obj.draw(rp);
-                        rp.draw(0..self.vb.len(), 0..1);
                     }
                 }
             })
         }
 
-        fn create_model(device: &wgpu::Device) -> anyhow::Result<SceneNode> {
+        fn create_model(
+            device: &wgpu::Device,
+            floor_vb: VbBinding,
+            cube_vb: VbBinding,
+        ) -> anyhow::Result<SceneNode> {
             let l = [
+                (None, "floor", Trs::default(), SlotType::Bone),
+                (
+                    Some("floor"),
+                    "floor-d1",
+                    Trs::default(),
+                    Drawable::new(device, glam::Vec4::ONE, floor_vb.clone()).into(),
+                ),
                 (None, "b1", Trs::default(), SlotType::Bone),
                 (
                     Some("b1"),
                     "d1",
                     Trs::with_s(0.1),
-                    Drawable::new(device, glam::Vec4::ONE).into(),
+                    Drawable::new(device, glam::Vec4::ONE, cube_vb.clone()).into(),
                 ),
                 (Some("b1"), "b2", Trs::with_t(Vec3::Z * 0.5), SlotType::Bone),
                 (
                     Some("b2"),
                     "d2",
                     Trs::with_s(0.1),
-                    Drawable::new(device, glam::Vec4::ONE).into(),
+                    Drawable::new(device, glam::Vec4::ONE, cube_vb.clone()).into(),
                 ),
                 (Some("b2"), "b3", Trs::with_t(Vec3::Z * 0.5), SlotType::Bone),
                 (
                     Some("b3"),
                     "d3",
                     Trs::with_s(0.1),
-                    Drawable::new(device, glam::Vec4::ONE).into(),
+                    Drawable::new(device, glam::Vec4::ONE, cube_vb.clone()).into(),
                 ),
                 (Some("b3"), "b4", Trs::with_t(Vec3::Z * 0.5), SlotType::Bone),
                 (
                     Some("b4"),
                     "d4",
                     Trs::with_s(0.1),
-                    Drawable::new(device, glam::Vec4::ONE).into(),
+                    Drawable::new(device, glam::Vec4::ONE, cube_vb.clone()).into(),
                 ),
             ];
 

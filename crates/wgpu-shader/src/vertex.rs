@@ -37,6 +37,11 @@ where
     pub fn len(&self) -> u32 {
         self.vertex_len
     }
+
+    /// レンダリングオブジェクト向けのバインディングインスタンス
+    pub fn bind_buffer(&self, slot: u32, topology: Topology) -> VbBinding {
+        VbBinding::new(self.buf.clone(), slot, topology, self.vertex_len)
+    }
 }
 
 /// 頂点とインデックスで構成するVertexBuffer
@@ -132,4 +137,46 @@ where
     pub fn len(&self) -> u32 {
         self.instance_len
     }
+}
+
+/// ノードグラフのオブジェクトが頂点への参照を持つための構造体
+#[derive(Clone)]
+pub struct VbBinding {
+    // GPUBufferへのポインタ
+    vb: wgpu::Buffer,
+    // 頂点データの長さ。sideではなく頂点データの数
+    len: u32,
+    // レンダリングパスでのバインド位置
+    slot: u32,
+    // レンダリングパスに期待するトポロジ
+    topology: Topology,
+}
+
+impl VbBinding {
+    fn new(vb: wgpu::Buffer, slot: u32, topology: Topology, len: u32) -> Self {
+        Self {
+            vb,
+            slot,
+            topology,
+            len,
+        }
+    }
+
+    pub fn topology(&self) -> Topology {
+        self.topology
+    }
+
+    pub fn set(&self, rpass: &mut wgpu::RenderPass) {
+        rpass.set_vertex_buffer(self.slot, self.vb.slice(..));
+    }
+
+    pub fn len(&self) -> u32 {
+        self.len
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
+pub enum Topology {
+    LineList,
+    TriangleList,
 }

@@ -62,7 +62,6 @@ pub async fn run(app_env: env::AppEnv, timeout: Option<Duration>) {
     let _r = render::tutorial::Context::new(&state, state.config(), &app_env.assets);
 
     // 有効なのは1つだけ
-    let _r = render::colored::Context::new(&state, state.config());
     let mut r = render::unif::Context::new(&state, state.config());
 
     event_loop

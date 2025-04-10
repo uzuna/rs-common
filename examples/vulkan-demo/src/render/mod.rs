@@ -338,307 +338,6 @@ pub mod tutorial {
     }
 }
 
-pub mod colored {
-
-    use nalgebra::{UnitQuaternion, Vector3};
-
-    use wgpu_shader::{
-        colored::{compress, PipelineComp, PipelineInstanced, PipelinePrim},
-        model::{cube, hand4, rect, CUBE_INDEX, RECT_INDEX},
-        types,
-        uniform::UniformBuffer,
-        util::{render, GridDrawer},
-        vertex::{InstanceBuffer, VertexBuffer, VertexBufferSimple},
-        WgpuContext,
-    };
-
-    use crate::camera::{Camera, CameraController, Cams, ROTATION_FACE_Z_TO_X};
-
-    use super::BG_COLOR;
-
-    type HandBuffer = VertexBufferSimple<types::vertex::Color4>;
-
-    pub struct ObjectPrim {
-        // 位置
-        pub pos: Vector3<f32>,
-        pub target: Vector3<f32>,
-        // 上方向
-        pub up: Vector3<f32>,
-    }
-
-    impl ObjectPrim {
-        pub fn new(pos: Vector3<f32>, target: Vector3<f32>, up: Vector3<f32>) -> Self {
-            Self { pos, target, up }
-        }
-
-        pub fn isometry(&self) -> glam::Mat4 {
-            let t = nalgebra::Translation3::from(self.pos);
-            let r = nalgebra::Rotation3::look_at_rh(&(self.target - self.pos), &self.up).inverse();
-            glam::Mat4::from(t.to_homogeneous() * r.to_homogeneous() * ROTATION_FACE_Z_TO_X)
-        }
-
-        /// レンダリング時に与えられるオフセットを考慮して位置補正行列を返す
-        pub fn offset_isometry(&self, offset: Vector3<f32>) -> glam::Mat4 {
-            let pos = self.pos + offset;
-            let t = nalgebra::Translation3::from(pos);
-            // ターゲットの方向を向かせるため、ターゲット向けのベクトルを作成、look_at_rhしてその逆行列を取る
-            let r = nalgebra::Rotation3::look_at_rh(&(pos - self.target), &self.up).inverse();
-            glam::Mat4::from(t.to_homogeneous() * r.to_homogeneous() * ROTATION_FACE_Z_TO_X)
-        }
-    }
-
-    /// カメラから見えているものを投影するテスト
-    struct Recam {
-        x: f32,
-        z: f32,
-        q: UnitQuaternion<f32>,
-        pos: Vector3<f32>,
-    }
-
-    impl Recam {
-        fn new(x: f32, z: f32, pos: Vector3<f32>) -> Self {
-            let q = Self::quatenion(x, z);
-            Self { x, z, q, pos }
-        }
-
-        fn update(&mut self) {
-            self.q = Self::quatenion(self.x, self.z);
-        }
-
-        fn quatenion(x: f32, z: f32) -> UnitQuaternion<f32> {
-            UnitQuaternion::from_euler_angles(0.0, x, z)
-        }
-
-        fn translate(&self) -> glam::Mat4 {
-            let t = nalgebra::Translation3::from(self.pos);
-            glam::Mat4::from(t.to_homogeneous())
-        }
-
-        fn isometry(&self) -> glam::Mat4 {
-            let t = self.translate();
-            let r = glam::Mat4::from(self.q.inverse().to_homogeneous());
-            t * r
-        }
-    }
-
-    struct Recams {
-        // カメラとその軸表示
-        recam: Recam,
-        recam_inst: InstanceBuffer<types::instance::Isometry>,
-        // カメラから見えている物体とその表示
-        object: ObjectPrim,
-        object_inst: InstanceBuffer<types::instance::Isometry>,
-    }
-
-    impl Recams {
-        fn new(device: &wgpu::Device) -> Self {
-            let recam = Recam::new(30_f32.to_radians(), 0.0, Vector3::new(0.0, 0.0, 0.4));
-            let mat = recam.isometry();
-            let recam_inst = InstanceBuffer::new(device, &[types::instance::Isometry::new(mat)]);
-            let object = ObjectPrim::new(
-                Vector3::new(3.0, 0.0, 0.0),
-                Vector3::new(3.0, 3.0, 0.0),
-                Vector3::z(),
-            );
-            // カメラの行列で変換をかけることカメラ視野 -> ワールド座標になる
-            let mat = mat * object.isometry();
-            let object_inst = InstanceBuffer::new(device, &[types::instance::Isometry::new(mat)]);
-            Self {
-                recam,
-                recam_inst,
-                object,
-                object_inst,
-            }
-        }
-
-        fn update(&mut self, queue: &wgpu::Queue) {
-            self.recam.update();
-            let mat = self.recam.isometry();
-            let inst = types::instance::Isometry::new(mat);
-            self.recam_inst.update(queue, &[inst]);
-            let mat = mat * self.object.isometry();
-            let inst = types::instance::Isometry::new(mat);
-            self.object_inst.update(queue, &[inst]);
-        }
-
-        fn draw_guide(&self, rp: &mut wgpu::RenderPass<'_>, hand: &HandBuffer) {
-            self.recam_inst.set(rp, 1);
-            rp.draw(0..hand.len(), 0..self.recam_inst.len());
-        }
-
-        fn draw_cube(
-            &self,
-            rp: &mut wgpu::RenderPass<'_>,
-            cube_vb: &VertexBuffer<types::vertex::Color4>,
-        ) {
-            self.object_inst.set(rp, 1);
-            rp.draw_indexed(0..cube_vb.len(), 0, 0..self.recam_inst.len());
-        }
-
-        fn draw_shadow(
-            &self,
-            rp: &mut wgpu::RenderPass<'_>,
-            rect_vb: &VertexBuffer<types::vertex::Color4>,
-        ) {
-            self.object_inst.set(rp, 1);
-            rp.draw_indexed(0..rect_vb.len(), 0, 0..self.recam_inst.len());
-        }
-    }
-
-    pub struct Context {
-        p0: PipelinePrim,
-        p1_line: PipelineInstanced,
-        p1_plane: PipelineInstanced,
-        p2_plane: PipelineComp,
-        cam: Cams,
-        cc: CameraController,
-        _ub_comp: UniformBuffer<compress::Compression>,
-        vb: VertexBufferSimple<types::vertex::Color4>,
-        hand: HandBuffer,
-        hands: Vec<ObjectPrim>,
-        hi: InstanceBuffer<types::instance::Isometry>,
-        cube_vb: VertexBuffer<types::vertex::Color4>,
-        recams: Recams,
-        rect_vb: VertexBuffer<types::vertex::Color4>,
-    }
-
-    impl Context {
-        pub fn new(state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) -> Self {
-            let cam = Camera::with_aspect(config.width as f32 / config.height as f32);
-            let cam = Cams::new(state.device(), cam);
-            let cc = CameraController::new(0.05);
-
-            let p0 = PipelinePrim::new(state.device(), config, cam.buffer());
-            let p1 = PipelineInstanced::new(
-                state.device(),
-                config,
-                cam.buffer(),
-                wgpu::PrimitiveTopology::LineList,
-            );
-            let p1_plane = PipelineInstanced::new(
-                state.device(),
-                config,
-                cam.buffer(),
-                wgpu::PrimitiveTopology::TriangleList,
-            );
-
-            let c = compress::Compression::xy();
-            let ub_comp = UniformBuffer::new(state.device(), c);
-            let p2_plane = PipelineComp::new(
-                state.device(),
-                config,
-                cam.buffer(),
-                &ub_comp,
-                wgpu::PrimitiveTopology::TriangleList,
-            );
-            let vb = GridDrawer::default().gen(state.device());
-            let hand = hand_arrow(state.device());
-            let hands = vec![
-                ObjectPrim::new(
-                    Vector3::new(1.0, 0.0, 0.0),
-                    Vector3::new(0.0, 0.0, 0.0),
-                    Vector3::z(),
-                ),
-                ObjectPrim::new(
-                    Vector3::new(0.0, 1.0, 0.5),
-                    Vector3::new(0.0, 0.0, 0.0),
-                    Vector3::z(),
-                ),
-            ];
-            let hi = hands_instance(state.device(), &hands);
-            let cube_vb = VertexBuffer::new(state.device(), &cube(0.2), &CUBE_INDEX);
-            let rect_vb = VertexBuffer::new(state.device(), &rect(0.2), &RECT_INDEX);
-
-            let recams = Recams::new(state.device());
-
-            Self {
-                p0,
-                p1_line: p1,
-                p1_plane,
-                p2_plane,
-                cam,
-                cc,
-                _ub_comp: ub_comp,
-                vb,
-                hand,
-                hands,
-                hi,
-                cube_vb,
-                recams,
-                rect_vb,
-            }
-        }
-
-        /// レンダリング
-        pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
-            render(state, BG_COLOR, state.depth(), |rp| {
-                self.p0.set(rp);
-                // 頂点バッファをセットして描画
-                self.vb.set(rp, 0);
-                rp.draw(0..self.vb.len(), 0..1);
-
-                self.p1_line.set(rp);
-                self.hand.set(rp, 0);
-                self.hi.set(rp, 1);
-                rp.draw(0..self.hand.len(), 0..self.hi.len());
-                self.recams.draw_guide(rp, &self.hand);
-
-                self.p1_plane.set(rp);
-                self.cube_vb.set(rp, 0);
-                self.hi.set(rp, 1);
-                rp.draw_indexed(0..self.cube_vb.len(), 0, 0..self.hi.len());
-                self.recams.draw_cube(rp, &self.cube_vb);
-
-                self.p2_plane.set(rp);
-                self.rect_vb.set(rp, 0);
-                self.hi.set(rp, 1);
-                rp.draw_indexed(0..self.rect_vb.len(), 0, 0..self.hi.len());
-                self.recams.draw_shadow(rp, &self.rect_vb);
-            })
-        }
-
-        pub fn input(&mut self, event: &winit::event::WindowEvent) -> bool {
-            self.cc.process_events(event)
-        }
-
-        pub fn update(&mut self, state: &impl WgpuContext, ts: &super::Timestamp) {
-            self.cc.update_follow_camera(self.cam.camera_mut());
-            self.cam.update(state.queue());
-
-            // 時間経過でXY平面方向に移動
-            let s = ts.elapsed.as_secs_f32();
-            let offset = Vector3::new(s.sin() * 2.0, s.cos(), 0.0);
-            let hands = self
-                .hands
-                .iter()
-                .map(|h| types::instance::Isometry::new(h.offset_isometry(offset)))
-                .collect::<Vec<_>>();
-            self.hi.update(state.queue(), &hands);
-
-            // カメラの位置と向きを変える
-            self.recams.recam.pos = Vector3::new(s.cos() * 0.5, 0.0, 0.2);
-            self.recams.recam.z = (s * 1.5).sin() * 30_f32.to_radians();
-            self.recams.update(state.queue());
-        }
-    }
-
-    /// 3D空間での矢印を描画する。原点からXYZ方向にそれぞれ0.3mの長さを持つ
-    pub fn hand_arrow(device: &wgpu::Device) -> HandBuffer {
-        VertexBufferSimple::new(device, &hand4(0.3), Some("Hand Arrow"))
-    }
-
-    pub fn hands_instance(
-        device: &wgpu::Device,
-        hands: &[ObjectPrim],
-    ) -> InstanceBuffer<types::instance::Isometry> {
-        let mut instances = vec![];
-        for h in hands.iter() {
-            instances.push(types::instance::Isometry::new(h.isometry()));
-        }
-        InstanceBuffer::new(device, &instances)
-    }
-}
-
 pub mod unif {
 
     use glam::{Mat4, Vec3};
@@ -667,6 +366,8 @@ pub mod unif {
         Bone,
         // 親を視点とするカメラ
         FollowCamera(CameraObj),
+        // 影を描画するためのオブジェクト
+        Shadow(FloorShadow),
     }
 
     impl From<Drawable> for SlotType {
@@ -674,6 +375,13 @@ pub mod unif {
             Self::Draw(d)
         }
     }
+
+    impl From<FloorShadow> for SlotType {
+        fn from(d: FloorShadow) -> Self {
+            Self::Shadow(d)
+        }
+    }
+
     struct Drawable {
         color: glam::Vec4,
         buffer: UniformBuffer<colored::unif::DrawInfo>,
@@ -702,6 +410,49 @@ pub mod unif {
         }
 
         fn update(&mut self, queue: &wgpu::Queue, matrix: Mat4) {
+            let buffer = colored::unif::DrawInfo {
+                matrix,
+                color: self.color,
+            };
+            self.buffer.write(queue, &buffer);
+        }
+
+        fn draw(&self, rp: &mut wgpu::RenderPass<'_>) {
+            self.bg.set(rp);
+            self.vb.set(rp);
+            rp.draw(0..self.vb.len(), 0..1);
+        }
+    }
+
+    struct FloorShadow {
+        color: glam::Vec4,
+        scale: glam::Vec3,
+        buffer: UniformBuffer<colored::unif::DrawInfo>,
+        bg: colored::DrawInfoBindGroup,
+        vb: VbBinding,
+    }
+
+    impl FloorShadow {
+        const SHADOW_COLLOR: glam::Vec4 = glam::Vec4::new(0.0, 0.0, 0.0, 1.0);
+        fn new(device: &wgpu::Device, vb: VbBinding) -> Self {
+            let buffer = colored::unif::DrawInfo {
+                matrix: glam::Mat4::IDENTITY,
+                color: Self::SHADOW_COLLOR,
+            };
+            let buffer = UniformBuffer::new(device, buffer);
+            let bg = colored::PlUnif::make_draw_unif(device, &buffer);
+            Self {
+                color: Self::SHADOW_COLLOR,
+                buffer,
+                bg,
+                vb,
+                scale: glam::Vec3::new(1.0, 1.0, 0.0),
+            }
+        }
+
+        fn update(&mut self, queue: &wgpu::Queue, matrix: Mat4) {
+            let scale = glam::Mat4::from_scale(self.scale);
+            let matrix = scale * matrix;
             let buffer = colored::unif::DrawInfo {
                 matrix,
                 color: self.color,
@@ -828,8 +579,14 @@ pub mod unif {
             for node in models.iter_mut() {
                 if node.get_update() {
                     let world = node.world();
-                    if let SlotType::Draw(ref mut obj) = node.value_mut() {
-                        obj.update(state.queue(), world);
+                    match node.value_mut() {
+                        SlotType::Draw(ref mut obj) => {
+                            obj.update(state.queue(), world);
+                        }
+                        SlotType::Shadow(ref mut obj) => {
+                            obj.update(state.queue(), world);
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -839,12 +596,22 @@ pub mod unif {
         pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
             render(state, BG_COLOR, state.depth(), |rp| {
                 for obj in self.scene.model().iter() {
-                    if let SlotType::Draw(obj) = obj.value() {
-                        match obj.vb.topology() {
-                            Topology::TriangleList => self.p_poly.set(rp),
-                            Topology::LineList => self.p_line.set(rp),
+                    match obj.value() {
+                        SlotType::Draw(obj) => {
+                            match obj.vb.topology() {
+                                Topology::TriangleList => self.p_poly.set(rp),
+                                Topology::LineList => self.p_line.set(rp),
+                            }
+                            obj.draw(rp);
                         }
-                        obj.draw(rp);
+                        SlotType::Shadow(obj) => {
+                            match obj.vb.topology() {
+                                Topology::TriangleList => self.p_poly.set(rp),
+                                Topology::LineList => self.p_line.set(rp),
+                            }
+                            obj.draw(rp);
+                        }
+                        _ => {}
                     }
                 }
             })
@@ -877,6 +644,12 @@ pub mod unif {
                     Trs::with_s(0.1),
                     Drawable::new(device, glam::Vec4::ONE, cube_vb.clone()).into(),
                 ),
+                (
+                    Some("b2"),
+                    "ds2",
+                    Trs::with_s(0.1),
+                    FloorShadow::new(device, cube_vb.clone()).into(),
+                ),
                 (Some("b2"), "b3", Trs::with_t(Vec3::Z * 0.5), SlotType::Bone),
                 (
                     Some("b3"),
@@ -884,12 +657,24 @@ pub mod unif {
                     Trs::with_s(0.1),
                     Drawable::new(device, glam::Vec4::ONE, cube_vb.clone()).into(),
                 ),
+                (
+                    Some("b3"),
+                    "ds3",
+                    Trs::with_s(0.1),
+                    FloorShadow::new(device, cube_vb.clone()).into(),
+                ),
                 (Some("b3"), "b4", Trs::with_t(Vec3::Z * 0.5), SlotType::Bone),
                 (
                     Some("b4"),
                     "d4",
                     Trs::with_s(0.1),
                     Drawable::new(device, glam::Vec4::ONE, cube_vb.clone()).into(),
+                ),
+                (
+                    Some("b4"),
+                    "ds4",
+                    Trs::with_s(0.1),
+                    FloorShadow::new(device, cube_vb.clone()).into(),
                 ),
             ];
 

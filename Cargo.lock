@@ -3440,8 +3440,10 @@ dependencies = [
 name = "wgpu-shader"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bytemuck",
  "encase",
+ "fxhash",
  "glam",
  "glob",
  "wgpu",

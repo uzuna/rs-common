@@ -7,10 +7,12 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-wgpu.workspace = true
-glam = { version = "0.29.1", features = ["bytemuck"] }
+anyhow.workspace = true
 bytemuck = { version = "1.19", features = ["derive"] }
 encase = { version = "0.10.0", features = ["glam"] }
+fxhash.workspace = true
+glam = { version = "0.29.1", features = ["bytemuck"] }
+wgpu.workspace = true
 
 [build-dependencies]
 wgsl_to_wgpu = "0.13.0"

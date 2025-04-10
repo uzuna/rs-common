@@ -1,7 +1,5 @@
 use std::time::{Duration, Instant};
 
-mod scene;
-
 pub const BG_COLOR: wgpu::Color = wgpu::Color {
     r: 0.1,
     g: 0.2,
@@ -344,8 +342,8 @@ pub mod unif {
 
     use glam::{Mat4, Vec3};
     use wgpu_shader::{
-        colored, model,
-        prelude::Blend,
+        colored, graph, model,
+        prelude::*,
         types,
         uniform::UniformBuffer,
         util::{render, GridDrawer},
@@ -355,13 +353,10 @@ pub mod unif {
 
     use crate::camera::{Camera, CameraController, Cams, FollowCamera};
 
-    use super::{
-        scene::{self, ModelNodeImpl, ModelNodeImplClone, ModelNodes, Trs},
-        BG_COLOR,
-    };
+    use super::BG_COLOR;
 
-    type ModelNode = scene::ModelNode<SlotType>;
-    type SceneNode = scene::SceneNode<ModelNode>;
+    type ModelNode = graph::ModelNode<SlotType>;
+    type ModelGraph = graph::ModelGraph<ModelNode>;
 
     enum SlotType {
         // 表示内容を含むオブジェクト
@@ -389,14 +384,14 @@ pub mod unif {
 
     impl PartialEq for SlotType {
         fn eq(&self, other: &Self) -> bool {
-            match (self, other) {
-                (SlotType::Draw(_), SlotType::Draw(_)) => true,
-                (SlotType::Bone, SlotType::Bone) => true,
-                (SlotType::FollowCamera(_), SlotType::FollowCamera(_)) => true,
-                (SlotType::Shadow(_), SlotType::Shadow(_)) => true,
-                (SlotType::Transparent(_), SlotType::Transparent(_)) => true,
-                _ => false,
-            }
+            matches!(
+                (self, other),
+                (SlotType::Draw(_), SlotType::Draw(_))
+                    | (SlotType::Bone, SlotType::Bone)
+                    | (SlotType::FollowCamera(_), SlotType::FollowCamera(_))
+                    | (SlotType::Shadow(_), SlotType::Shadow(_))
+                    | (SlotType::Transparent(_), SlotType::Transparent(_))
+            )
         }
     }
 
@@ -580,13 +575,13 @@ pub mod unif {
         fn update(
             &mut self,
             state: &impl WgpuContext,
-            models: &ModelNodes<N>,
+            graph: &graph::ModelGraph<N>,
             ts: &super::Timestamp,
         ) {
             if self.latest + self.interval < ts.elapsed {
                 // 100msごとに履歴を保存
                 self.latest = ts.elapsed;
-                if let Some(b) = models.get_node(&self.node) {
+                if let Some(b) = graph.get_node(&self.node) {
                     // もし履歴がいっぱいなら古いものを削除
                     if self.v.len() == self.limit_len {
                         self.v.pop_front();
@@ -611,7 +606,7 @@ pub mod unif {
         _grid: VertexBufferSimple<types::vertex::Color4>,
         _vb: VertexBufferSimple<types::vertex::Color4>,
         _frustum_vb: VertexBufferSimple<types::vertex::Color4>,
-        scene: SceneNode,
+        graph: ModelGraph,
         history: ObjectHistory<ModelNode>,
     }
 
@@ -654,21 +649,19 @@ pub mod unif {
                 )),
                 Some("Camera frustum"),
             );
-            let mut scene = Self::create_model(
+            let mut graph = Self::create_model(
                 state.device(),
                 grid_vb.bind_buffer(0, Topology::LineList),
                 vb.bind_buffer(0, Topology::TriangleList),
             )
             .unwrap();
-            scene
-                .model_mut()
+            graph
                 .add_node(
                     Some("b2"),
                     ModelNode::new("cam", Trs::default(), SlotType::FollowCamera(cam.into())),
                 )
                 .unwrap();
-            scene
-                .model_mut()
+            graph
                 .add_node(
                     Some("b4"),
                     ModelNode::new(
@@ -682,8 +675,7 @@ pub mod unif {
                     ),
                 )
                 .unwrap();
-            scene
-                .model_mut()
+            graph
                 .add_node(
                     Some("b4"),
                     ModelNode::new(
@@ -696,7 +688,7 @@ pub mod unif {
                     ),
                 )
                 .unwrap();
-            for node in scene.model_mut().iter_mut() {
+            for node in graph.iter_mut() {
                 let world = node.world();
                 if let SlotType::Draw(ref mut obj) = node.value_mut() {
                     obj.update(state.queue(), world);
@@ -710,7 +702,7 @@ pub mod unif {
                 _grid: grid_vb,
                 _vb: vb,
                 _frustum_vb: frustum_vb,
-                scene,
+                graph,
                 history: ObjectHistory::new("d4".to_string()),
             }
         }
@@ -720,7 +712,7 @@ pub mod unif {
         }
 
         fn update_camera(&mut self, state: &impl WgpuContext) {
-            let node = self.scene.model_mut().get_must_mut("cam");
+            let node = self.graph.get_must_mut("cam");
 
             let matrix = node.world();
             if let SlotType::FollowCamera(ref mut obj) = node.value_mut() {
@@ -735,15 +727,15 @@ pub mod unif {
             let s = ts.elapsed.as_secs_f32();
 
             // モデルの座標更新
-            let models = self.scene.model_mut();
-            models.get_must_mut("b1").trs_mut().set_rot_y(s);
-            models.get_must_mut("b2").trs_mut().set_rot_z(s * 1.2);
-            models.get_must_mut("b3").trs_mut().set_rot_x(s * 1.4);
-            models.update_world("b1").unwrap();
+            let graph = &mut self.graph;
+            graph.get_must_mut("b1").trs_mut().set_rot_y(s);
+            graph.get_must_mut("b2").trs_mut().set_rot_z(s * 1.2);
+            graph.get_must_mut("b3").trs_mut().set_rot_x(s * 1.4);
+            graph.update_world("b1").unwrap();
 
             // 更新対象のみuniformを更新
-            for node in models.iter_mut() {
-                if node.get_update() {
+            for node in graph.iter_mut() {
+                if node.get_updated() {
                     let world = node.world();
                     match node.value_mut() {
                         SlotType::Draw(ref mut obj) => {
@@ -760,7 +752,7 @@ pub mod unif {
                 }
             }
 
-            self.history.update(state, models, ts);
+            self.history.update(state, graph, ts);
         }
 
         /// レンダリング
@@ -775,7 +767,7 @@ pub mod unif {
                         obj.draw(rp);
                     }
                 }
-                let mut objs = self.scene.model().iter().collect::<Vec<_>>();
+                let mut objs = self.graph.iter().collect::<Vec<_>>();
                 objs.sort_by(|a, b| a.value().partial_cmp(b.value()).unwrap());
                 for obj in objs.into_iter() {
                     match obj.value() {
@@ -810,7 +802,7 @@ pub mod unif {
             device: &wgpu::Device,
             floor_vb: VbBinding,
             cube_vb: VbBinding,
-        ) -> anyhow::Result<SceneNode> {
+        ) -> anyhow::Result<ModelGraph> {
             let l = [
                 (None, "floor", Trs::default(), SlotType::Bone),
                 (
@@ -867,14 +859,14 @@ pub mod unif {
                 ),
             ];
 
-            let mut scene = SceneNode::default();
+            let mut graph = ModelGraph::default();
 
             for (parent, name, trs, slot) in l.into_iter() {
                 let model = ModelNode::new(name, trs, slot);
-                scene.model_mut().add_node(parent, model)?;
+                graph.add_node(parent, model)?;
             }
 
-            Ok(scene)
+            Ok(graph)
         }
     }
 }

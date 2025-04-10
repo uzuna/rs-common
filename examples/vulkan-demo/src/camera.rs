@@ -23,6 +23,7 @@ pub const ROTATION_FACE_Z_TO_X: Matrix4<f32> = Matrix4::new(
     0.0, 0.0, 0.0, 1.0,
 );
 
+#[derive(Clone)]
 pub struct Camera {
     eye: Point3<f32>,
     target: Point3<f32>,
@@ -305,5 +306,10 @@ impl Cams {
 
     pub fn buffer(&self) -> &UniformBuffer<types::uniform::Camera> {
         &self.buffer
+    }
+
+    /// カメラオブジェクトの複製
+    pub fn clone_object(&self, device: &wgpu::Device) -> Self {
+        Self::new(device, self.cam.camera().clone())
     }
 }

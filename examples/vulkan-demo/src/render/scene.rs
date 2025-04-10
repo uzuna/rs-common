@@ -27,6 +27,7 @@
 use fxhash::FxHashMap;
 
 /// 各ノードのTRS操作
+#[derive(Clone)]
 pub struct Trs {
     pub translation: glam::Vec3,
     pub rotation: glam::Quat,
@@ -143,6 +144,10 @@ pub trait ModelNodeImpl {
     // 座標更新に関する実装
     fn world(&self) -> glam::Mat4;
     fn update_world(&mut self, world: glam::Mat4) -> glam::Mat4;
+}
+
+pub trait ModelNodeImplClone {
+    fn clone_object(&self, device: &wgpu::Device) -> Self;
 }
 
 /// モデルノードの管理
@@ -445,6 +450,23 @@ impl<T> ModelNodeImpl for ModelNode<T> {
         self.update_flag = true;
         self.world = world * self.local.to_homogeneous();
         self.world
+    }
+}
+
+impl<T> ModelNodeImplClone for ModelNode<T>
+where
+    T: ModelNodeImplClone,
+{
+    fn clone_object(&self, device: &wgpu::Device) -> Self {
+        Self {
+            name: self.name.clone(),
+            parent: self.parent,
+            children: self.children.clone(),
+            local: self.local.clone(),
+            world: self.world,
+            update_flag: self.update_flag,
+            value: self.value.clone_object(device),
+        }
     }
 }
 

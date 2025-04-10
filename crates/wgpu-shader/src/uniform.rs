@@ -11,17 +11,32 @@ impl<U> UniformBuffer<U>
 where
     U: ShaderType + WriteInto,
 {
+    fn create_buffer_init(device: &wgpu::Device, contents: &[u8]) -> wgpu::Buffer {
+        use wgpu::util::DeviceExt;
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        })
+    }
+
     /// UniformBufferの構築
     pub fn new(device: &wgpu::Device, u: U) -> Self {
-        use wgpu::util::DeviceExt;
         let mut ub = EncaseUniformBuffer::new(Vec::new());
         ub.write(&u).expect("Failed to write uniform buffer");
-        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: None,
-            contents: ub.as_ref(),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let buffer = Self::create_buffer_init(device, ub.as_ref());
+        Self {
+            buffer,
+            ub,
+            _phantom: std::marker::PhantomData,
+        }
+    }
 
+    /// UniformBufferの複製
+    pub fn clone_object(&self, device: &wgpu::Device) -> Self {
+        // 既存のUniformBufferの内容で新しいUniformBufferを作成
+        let ub = EncaseUniformBuffer::new(self.ub.as_ref().to_vec());
+        let buffer = Self::create_buffer_init(device, ub.as_ref());
         Self {
             buffer,
             ub,

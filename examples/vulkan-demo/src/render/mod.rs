@@ -340,6 +340,8 @@ pub mod tutorial {
 
 pub mod unif {
 
+    use std::{collections::VecDeque, time::Duration};
+
     use glam::{Mat4, Vec3};
     use wgpu_shader::{
         colored, model,
@@ -354,7 +356,7 @@ pub mod unif {
     use crate::camera::{Camera, CameraController, Cams, FollowCamera};
 
     use super::{
-        scene::{self, ModelNodeImpl, Trs},
+        scene::{self, ModelNodeImpl, ModelNodeImplClone, ModelNodes, Trs},
         BG_COLOR,
     };
 
@@ -371,6 +373,18 @@ pub mod unif {
         // 影を描画するためのオブジェクト
         Shadow(FloorShadow),
         Transparent(Drawable),
+    }
+
+    impl ModelNodeImplClone for SlotType {
+        fn clone_object(&self, device: &wgpu::Device) -> Self {
+            match self {
+                SlotType::Draw(d) => SlotType::Draw(d.clone_object(device)),
+                SlotType::Bone => SlotType::Bone,
+                SlotType::FollowCamera(c) => SlotType::FollowCamera(c.clone_object(device)),
+                SlotType::Shadow(s) => SlotType::Shadow(s.clone_object(device)),
+                SlotType::Transparent(t) => SlotType::Transparent(t.clone_object(device)),
+            }
+        }
     }
 
     impl PartialEq for SlotType {
@@ -449,6 +463,19 @@ pub mod unif {
             self.vb.set(rp);
             rp.draw(0..self.vb.len(), 0..1);
         }
+
+        // オブジェクトの複製
+        fn clone_object(&self, device: &wgpu::Device) -> Self {
+            let buffer = self.buffer.clone_object(device);
+            let bg = colored::PlUnif::make_draw_unif(device, &buffer);
+            let vb = self.vb.clone();
+            Self {
+                color: self.color,
+                buffer,
+                bg,
+                vb,
+            }
+        }
     }
 
     struct FloorShadow {
@@ -492,11 +519,16 @@ pub mod unif {
             self.vb.set(rp);
             rp.draw(0..self.vb.len(), 0..1);
         }
+
+        fn clone_object(&self, device: &wgpu::Device) -> Self {
+            Self::new(device, self.vb.clone())
+        }
     }
 
     struct CameraObj {
         cam: Cams,
     }
+
     impl CameraObj {
         fn new(cam: Cams) -> Self {
             Self { cam }
@@ -509,11 +541,64 @@ pub mod unif {
         fn update(&mut self, queue: &wgpu::Queue, matrix: Mat4) {
             self.cam.update_world_pos(queue, matrix);
         }
+
+        fn clone_object(&self, debice: &wgpu::Device) -> Self {
+            Self::new(self.cam.clone_object(debice))
+        }
     }
 
     impl From<Cams> for CameraObj {
         fn from(cam: Cams) -> Self {
             Self::new(cam)
+        }
+    }
+
+    // 任意の時点のオブジェクトの履歴を保持する。
+    // 軌跡表示のみで
+    struct ObjectHistory<N> {
+        v: VecDeque<N>,
+        limit_len: usize,
+        latest: Duration,
+        interval: Duration,
+        node: String,
+    }
+
+    impl<N> ObjectHistory<N>
+    where
+        N: ModelNodeImplClone,
+    {
+        fn new(node: String) -> Self {
+            Self {
+                v: VecDeque::new(),
+                limit_len: 60 * 10,
+                latest: Duration::new(0, 0),
+                interval: Duration::from_millis(100),
+                node,
+            }
+        }
+
+        fn update(
+            &mut self,
+            state: &impl WgpuContext,
+            models: &ModelNodes<N>,
+            ts: &super::Timestamp,
+        ) {
+            if self.latest + self.interval < ts.elapsed {
+                // 100msごとに履歴を保存
+                self.latest = ts.elapsed;
+                if let Some(b) = models.get_node(&self.node) {
+                    // もし履歴がいっぱいなら古いものを削除
+                    if self.v.len() == self.limit_len {
+                        self.v.pop_front();
+                    }
+                    // 履歴に追加
+                    self.v.push_back(b.clone_object(state.device()));
+                }
+            }
+        }
+
+        fn iter(&self) -> impl Iterator<Item = &N> {
+            self.v.iter()
         }
     }
 
@@ -527,6 +612,7 @@ pub mod unif {
         _vb: VertexBufferSimple<types::vertex::Color4>,
         _frustum_vb: VertexBufferSimple<types::vertex::Color4>,
         scene: SceneNode,
+        history: ObjectHistory<ModelNode>,
     }
 
     impl Context {
@@ -625,6 +711,7 @@ pub mod unif {
                 _vb: vb,
                 _frustum_vb: frustum_vb,
                 scene,
+                history: ObjectHistory::new("d4".to_string()),
             }
         }
 
@@ -672,11 +759,22 @@ pub mod unif {
                     }
                 }
             }
+
+            self.history.update(state, models, ts);
         }
 
         /// レンダリング
         pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
             render(state, BG_COLOR, state.depth(), |rp| {
+                for hist in self.history.iter() {
+                    if let SlotType::Draw(ref obj) = hist.value() {
+                        match obj.vb.topology() {
+                            Topology::TriangleList => self.p_poly.set(rp),
+                            Topology::LineList => self.p_line.set(rp),
+                        }
+                        obj.draw(rp);
+                    }
+                }
                 let mut objs = self.scene.model().iter().collect::<Vec<_>>();
                 objs.sort_by(|a, b| a.value().partial_cmp(b.value()).unwrap());
                 for obj in objs.into_iter() {

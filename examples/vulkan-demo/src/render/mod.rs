@@ -643,8 +643,7 @@ pub mod unif {
 
     use glam::{Mat4, Vec3};
     use wgpu_shader::{
-        colored::{self, GlobalUnif},
-        model, types,
+        colored, model, types,
         uniform::UniformBuffer,
         util::{render, GridDrawer},
         vertex::{Topology, VbBinding, VertexBufferSimple},
@@ -747,7 +746,6 @@ pub mod unif {
         // bufferは参照をノードに渡して使っており、直接参照しない
         _grid: VertexBufferSimple<types::vertex::Color4>,
         _vb: VertexBufferSimple<types::vertex::Color4>,
-        g2l: GlobalUnif,
         scene: SceneNode,
     }
 
@@ -771,7 +769,6 @@ pub mod unif {
             );
             let grid_vb = GridDrawer::default().gen(state.device());
             let vb = VertexBufferSimple::new(state.device(), &model::cube(1.0), None);
-            let g2l: GlobalUnif = GlobalUnif::new(state.device());
             let mut scene = Self::create_model(
                 state.device(),
                 grid_vb.bind_buffer(0, Topology::LineList),
@@ -797,7 +794,6 @@ pub mod unif {
                 cc,
                 _grid: grid_vb,
                 _vb: vb,
-                g2l,
                 scene,
             }
         }
@@ -842,12 +838,6 @@ pub mod unif {
         /// レンダリング
         pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
             render(state, BG_COLOR, state.depth(), |rp| {
-                self.p_poly.set(rp);
-                self.g2l.set(rp);
-
-                self.p_line.set(rp);
-                self.g2l.set(rp);
-
                 for obj in self.scene.model().iter() {
                     if let SlotType::Draw(obj) = obj.value() {
                         match obj.vb.topology() {

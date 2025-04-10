@@ -193,8 +193,8 @@ impl compress::Compression {
     }
 }
 
-pub type ObjectsInfoBindGroup = unif::bind_groups::BindGroup1;
-pub type DrawInfoBindGroup = unif::bind_groups::BindGroup2;
+pub type DrawInfoBindGroup = unif::bind_groups::BindGroup1;
+type DrawInfoBindGroupLayout<'a> = unif::bind_groups::BindGroupLayout1<'a>;
 
 /// SceneGraphデータ構造向けのUniformを使った値の変更を行うパイプライン
 pub struct PlUnif {
@@ -245,25 +245,13 @@ impl PlUnif {
         }
     }
 
-    fn make_objects_unif(
-        device: &wgpu::Device,
-        object: &UniformBuffer<unif::GlobalInfo>,
-    ) -> unif::bind_groups::BindGroup1 {
-        unif::bind_groups::BindGroup1::from_bindings(
-            device,
-            unif::bind_groups::BindGroupLayout1 {
-                global_info: object.buffer().as_entire_buffer_binding(),
-            },
-        )
-    }
-
     pub fn make_draw_unif(
         device: &wgpu::Device,
         object: &UniformBuffer<unif::DrawInfo>,
-    ) -> unif::bind_groups::BindGroup2 {
-        unif::bind_groups::BindGroup2::from_bindings(
+    ) -> DrawInfoBindGroup {
+        DrawInfoBindGroup::from_bindings(
             device,
-            unif::bind_groups::BindGroupLayout2 {
+            DrawInfoBindGroupLayout {
                 draw_info: object.buffer().as_entire_buffer_binding(),
             },
         )
@@ -273,38 +261,5 @@ impl PlUnif {
     pub fn set(&self, pass: &mut wgpu::RenderPass) {
         pass.set_pipeline(&self.pipe);
         self.bg0.set(pass);
-    }
-}
-
-impl Default for unif::GlobalInfo {
-    fn default() -> Self {
-        Self {
-            matrix: glam::Mat4::IDENTITY,
-        }
-    }
-}
-
-pub struct GlobalUnif {
-    buffer: UniformBuffer<unif::GlobalInfo>,
-    bg: unif::bind_groups::BindGroup1,
-}
-
-impl GlobalUnif {
-    pub fn new(device: &wgpu::Device) -> Self {
-        let buffer = UniformBuffer::new(device, unif::GlobalInfo::default());
-        let bg = PlUnif::make_objects_unif(device, &buffer);
-        Self { buffer, bg }
-    }
-
-    pub fn write(&mut self, queue: &wgpu::Queue, u: &unif::GlobalInfo) {
-        self.buffer.write(queue, u);
-    }
-
-    pub fn bind_group(&self) -> &unif::bind_groups::BindGroup1 {
-        &self.bg
-    }
-
-    pub fn set(&self, pass: &mut wgpu::RenderPass) {
-        self.bg.set(pass);
     }
 }

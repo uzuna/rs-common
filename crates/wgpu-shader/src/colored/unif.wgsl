@@ -8,14 +8,6 @@ struct Camera {
 @group(0) @binding(0)
 var<uniform> camera: Camera;
 
-struct GlobalInfo{
-    // グローバルTRS行列。ワールド空間中の移動や回転。インスタンスの移動など主
-    matrix: mat4x4<f32>,
-}
-// オブジェクトグループ毎に設定する
-@group(1) @binding(0)
-var<uniform> global_info: GlobalInfo;
-
 struct DrawInfo{
     // ローカルTRS行列。移動後のローカル基準座標に対する移動や回転。インスタンス内のパーツの移動など
     matrix: mat4x4<f32>,
@@ -23,7 +15,7 @@ struct DrawInfo{
     color: vec4<f32>,
 }
 // オブジェクトごとに変更する場合があるのでカメラとは別のバインディングにする
-@group(2) @binding(0)
+@group(1) @binding(0)
 var<uniform> draw_info: DrawInfo;
 
 struct VertexInput{
@@ -45,7 +37,7 @@ fn vs_main(
     model: VertexInput
 ) -> VertexOutput {
     // instance毎の回転・拡大・移動行列
-    let model_matrix = global_info.matrix * draw_info.matrix;
+    let model_matrix = draw_info.matrix;
 
     var out: VertexOutput;
 

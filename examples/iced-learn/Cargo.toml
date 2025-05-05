@@ -1,0 +1,10 @@
+[package]
+name = "iced-learn"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+iced = "0.13.0"

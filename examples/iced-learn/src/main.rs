@@ -1,4 +1,4 @@
-use iced::widget::{button, column, text, text_input, Column};
+use iced::widget::{button, column, slider, text, text_input, Column};
 use iced::{Center, Font};
 
 const ICON_FONT: Font = Font::with_name("Consolas");
@@ -15,6 +15,7 @@ pub fn main() -> iced::Result {
 
 struct State {
     value: i64,
+    slider: i32,
     content: String,
 }
 
@@ -22,6 +23,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             value: 0,
+            slider: 0,
             content: "test-app".to_string(),
         }
     }
@@ -41,6 +43,7 @@ impl iced::application::Title<State> for TitleView {
 enum Message {
     Increment,
     Decrement,
+    SliderChanged(i32),
     ContentChanged(String),
 }
 
@@ -52,6 +55,9 @@ impl State {
             }
             Message::Decrement => {
                 self.value -= 1;
+            }
+            Message::SliderChanged(value) => {
+                self.slider = value;
             }
             Message::ContentChanged(content) => {
                 self.content = content;
@@ -68,6 +74,8 @@ impl State {
                 .on_input(Message::ContentChanged)
                 .padding(10)
                 .size(14),
+            slider(-100..=100, self.slider, Message::SliderChanged),
+            text(self.slider).size(14),
         ]
         .padding(20)
         .align_x(Center)

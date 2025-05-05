@@ -10,7 +10,8 @@ struct VertexOutput {
 };
 
 struct Window {
-    resolution: vec4<f32>,
+    resolution: vec2<f32>,
+    pixel_size: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> uw: Window;
@@ -21,19 +22,17 @@ fn vs_main(
     @builtin(vertex_index) vNdx: u32,
 ) -> VertexOutput {
     let points = array(
-        vec3f(-1, -1, 0),
-        vec3f( 1, -1, 0),
-        vec3f(-1,  1, 0),
-        vec3f(-1,  1, 0),
-        vec3f( 1, -1, 0),
-        vec3f( 1,  1, 0),
+        vec2f(-1, -1),
+        vec2f( 1, -1),
+        vec2f(-1,  1),
+        vec2f(-1,  1),
+        vec2f( 1, -1),
+        vec2f( 1,  1),
     );
 
-    let resolution = uw.resolution.xyz;
-
     var out: VertexOutput;  
-    let pos = points[vNdx];
-    out.pos = vec4<f32>(particle.position + pos * 12.0 / resolution, 1.0);
+    let pos = points[vNdx] * uw.pixel_size / uw.resolution;
+    out.pos = vec4<f32>(particle.position.xy + pos, particle.position.z, 1.0);
     out.color = particle.color;
     return out;
 }

@@ -10,8 +10,8 @@ rust-version.workspace = true
 crate-type = ["cdylib", "rlib"]
 name = "app"
 
-[build]
-target = "wasm32-unknown-unknown"
+# [build]
+# target = "wasm32-unknown-unknown"
 
 [dependencies]
 bytemuck.workspace = true

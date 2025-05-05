@@ -4,10 +4,8 @@ use glob::glob;
 use wgsl_to_wgpu::{create_shader_module, MatrixVectorTypes, WriteOptions};
 
 fn main() {
-    for entry in glob("src/**/*.wgsl").unwrap() {
-        if let Ok(entry) = entry {
-            generate(entry.to_str().unwrap());
-        }
+    for entry in glob("src/**/*.wgsl").unwrap().flatten() {
+        generate(entry.to_str().unwrap());
     }
 }
 

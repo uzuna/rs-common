@@ -1,21 +1,21 @@
 #[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct VertexInput {
-    pub position: glam::Vec3,
-    pub color: glam::Vec3,
+#[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
+pub struct Camera {
+    pub view_pos: glam::Vec4,
+    pub view_proj: glam::Mat4,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
-pub struct Window {
-    pub resolution: glam::Vec2,
-    pub pixel_size: glam::Vec2,
+#[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct VertexInput {
+    pub position: glam::Vec4,
+    pub color: glam::Vec4,
 }
 pub mod bind_groups {
     #[derive(Debug)]
     pub struct BindGroup0(wgpu::BindGroup);
     #[derive(Debug)]
     pub struct BindGroupLayout0<'a> {
-        pub uw: wgpu::BufferBinding<'a>,
+        pub camera: wgpu::BufferBinding<'a>,
     }
     const LAYOUT_DESCRIPTOR0: wgpu::BindGroupLayoutDescriptor = wgpu::BindGroupLayoutDescriptor {
         label: Some("LayoutDescriptor0"),
@@ -45,7 +45,7 @@ pub mod bind_groups {
                         entries: &[
                             wgpu::BindGroupEntry {
                                 binding: 0,
-                                resource: wgpu::BindingResource::Buffer(bindings.uw),
+                                resource: wgpu::BindingResource::Buffer(bindings.camera),
                             },
                         ],
                         label: Some("BindGroup0"),
@@ -104,12 +104,12 @@ pub fn set_bind_groups<P: bind_groups::SetBindGroup>(
 impl VertexInput {
     pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
         wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Float32x3,
+            format: wgpu::VertexFormat::Float32x4,
             offset: std::mem::offset_of!(VertexInput, position) as u64,
             shader_location: 0,
         },
         wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Float32x3,
+            format: wgpu::VertexFormat::Float32x4,
             offset: std::mem::offset_of!(VertexInput, color) as u64,
             shader_location: 1,
         },

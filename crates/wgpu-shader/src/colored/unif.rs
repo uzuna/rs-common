@@ -1,21 +1,27 @@
 #[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct VertexInput {
-    pub position: glam::Vec3,
-    pub color: glam::Vec3,
+#[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
+pub struct Camera {
+    pub view_pos: glam::Vec4,
+    pub view_proj: glam::Mat4,
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
-pub struct Window {
-    pub resolution: glam::Vec2,
-    pub pixel_size: glam::Vec2,
+pub struct DrawInfo {
+    pub matrix: glam::Mat4,
+    pub color: glam::Vec4,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct VertexInput {
+    pub position: glam::Vec4,
+    pub color: glam::Vec4,
 }
 pub mod bind_groups {
     #[derive(Debug)]
     pub struct BindGroup0(wgpu::BindGroup);
     #[derive(Debug)]
     pub struct BindGroupLayout0<'a> {
-        pub uw: wgpu::BufferBinding<'a>,
+        pub camera: wgpu::BufferBinding<'a>,
     }
     const LAYOUT_DESCRIPTOR0: wgpu::BindGroupLayoutDescriptor = wgpu::BindGroupLayoutDescriptor {
         label: Some("LayoutDescriptor0"),
@@ -45,7 +51,7 @@ pub mod bind_groups {
                         entries: &[
                             wgpu::BindGroupEntry {
                                 binding: 0,
-                                resource: wgpu::BindingResource::Buffer(bindings.uw),
+                                resource: wgpu::BindingResource::Buffer(bindings.camera),
                             },
                         ],
                         label: Some("BindGroup0"),
@@ -57,13 +63,61 @@ pub mod bind_groups {
             pass.set_bind_group(0, &self.0, &[]);
         }
     }
+    #[derive(Debug)]
+    pub struct BindGroup1(wgpu::BindGroup);
+    #[derive(Debug)]
+    pub struct BindGroupLayout1<'a> {
+        pub draw_info: wgpu::BufferBinding<'a>,
+    }
+    const LAYOUT_DESCRIPTOR1: wgpu::BindGroupLayoutDescriptor = wgpu::BindGroupLayoutDescriptor {
+        label: Some("LayoutDescriptor1"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    };
+    impl BindGroup1 {
+        pub fn get_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+            device.create_bind_group_layout(&LAYOUT_DESCRIPTOR1)
+        }
+        pub fn from_bindings(device: &wgpu::Device, bindings: BindGroupLayout1) -> Self {
+            let bind_group_layout = device.create_bind_group_layout(&LAYOUT_DESCRIPTOR1);
+            let bind_group = device
+                .create_bind_group(
+                    &wgpu::BindGroupDescriptor {
+                        layout: &bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::Buffer(bindings.draw_info),
+                            },
+                        ],
+                        label: Some("BindGroup1"),
+                    },
+                );
+            Self(bind_group)
+        }
+        pub fn set<P: SetBindGroup>(&self, pass: &mut P) {
+            pass.set_bind_group(1, &self.0, &[]);
+        }
+    }
     #[derive(Debug, Copy, Clone)]
     pub struct BindGroups<'a> {
         pub bind_group0: &'a BindGroup0,
+        pub bind_group1: &'a BindGroup1,
     }
     impl BindGroups<'_> {
         pub fn set<P: SetBindGroup>(&self, pass: &mut P) {
             self.bind_group0.set(pass);
+            self.bind_group1.set(pass);
         }
     }
     pub trait SetBindGroup {
@@ -98,18 +152,20 @@ pub mod bind_groups {
 pub fn set_bind_groups<P: bind_groups::SetBindGroup>(
     pass: &mut P,
     bind_group0: &bind_groups::BindGroup0,
+    bind_group1: &bind_groups::BindGroup1,
 ) {
     bind_group0.set(pass);
+    bind_group1.set(pass);
 }
 impl VertexInput {
     pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
         wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Float32x3,
+            format: wgpu::VertexFormat::Float32x4,
             offset: std::mem::offset_of!(VertexInput, position) as u64,
             shader_location: 0,
         },
         wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Float32x3,
+            format: wgpu::VertexFormat::Float32x4,
             offset: std::mem::offset_of!(VertexInput, color) as u64,
             shader_location: 1,
         },
@@ -180,7 +236,7 @@ pub fn fs_main_entry(targets: [Option<wgpu::ColorTargetState>; 1]) -> FragmentEn
         constants: Default::default(),
     }
 }
-pub const SOURCE: &str = include_str!("shader.wgsl");
+pub const SOURCE: &str = include_str!("unif.wgsl");
 pub fn create_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
     let source = std::borrow::Cow::Borrowed(SOURCE);
     device
@@ -196,6 +252,7 @@ pub fn create_pipeline_layout(device: &wgpu::Device) -> wgpu::PipelineLayout {
                 label: None,
                 bind_group_layouts: &[
                     &bind_groups::BindGroup0::get_bind_group_layout(device),
+                    &bind_groups::BindGroup1::get_bind_group_layout(device),
                 ],
                 push_constant_ranges: &[],
             },

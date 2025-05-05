@@ -20,6 +20,7 @@ bytemuck = "1.22.0"
 cfg-if = "1.0.0"
 criterion = "0.5.1"
 fs-err = "3.1.0"
+fxhash = "0.2.1"
 image = { version = "0.25", default-features = false }
 jetson-pixfmt = { path = "jetson/pixfmt" }
 khronos-egl = "6.0.0"
@@ -29,6 +30,7 @@ num-traits = "0.2.19"
 rand = "0.9.0"
 rawproc = { path = "crates/rawproc" }
 serde = "1.0.218"
+serde_yaml = "0.9.33"
 thiserror = "2.0.12"
 tempfile = "3.18.0"
 tokio = "1.44.0"

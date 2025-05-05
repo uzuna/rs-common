@@ -1,7 +1,6 @@
 use wgpu_shader::WgpuContext;
 use winit::{event::*, window::Window};
 
-
 pub struct State<'a> {
     surface: wgpu::Surface<'a>,
     device: wgpu::Device,
@@ -130,5 +129,9 @@ impl WgpuContext for State<'_> {
 
     fn queue(&self) -> &wgpu::Queue {
         &self.queue
+    }
+
+    fn depth(&self) -> &wgpu::TextureView {
+        todo!()
     }
 }

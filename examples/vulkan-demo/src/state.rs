@@ -14,6 +14,7 @@ pub struct State<'a> {
     // it gets dropped after it as the surface contains
     // unsafe references to the window's resources.
     window: &'a Window,
+    depth: wgpu_shader::texture::Texture,
 }
 
 impl<'a> State<'a> {
@@ -76,13 +77,15 @@ impl<'a> State<'a> {
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: surface_caps.present_modes[0],
+            present_mode: wgpu::PresentMode::AutoVsync, // 垂直同期60fpsなどに制限
             alpha_mode: surface_caps.alpha_modes[0],
             desired_maximum_frame_latency: 2,
             view_formats: vec![],
         };
 
         println!("adapter {:?}", adapter.get_info());
+
+        let depth = wgpu_shader::texture::Texture::create_depth_texture(&device, &config, None);
 
         Self {
             surface,
@@ -91,6 +94,7 @@ impl<'a> State<'a> {
             config,
             size,
             window,
+            depth,
         }
     }
 
@@ -112,9 +116,13 @@ impl<'a> State<'a> {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
+            self.depth = wgpu_shader::texture::Texture::create_depth_texture(
+                &self.device,
+                &self.config,
+                None,
+            );
         }
     }
-
     #[allow(unused_variables)]
     pub fn input(&mut self, event: &WindowEvent) -> bool {
         false
@@ -132,5 +140,9 @@ impl WgpuContext for State<'_> {
 
     fn queue(&self) -> &wgpu::Queue {
         &self.queue
+    }
+
+    fn depth(&self) -> &wgpu::TextureView {
+        &self.depth.view
     }
 }

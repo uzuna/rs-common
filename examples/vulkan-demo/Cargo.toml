@@ -1,0 +1,25 @@
+[package]
+name = "vulkan-demo"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bytemuck = { version = "1.19", features = ["derive"] }
+cfg-if = "1"
+encase = { version = "0.10.0", features = ["glam"] }
+env_logger = "0.10"
+fxhash = "0.2.1"
+glam = { version = "0.29.1", features = ["bytemuck"] }
+image = { workspace = true, features = ["png", "jpeg"], default-features = false }
+log = "0.4"
+nalgebra = { workspace = true, features = ["convert-glam029"] }
+pollster = "0.3"
+thiserror.workspace = true
+tobj = { version = "4.0.3", features = ["async"] }
+wgpu-shader.workspace = true
+wgpu.workspace = true
+winit = { version = "0.29", features = ["rwh_05"] }

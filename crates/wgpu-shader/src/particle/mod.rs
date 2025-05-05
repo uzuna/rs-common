@@ -1,9 +1,9 @@
-use std::ops::Range;
+use crate::{
+    common::create_fs_target, prelude::Blend, uniform::UniformBuffer, vertex::VertexBufferSimple,
+    WgpuContext,
+};
 
-use encase::{internal::WriteInto, ShaderType, UniformBuffer};
-
-use crate::WgpuContext;
-
+#[rustfmt::skip]
 pub mod shader;
 
 impl Default for shader::VertexInput {
@@ -21,8 +21,10 @@ impl shader::VertexInput {
     }
 }
 
+/// 2Dの位置を持つ点を描画するパイプライン
 pub struct Pipeline {
     pipe: wgpu::RenderPipeline,
+    bg_color: wgpu::Color,
     bind_group: shader::bind_groups::BindGroup0,
 }
 
@@ -31,19 +33,12 @@ impl Pipeline {
     pub fn new(
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
-        uniform_buffer: &Unif<shader::Window>,
+        uniform_buffer: &UniformBuffer<shader::Window>,
     ) -> Self {
         let shader = shader::create_shader_module(device);
 
         let render_pipeline_layout = shader::create_pipeline_layout(device);
-        let fs_target = [Some(wgpu::ColorTargetState {
-            format: config.format,
-            blend: Some(wgpu::BlendState {
-                color: wgpu::BlendComponent::REPLACE,
-                alpha: wgpu::BlendComponent::REPLACE,
-            }),
-            write_mask: wgpu::ColorWrites::ALL,
-        })];
+        let fs_target = create_fs_target(config.format, Blend::Replace);
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
@@ -86,13 +81,18 @@ impl Pipeline {
         Self {
             pipe: pipeline,
             bind_group,
+            bg_color: wgpu::Color::BLACK,
         }
+    }
+
+    pub fn set_bg_color(&mut self, color: wgpu::Color) {
+        self.bg_color = color;
     }
 
     pub fn render(
         &self,
         state: &impl WgpuContext,
-        buf: &Vert<shader::VertexInput>,
+        buf: &VertexBufferSimple<shader::VertexInput>,
     ) -> Result<(), wgpu::SurfaceError> {
         let output = state.surface().get_current_texture()?;
         let view = output
@@ -112,12 +112,7 @@ impl Pipeline {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.2,
-                            b: 0.3,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(self.bg_color),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -129,88 +124,13 @@ impl Pipeline {
             render_pass.set_pipeline(&self.pipe);
             self.bind_group.set(&mut render_pass);
             // shaderが6頂点を描画する仕様になっている
-            buf.draw(&mut render_pass, 0..6);
+            buf.set(&mut render_pass, 0);
+            render_pass.draw(0..6, 0..buf.len());
         }
 
         state.queue().submit(std::iter::once(encoder.finish()));
         output.present();
 
         Ok(())
-    }
-}
-
-pub struct Unif<U> {
-    buffer: wgpu::Buffer,
-    ub: UniformBuffer<Vec<u8>>,
-
-    _phantom: std::marker::PhantomData<U>,
-}
-
-impl<U> Unif<U>
-where
-    U: ShaderType + WriteInto,
-{
-    pub fn new(device: &wgpu::Device, u: U) -> Self {
-        use wgpu::util::DeviceExt;
-        let mut ub = UniformBuffer::new(Vec::new());
-        ub.write(&u).expect("Failed to write uniform buffer");
-        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: None,
-            contents: ub.as_ref(),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        Self {
-            buffer,
-            ub,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-
-    pub fn set(&mut self, queue: &wgpu::Queue, u: &U) {
-        self.ub.write(u).expect("Failed to write uniform buffer");
-        queue.write_buffer(&self.buffer, 0, self.ub.as_ref());
-    }
-
-    pub fn uniform_buffer(&self) -> &UniformBuffer<Vec<u8>> {
-        &self.ub
-    }
-
-    pub fn buffer(&self) -> &wgpu::Buffer {
-        &self.buffer
-    }
-}
-
-pub struct Vert<V> {
-    pub buf: wgpu::Buffer,
-    vert_len: usize,
-    phantom: std::marker::PhantomData<V>,
-}
-
-impl<V> Vert<V>
-where
-    V: bytemuck::Pod,
-{
-    pub fn new(device: &wgpu::Device, verts: &[V], label: Option<&str>) -> Self {
-        use wgpu::util::DeviceExt;
-        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label,
-            contents: bytemuck::cast_slice(verts),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        });
-        Self {
-            buf,
-            vert_len: verts.len(),
-            phantom: std::marker::PhantomData,
-        }
-    }
-
-    pub fn update(&self, queue: &wgpu::Queue, verts: &[V]) {
-        queue.write_buffer(&self.buf, 0, bytemuck::cast_slice(verts));
-    }
-
-    pub fn draw(&self, rpass: &mut wgpu::RenderPass, vert_range: Range<u32>) {
-        rpass.set_vertex_buffer(0, self.buf.slice(..));
-        rpass.draw(vert_range, 0..self.vert_len as u32);
     }
 }

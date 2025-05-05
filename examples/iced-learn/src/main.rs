@@ -1,30 +1,50 @@
-use iced::widget::{button, column, text, Column};
+use iced::widget::{button, column, text, text_input, Column};
 use iced::{Center, Font};
 
-const ICON_FONT: Font = Font::with_name("aakar");
+const ICON_FONT: Font = Font::with_name("Consolas");
 
 pub fn main() -> iced::Result {
     let s = iced::settings::Settings {
         default_font: ICON_FONT,
         ..iced::settings::Settings::default()
     };
-    iced::application("counter", Counter::update, Counter::view)
+    iced::application(TitleView, State::update, State::view)
         .settings(s)
         .run()
 }
 
-#[derive(Default)]
-struct Counter {
+struct State {
     value: i64,
+    content: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            value: 0,
+            content: "test-app".to_string(),
+        }
+    }
+}
+
+/// アプリケーションのタイトルを表示するための構造体
+struct TitleView;
+
+impl iced::application::Title<State> for TitleView {
+    fn title(&self, state: &State) -> String {
+        // 現在のコンテンツをもとに表示
+        state.content.clone()
+    }
+}
+
+#[derive(Debug, Clone)]
 enum Message {
     Increment,
     Decrement,
+    ContentChanged(String),
 }
 
-impl Counter {
+impl State {
     fn update(&mut self, message: Message) {
         match message {
             Message::Increment => {
@@ -33,6 +53,9 @@ impl Counter {
             Message::Decrement => {
                 self.value -= 1;
             }
+            Message::ContentChanged(content) => {
+                self.content = content;
+            }
         }
     }
 
@@ -40,7 +63,11 @@ impl Counter {
         column![
             button("Increment").on_press(Message::Increment),
             text(self.value).size(50),
-            button("Decrement").on_press(Message::Decrement)
+            button("Decrement").on_press(Message::Decrement),
+            text_input("Type something here...", &self.content)
+                .on_input(Message::ContentChanged)
+                .padding(10)
+                .size(14),
         ]
         .padding(20)
         .align_x(Center)

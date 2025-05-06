@@ -2112,8 +2112,13 @@ dependencies = [
 name = "iced-learn"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bytesize",
  "iced",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

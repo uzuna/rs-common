@@ -50,7 +50,7 @@ impl Server {
     pub async fn run(&self) -> anyhow::Result<()> {
         info!("Server is running");
         let start = tokio::time::Instant::now();
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
+        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(50));
         let mut stalled = false;
         loop {
             tokio::select! {

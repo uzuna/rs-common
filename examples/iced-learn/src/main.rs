@@ -1,10 +1,10 @@
 use std::time::Instant;
 
-use iced::widget::{
-    button, column, container, horizontal_space, row, slider, text, text_input, Column,
-};
+use iced::widget::{button, column, container, horizontal_space, row, slider, text, Column};
 use iced::{border, window, Alignment, Element, Font, Subscription, Task, Theme};
 use scene::systeminfo::{self, SystemInfoMsg};
+use scene::{ltm, title_text};
+use tracing::info;
 
 pub mod scene;
 pub mod server;
@@ -18,18 +18,24 @@ pub fn main() -> iced::Result {
     iced::application(TitleView, State::update, State::view)
         .settings(s)
         .subscription(State::subscription)
-        .run()
+        .run_with(|| {
+            // 初回起動時のタスクを指定
+            let mut state = State::default();
+            let task = state.update(Message::StartUp);
+            (state, task)
+        })
 }
 
 struct State {
     screen: Screen,
     value: i64,
     slider: i32,
-    content: String,
+    title_text: title_text::Scene,
     server_text: String,
     si: systeminfo::Scene,
     handle: Option<server::ThreadHandles>,
     ch: Option<server::UiCh>,
+    store: Option<scene::ltm::Store>,
 }
 
 impl Default for State {
@@ -37,12 +43,13 @@ impl Default for State {
         Self {
             value: 0,
             slider: 0,
-            content: "test-app".to_string(),
+            title_text: title_text::Scene::new(),
             server_text: "".to_string(),
             screen: Screen::Welcome,
             si: systeminfo::Scene::new(),
             handle: None,
             ch: None,
+            store: None,
         }
     }
 }
@@ -58,25 +65,39 @@ struct TitleView;
 impl iced::application::Title<State> for TitleView {
     fn title(&self, state: &State) -> String {
         // 現在のコンテンツをもとに表示
-        state.content.clone()
+        state.title_text.title().to_string()
     }
 }
 #[derive(Debug, Clone)]
 enum Message {
+    StartUp,
     SystemInfo(SystemInfoMsg),
     ServerStart,
     ServerStop,
     Increment,
     Decrement,
     SliderChanged(i32),
-    ContentChanged(String),
     #[allow(dead_code)]
     Tick(Instant),
+    TitleText(scene::title_text::TitleTextMsg),
+}
+
+impl From<scene::title_text::TitleTextMsg> for Message {
+    fn from(msg: scene::title_text::TitleTextMsg) -> Self {
+        Message::TitleText(msg)
+    }
 }
 
 impl State {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::StartUp => {
+                info!("Start up");
+                let store = ltm::Store::new().unwrap();
+                self.title_text
+                    .update(&store, title_text::TitleTextMsg::Load);
+                self.store = Some(store);
+            }
             Message::SystemInfo(s) => return self.si.update(s).map(Message::SystemInfo),
             Message::ServerStart => {
                 if self.handle.is_none() {
@@ -100,9 +121,6 @@ impl State {
             Message::SliderChanged(value) => {
                 self.slider = value;
             }
-            Message::ContentChanged(content) => {
-                self.content = content;
-            }
             Message::Tick(_) => {
                 if let Some(ch) = &mut self.ch {
                     while let Ok(msg) = ch.rx.try_recv() {
@@ -113,6 +131,9 @@ impl State {
                         }
                     }
                 }
+            }
+            Message::TitleText(msg) => {
+                self.title_text.update(self.store.as_ref().unwrap(), msg);
             }
         };
         Task::none()
@@ -143,10 +164,7 @@ impl State {
             button("Increment").on_press(Message::Increment),
             text(self.value).size(50),
             button("Decrement").on_press(Message::Decrement),
-            text_input("Type something here...", &self.content)
-                .on_input(Message::ContentChanged)
-                .padding(10)
-                .size(14),
+            self.title_text.view(),
             slider(-100..=100, self.slider, Message::SliderChanged),
             text(self.slider).size(14),
             button("Start server").on_press(Message::ServerStart),

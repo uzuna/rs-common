@@ -7,4 +7,5 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-iced = "0.13.0"
+bytesize = "2.0.1"
+iced = { version = "0.13.0", features = ["system"] }

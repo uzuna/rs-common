@@ -13,6 +13,7 @@ encase = { version = "0.10.0", features = ["glam"] }
 fxhash.workspace = true
 glam = { version = "0.29.1", features = ["bytemuck"] }
 wgpu.workspace = true
+nalgebra = { workspace = true, features = ["convert-glam029"] }
 
 [build-dependencies]
 wgsl_to_wgpu = "0.13.0"

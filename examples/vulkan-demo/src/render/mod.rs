@@ -101,6 +101,7 @@ pub mod tutorial {
     use glam::Vec3;
     use nalgebra::{Rotation3, Scale3, Translation3, Vector3};
     use wgpu_shader::{
+        camera::Camera,
         prelude::*,
         tutorial::{shader::VertexInput, *},
         uniform::UniformBuffer,
@@ -110,7 +111,7 @@ pub mod tutorial {
     };
 
     use crate::{
-        camera::{Camera, CameraController, Cams},
+        camera::{CameraController, Cams},
         resources::ModelData,
     };
 
@@ -342,6 +343,7 @@ pub mod unif {
 
     use glam::{Mat4, Vec3};
     use wgpu_shader::{
+        camera::{Camera, FollowCamera},
         colored, graph, model,
         prelude::*,
         types,
@@ -351,7 +353,7 @@ pub mod unif {
         WgpuContext,
     };
 
-    use crate::camera::{Camera, CameraController, Cams, FollowCamera};
+    use crate::camera::{CameraController, Cams};
 
     use super::BG_COLOR;
 

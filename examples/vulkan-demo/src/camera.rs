@@ -1,6 +1,10 @@
-use glam::{Mat4, Vec4};
-use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, UnitQuaternion, Vector3};
-use wgpu_shader::{types, uniform::UniformBuffer};
+use glam::Mat4;
+use nalgebra::Matrix4;
+use wgpu_shader::{
+    camera::{Camera, FollowCamera},
+    types,
+    uniform::UniformBuffer,
+};
 use winit::{
     event::{ElementState, KeyEvent, WindowEvent},
     keyboard::{KeyCode, PhysicalKey},
@@ -22,129 +26,6 @@ pub const ROTATION_FACE_Z_TO_X: Matrix4<f32> = Matrix4::new(
     1.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 1.0,
 );
-
-#[derive(Clone)]
-pub struct Camera {
-    eye: Point3<f32>,
-    target: Point3<f32>,
-    up: Vector3<f32>,
-    aspect: f32,
-    fovy: f32,
-    znear: f32,
-    zfar: f32,
-}
-
-impl Camera {
-    /// アスペクト比を指定してよく使う設定値でカメラを作成する
-    pub fn with_aspect(aspect: f32) -> Self {
-        Self {
-            eye: Point3::new(-3.0, 0.0, 1.7),
-            target: Point3::new(0.0, 0.0, 0.2),
-            up: Vector3::z(),
-            aspect,
-            fovy: 45.0,
-            znear: 0.1,
-            zfar: 100.0,
-        }
-    }
-
-    pub fn new(
-        eye: Point3<f32>,
-        target: Point3<f32>,
-        up: Vector3<f32>,
-        aspect: f32,
-        fovy: f32,
-        znear: f32,
-        zfar: f32,
-    ) -> Self {
-        Self {
-            eye,
-            target,
-            up,
-            aspect,
-            fovy,
-            znear,
-            zfar,
-        }
-    }
-
-    pub fn build_view_projection_matrix(&self) -> Matrix4<f32> {
-        // camera view matrix
-        let view = Isometry3::look_at_rh(&self.eye, &self.target, &self.up);
-
-        // camera projection matrix
-        let proj = Perspective3::new(self.aspect, self.fovy, self.znear, self.zfar);
-
-        // OpenGL uses a different coordinate system from wgpu, so we need to
-        // convert the matrix.
-        OPENGL_TO_WGPU_MATRIX * proj.as_matrix() * view.to_homogeneous()
-    }
-
-    /// 画面リサイズ時にアスペクト比を更新する
-    pub fn set_aspect(&mut self, aspect: f32) {
-        self.aspect = aspect;
-    }
-
-    pub fn pos(&self) -> Point3<f32> {
-        self.eye
-    }
-
-    pub fn build_buffer(&self) -> types::uniform::Camera {
-        let view_proj = self.build_view_projection_matrix().into();
-        let view_pos = Vec4::new(self.eye.x, self.eye.y, self.eye.z, 1.0);
-        types::uniform::Camera {
-            view_pos,
-            view_proj,
-        }
-    }
-}
-
-/// targetを中心に行って距離と周囲の移動を行うカメラ
-/// XY平面でZをUpとするカメラ
-pub struct FollowCamera {
-    camera: Camera,
-    distance: f32,
-    yaw: f32,
-    pitch: f32,
-}
-
-impl FollowCamera {
-    /// 真上と真下の回転を避けるために、pitchの範囲を制限する
-    const PITCH_MARGIN: f32 = 0.001;
-    pub fn new(camera: Camera) -> Self {
-        let distance = (camera.eye - camera.target).magnitude();
-        let pitch = (camera.target.z - camera.eye.z).atan2(distance);
-        let yaw = (camera.target.y - camera.eye.y).atan2(camera.target.x - camera.eye.x)
-            + std::f32::consts::PI;
-        Self {
-            camera,
-            distance,
-            yaw,
-            pitch,
-        }
-    }
-
-    pub fn camera(&self) -> &Camera {
-        &self.camera
-    }
-
-    pub fn camera_mut(&mut self) -> &mut Camera {
-        &mut self.camera
-    }
-
-    pub fn update(&mut self, up_down: f32, left_right: f32, front_back: f32) {
-        use std::f32::consts::FRAC_PI_2;
-        self.distance += front_back;
-        self.yaw += left_right;
-        self.pitch += up_down;
-        self.pitch = self
-            .pitch
-            .clamp(-FRAC_PI_2 + Self::PITCH_MARGIN, Self::PITCH_MARGIN);
-        let q = UnitQuaternion::from_euler_angles(0.0, self.pitch, self.yaw);
-        let point = self.camera.target + q * Vector3::new(self.distance, 0.0, 0.0);
-        self.camera.eye = point;
-    }
-}
 
 /// キー入力を元にカメラを操作するコントローラー
 pub struct CameraController {
@@ -268,7 +149,7 @@ impl CameraController {
         } else {
             0.0
         };
-        camera.update(up_down, left_right, front_back);
+        camera.update(up_down, left_right, front_back, false);
     }
 }
 
@@ -280,7 +161,7 @@ pub struct Cams {
 impl Cams {
     pub fn new(device: &wgpu::Device, camera: Camera) -> Self {
         let cam = FollowCamera::new(camera);
-        let buffer = UniformBuffer::new(device, cam.camera().build_buffer());
+        let buffer = UniformBuffer::new(device, cam.camera().to_uniform());
         Self { cam, buffer }
     }
 
@@ -289,17 +170,17 @@ impl Cams {
     }
 
     pub fn update(&mut self, queue: &wgpu::Queue) {
-        self.buffer.write(queue, &self.cam.camera().build_buffer());
+        self.buffer.write(queue, &self.cam.camera().to_uniform());
     }
 
     pub fn update_world(&mut self, queue: &wgpu::Queue, world: Mat4) {
-        let mut cam = self.cam.camera().build_buffer();
+        let mut cam = self.cam.camera().to_uniform();
         cam.update_world(world);
         self.buffer.write(queue, &cam);
     }
 
     pub fn update_world_pos(&mut self, queue: &wgpu::Queue, world: Mat4) {
-        let mut cam = self.cam.camera().build_buffer();
+        let mut cam = self.cam.camera().to_uniform();
         cam.update_world_pos(world);
         self.buffer.write(queue, &cam);
     }

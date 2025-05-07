@@ -5549,6 +5549,7 @@ dependencies = [
  "fxhash",
  "glam 0.29.2",
  "glob",
+ "nalgebra",
  "wgpu 24.0.1",
  "wgsl_to_wgpu",
 ]

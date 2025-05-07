@@ -146,6 +146,8 @@ pub mod systeminfo {
     }
 }
 
+pub mod shader {}
+
 pub mod title_text {
     use iced::{widget::text_input, Element};
 

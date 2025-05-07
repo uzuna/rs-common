@@ -1,3 +1,4 @@
+pub mod camera;
 pub mod colored;
 pub(crate) mod common;
 pub mod graph;

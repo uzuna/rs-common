@@ -1,6 +1,7 @@
+use glam::Mat4;
 use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, Translation, UnitQuaternion, Vector3};
 
-use crate::types;
+use crate::{types, uniform::UniformBuffer};
 
 /// [nalgebra::Perspective3]の行列を、lovotの座標系に変換するための行列
 /// 
@@ -187,5 +188,53 @@ impl FollowCamera {
 
     pub fn to_uniform(&self) -> types::uniform::Camera {
         self.camera().to_uniform()
+    }
+}
+
+pub struct Cams {
+    cam: FollowCamera,
+    buffer: UniformBuffer<types::uniform::Camera>,
+}
+
+impl Cams {
+    pub fn new(device: &wgpu::Device, camera: Camera) -> Self {
+        let cam = FollowCamera::new(camera);
+        let buffer: UniformBuffer<types::uniform::Camera> =
+            UniformBuffer::new(device, cam.camera().to_uniform());
+        Self { cam, buffer }
+    }
+
+    pub fn camera_mut(&mut self) -> &mut FollowCamera {
+        &mut self.cam
+    }
+
+    pub fn update(&mut self, queue: &wgpu::Queue) {
+        self.buffer.write(queue, &self.cam.camera().to_uniform());
+    }
+
+    pub fn update_world(&mut self, queue: &wgpu::Queue, world: Mat4) {
+        let mut cam = self.cam.camera().to_uniform();
+        cam.update_world(world);
+        self.buffer.write(queue, &cam);
+    }
+
+    pub fn update_world_pos(&mut self, queue: &wgpu::Queue, world: Mat4) {
+        let mut cam = self.cam.camera().to_uniform();
+        cam.update_world_pos(world);
+        self.buffer.write(queue, &cam);
+    }
+
+    pub fn buffer(&self) -> &UniformBuffer<types::uniform::Camera> {
+        &self.buffer
+    }
+
+    /// カメラオブジェクトの複製
+    pub fn clone_object(&self, device: &wgpu::Device) -> Self {
+        Self::new(device, self.cam.camera().clone())
+    }
+
+    /// 構造体を分解
+    pub fn into_inner(self) -> (FollowCamera, wgpu::Buffer) {
+        (self.cam, self.buffer.into_inner())
     }
 }

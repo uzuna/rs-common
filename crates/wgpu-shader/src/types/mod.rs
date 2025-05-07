@@ -3,7 +3,9 @@ pub mod uniform {
 
     /// カメラ型
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
+    #[derive(
+        Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable, encase::ShaderType,
+    )]
     pub struct Camera {
         pub view_pos: glam::Vec4,
         pub view_proj: glam::Mat4,

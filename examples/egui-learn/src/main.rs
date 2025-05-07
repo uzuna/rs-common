@@ -1,7 +1,12 @@
+use shader::Context;
+
+mod shader;
+
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([320.0, 240.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 720.0]),
         renderer: eframe::Renderer::Wgpu,
+        depth_buffer: 32,
         ..Default::default()
     };
 
@@ -34,12 +39,25 @@ impl State {
 
 struct CustomApp {
     state: State,
+    ctx: Context,
 }
 
 impl CustomApp {
-    pub fn new<'a>(_cc: &'a eframe::CreationContext<'a>) -> Self {
+    pub fn new<'a>(cc: &'a eframe::CreationContext<'a>) -> Self {
+        let wgpu_render_state = cc.wgpu_render_state.as_ref().unwrap();
+        let device = &wgpu_render_state.device;
+        let rect = cc.egui_ctx.screen_rect();
+        let aspect = rect.width() / rect.height();
+        let (ctx, rr) = Context::new(device, aspect, wgpu_render_state.target_format);
+        wgpu_render_state
+            .renderer
+            .write()
+            .callback_resources
+            .insert(rr);
+
         Self {
             state: State::new(),
+            ctx,
         }
     }
 }
@@ -63,10 +81,12 @@ impl eframe::App for CustomApp {
                 *age += 1;
             }
             ui.label(format!("Hello '{name}', age {age}"));
+            self.ctx.custom_painting(ui);
         });
 
         if let Some(title) = self.state.fetch_title() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
+        // self.ctx.update(ctx, frame);
     }
 }

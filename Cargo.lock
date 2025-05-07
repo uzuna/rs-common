@@ -1594,9 +1594,13 @@ dependencies = [
 name = "egui-learn"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "bytemuck",
  "eframe",
  "egui",
+ "encase",
  "wgpu 24.0.3",
+ "wgpu-shader",
 ]
 
 [[package]]

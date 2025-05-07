@@ -145,7 +145,7 @@ impl PlUnif {
     /// パイプラインの構築
     pub fn new(
         device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration,
+        texture: wgpu::TextureFormat,
         camera: &UniformBuffer<types::uniform::Camera>,
         topology: PrimitiveTopology,
         blend: Blend,
@@ -154,7 +154,7 @@ impl PlUnif {
         let shader = s::create_shader_module(device);
 
         let layout = s::create_pipeline_layout(device);
-        let fs_target = common::create_fs_target(config.format, blend);
+        let fs_target = common::create_fs_target(texture, blend);
         let ve = s::vs_main_entry(wgpu::VertexStepMode::Vertex);
         let vs = s::vertex_state(&shader, &ve);
         let fe = s::fs_main_entry(fs_target);

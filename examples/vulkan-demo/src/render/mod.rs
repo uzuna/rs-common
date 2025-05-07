@@ -101,7 +101,7 @@ pub mod tutorial {
     use glam::Vec3;
     use nalgebra::{Rotation3, Scale3, Translation3, Vector3};
     use wgpu_shader::{
-        camera::Camera,
+        camera::{Camera, Cams},
         prelude::*,
         tutorial::{shader::VertexInput, *},
         uniform::UniformBuffer,
@@ -110,10 +110,7 @@ pub mod tutorial {
         WgpuContext,
     };
 
-    use crate::{
-        camera::{CameraController, Cams},
-        resources::ModelData,
-    };
+    use crate::{camera::CameraController, resources::ModelData};
 
     use super::BG_COLOR;
 
@@ -343,7 +340,7 @@ pub mod unif {
 
     use glam::{Mat4, Vec3};
     use wgpu_shader::{
-        camera::{Camera, FollowCamera},
+        camera::{Camera, Cams, FollowCamera},
         colored, graph, model,
         prelude::*,
         types,
@@ -353,7 +350,7 @@ pub mod unif {
         WgpuContext,
     };
 
-    use crate::camera::{CameraController, Cams};
+    use crate::camera::CameraController;
 
     use super::BG_COLOR;
 
@@ -620,21 +617,21 @@ pub mod unif {
             let cc = CameraController::new(0.05);
             let p_poly = colored::PlUnif::new(
                 state.device(),
-                config,
+                config.format,
                 cam.buffer(),
                 wgpu::PrimitiveTopology::TriangleList,
                 Blend::Replace,
             );
             let p_line = colored::PlUnif::new(
                 state.device(),
-                config,
+                config.format,
                 cam.buffer(),
                 wgpu::PrimitiveTopology::LineList,
                 Blend::Replace,
             );
             let p_poly_trans = colored::PlUnif::new(
                 state.device(),
-                config,
+                config.format,
                 cam.buffer(),
                 wgpu::PrimitiveTopology::TriangleList,
                 Blend::Alpha,

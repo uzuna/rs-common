@@ -7,6 +7,10 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+bytemuck.workspace = true
 eframe = { workspace = true, features = ["wgpu"] }
 egui.workspace = true
+encase = "0.10.0"
 wgpu.workspace = true
+wgpu-shader.workspace = true

@@ -1,10 +1,5 @@
-use glam::Mat4;
 use nalgebra::Matrix4;
-use wgpu_shader::{
-    camera::{Camera, FollowCamera},
-    types,
-    uniform::UniformBuffer,
-};
+use wgpu_shader::camera::{Camera, FollowCamera};
 use winit::{
     event::{ElementState, KeyEvent, WindowEvent},
     keyboard::{KeyCode, PhysicalKey},
@@ -150,47 +145,5 @@ impl CameraController {
             0.0
         };
         camera.update(up_down, left_right, front_back, false);
-    }
-}
-
-pub struct Cams {
-    cam: FollowCamera,
-    buffer: UniformBuffer<types::uniform::Camera>,
-}
-
-impl Cams {
-    pub fn new(device: &wgpu::Device, camera: Camera) -> Self {
-        let cam = FollowCamera::new(camera);
-        let buffer = UniformBuffer::new(device, cam.camera().to_uniform());
-        Self { cam, buffer }
-    }
-
-    pub fn camera_mut(&mut self) -> &mut FollowCamera {
-        &mut self.cam
-    }
-
-    pub fn update(&mut self, queue: &wgpu::Queue) {
-        self.buffer.write(queue, &self.cam.camera().to_uniform());
-    }
-
-    pub fn update_world(&mut self, queue: &wgpu::Queue, world: Mat4) {
-        let mut cam = self.cam.camera().to_uniform();
-        cam.update_world(world);
-        self.buffer.write(queue, &cam);
-    }
-
-    pub fn update_world_pos(&mut self, queue: &wgpu::Queue, world: Mat4) {
-        let mut cam = self.cam.camera().to_uniform();
-        cam.update_world_pos(world);
-        self.buffer.write(queue, &cam);
-    }
-
-    pub fn buffer(&self) -> &UniformBuffer<types::uniform::Camera> {
-        &self.buffer
-    }
-
-    /// カメラオブジェクトの複製
-    pub fn clone_object(&self, device: &wgpu::Device) -> Self {
-        Self::new(device, self.cam.camera().clone())
     }
 }

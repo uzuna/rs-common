@@ -17,7 +17,7 @@ use fxhash::FxHashMap;
 ///
 /// TRSとしているのはそれが人間から見て匝瑳市やすさのためで、
 /// 最終出力としてはアフィン変換と投資投影に使える[glam::Mat4]を得ることがこの型の目的です
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Trs {
     pub translation: glam::Vec3,
     pub rotation: glam::Quat,
@@ -89,6 +89,25 @@ impl Trs {
             * glam::Mat4::from_quat(self.rotation)
             * glam::Mat4::from_scale(self.scale)
     }
+
+    /// 行列からTRSを復元する。
+    ///
+    /// # 注意
+    /// スケールが1.0ではない場合にクオータニオンは正しく復元できない
+    pub fn from_homogeneous(mat: glam::Mat4) -> Self {
+        let translation = mat.w_axis.truncate();
+        let rotation = glam::Quat::from_mat4(&mat);
+        let scale = glam::Vec3::new(
+            mat.x_axis.length(),
+            mat.y_axis.length(),
+            mat.z_axis.length(),
+        );
+        Self {
+            translation,
+            rotation,
+            scale,
+        }
+    }
 }
 
 impl Default for Trs {
@@ -121,6 +140,17 @@ pub trait ModelNodeImpl {
     fn update_world(&mut self, world: glam::Mat4) -> glam::Mat4;
 }
 
+/// [ModelGraph]がレンダリング順序を計算するのに必要なトレイトです
+/// 3Dでもレンダリング順序を意識するべきシーンがあります。
+/// 例えば半透明オブジェクトやドロップシャドウは通常物体の後に描画する必要があります。
+/// このトレイトでレンダリング順序を守ることで期待される表示結果を得ることができます。
+pub trait ModelNodeImplRenderable {
+    /// レンダリング対象かどうかを返す
+    fn is_renderable(&self) -> bool;
+    /// レンダリング対象のノードの順序比較を行う
+    fn render_ord(&self, other: &Self) -> std::cmp::Ordering;
+}
+
 /// 3Dモデル向けのグラフ構造体でノードとして[ModelNode]を持つことを想定しています
 ///
 /// [ModelNode]はユーザーの構造体を保持して具体的な型を実装することを期待しています。
@@ -137,6 +167,8 @@ pub struct ModelGraph<M> {
     names: FxHashMap<String, u64>,
     // ノードIDの自動採番用カウンタ
     counter: u64,
+    // レンダリング対象ノードを、レンダリング順序別に並べたもの
+    renderable_ord: Vec<u64>,
 }
 
 impl<M> Default for ModelGraph<M> {
@@ -152,6 +184,7 @@ impl<M> ModelGraph<M> {
             map: FxHashMap::default(),
             names: FxHashMap::default(),
             counter: 0,
+            renderable_ord: vec![],
         }
     }
 
@@ -251,6 +284,10 @@ where
         Ok(())
     }
 
+    pub fn contains_key(&self, name: &str) -> bool {
+        self.names.contains_key(name)
+    }
+
     /// 任意ノードとその子のワールド座標を更新します。local座標を更新した後はこれを呼んでください
     pub fn update_world(&mut self, name: &str) -> anyhow::Result<()> {
         // 指定されたノードの親のワールド座標を取得して再帰更新をする
@@ -339,6 +376,27 @@ where
     }
 }
 
+impl<M> ModelGraph<M>
+where
+    M: ModelNodeImpl + ModelNodeImplRenderable,
+{
+    /// 現在のノードのレンダリング順序を更新します
+    pub fn update_renderable_ord(&mut self) {
+        let mut l = self
+            .map
+            .iter()
+            .filter(|(_, node)| node.is_renderable())
+            .collect::<Vec<_>>();
+        l.sort_by(|(_, a), (_, b)| a.render_ord(b));
+        self.renderable_ord = l.into_iter().map(|(id, _)| *id).collect();
+    }
+
+    /// レンダリング順にノードを取得します
+    pub fn iter_ordered(&self) -> impl Iterator<Item = &M> {
+        self.renderable_ord.iter().filter_map(|id| self.map.get(id))
+    }
+}
+
 /// [ModelNode]に渡すユーザー定義型に実装を期待するトレイトです
 pub trait ModelNodeImplClone {
     /// オブジェクトをクローンします。コピーにGPUへの操作が伴う場合があるので引数にデバイスを持っています
@@ -392,7 +450,7 @@ impl<T> ModelNode<T> {
             children: vec![],
             local,
             world: glam::Mat4::IDENTITY,
-            world_updated: false,
+            world_updated: true,
             value,
         }
     }
@@ -410,6 +468,10 @@ impl<T> ModelNode<T> {
     /// ユーザーデータへの可変参照を取得します
     pub fn value_mut(&mut self) -> &mut T {
         &mut self.value
+    }
+
+    pub fn trs(&self) -> &Trs {
+        &self.local
     }
 
     /// local座標への可変参照を取得します
@@ -477,6 +539,19 @@ where
             world_updated: self.world_updated,
             value: self.value.clone_object(device),
         }
+    }
+}
+
+impl<T> ModelNodeImplRenderable for ModelNode<T>
+where
+    T: ModelNodeImplRenderable,
+{
+    fn is_renderable(&self) -> bool {
+        self.value.is_renderable()
+    }
+
+    fn render_ord(&self, other: &Self) -> std::cmp::Ordering {
+        self.value.render_ord(&other.value)
     }
 }
 
@@ -561,6 +636,37 @@ mod tests {
             assert!(node.world_updated);
         }
 
+        model.get_must_mut("r1").trs_mut().set_translation(Vec3::Y);
+        model.update_world("r1")?;
+
+        for (_, name, _, expect) in names {
+            let node = model.get_node(name).unwrap();
+            let pos = node.world * glam::Vec4::new(0.0, 0.0, 0.0, 1.0);
+            // r1以下は親の影響を受けるので、r1の移動分を加算する
+            if name == "r2" || name == "r3" {
+                assert_eq!(pos.xyz(), expect, "name: {name}");
+            } else {
+                assert_eq!(pos.xyz(), expect + Vec3::Y - Vec3::X, "name: {name}");
+            }
+            assert!(node.world_updated);
+        }
+
         Ok(())
+    }
+
+    #[test]
+    fn test_homogeourneous() {
+        let trs = Trs::new(
+            glam::Vec3::new(1.0, 2.0, 3.0),
+            glam::Quat::from_rotation_y(0.5),
+            glam::Vec3::new(1.0, 1.0, 1.0),
+        );
+        let mat = trs.to_homogeneous();
+        let trs2 = Trs::from_homogeneous(mat);
+        assert_eq!(trs.translation, trs2.translation);
+        assert_eq!(trs.scale, trs2.scale);
+        approx::assert_abs_diff_eq!(trs.rotation.x, trs2.rotation.x, epsilon = 0.0001);
+        approx::assert_abs_diff_eq!(trs.rotation.y, trs2.rotation.y, epsilon = 0.0001);
+        approx::assert_abs_diff_eq!(trs.rotation.z, trs2.rotation.z, epsilon = 0.0001);
     }
 }

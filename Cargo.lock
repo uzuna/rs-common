@@ -6307,6 +6307,7 @@ name = "wgpu-shader"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "approx",
  "bytemuck",
  "encase",
  "fxhash",

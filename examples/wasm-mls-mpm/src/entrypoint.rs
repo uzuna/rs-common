@@ -111,7 +111,7 @@ pub async fn run(c: RunConfig) -> Result<(), JsError> {
         pixel_size: [10.0, 10.0].into(),
     };
 
-    let uniform = UniformBuffer::new(state.device(), u_w);
+    let uniform = UniformBuffer::new_encase(state.device(), &u_w);
 
     let pipe = particle::Pipeline::new(state.device(), state.config(), &uniform);
 

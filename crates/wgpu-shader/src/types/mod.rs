@@ -3,7 +3,9 @@ pub mod uniform {
 
     /// カメラ型
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
+    #[derive(
+        Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable, encase::ShaderType,
+    )]
     pub struct Camera {
         pub view_pos: glam::Vec4,
         pub view_proj: glam::Mat4,
@@ -31,10 +33,11 @@ pub mod uniform {
 }
 
 pub mod vertex {
+    use encase::ShaderType;
 
     /// 色付き頂点型
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+    #[derive(Debug, Copy, Clone, PartialEq, ShaderType)]
     pub struct Color3 {
         pub position: glam::Vec3,
         pub color: glam::Vec3,

@@ -131,6 +131,7 @@ impl PipelineInstanced {
 }
 
 pub type DrawInfoBindGroup = unif::bind_groups::BindGroup1;
+pub type CameraBindGroup = unif::bind_groups::BindGroup0;
 type DrawInfoBindGroupLayout<'a> = unif::bind_groups::BindGroupLayout1<'a>;
 
 /// SceneGraphデータ構造向けのUniformを使った値の変更を行うパイプライン
@@ -145,8 +146,8 @@ impl PlUnif {
     /// パイプラインの構築
     pub fn new(
         device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration,
-        camera: &UniformBuffer<types::uniform::Camera>,
+        texture: wgpu::TextureFormat,
+        camera_buf: &wgpu::Buffer,
         topology: PrimitiveTopology,
         blend: Blend,
     ) -> Self {
@@ -154,7 +155,7 @@ impl PlUnif {
         let shader = s::create_shader_module(device);
 
         let layout = s::create_pipeline_layout(device);
-        let fs_target = common::create_fs_target(config.format, blend);
+        let fs_target = common::create_fs_target(texture, blend);
         let ve = s::vs_main_entry(wgpu::VertexStepMode::Vertex);
         let vs = s::vertex_state(&shader, &ve);
         let fe = s::fs_main_entry(fs_target);
@@ -178,7 +179,7 @@ impl PlUnif {
         let bg0 = s::bind_groups::BindGroup0::from_bindings(
             device,
             s::bind_groups::BindGroupLayout0 {
-                camera: camera.buffer().as_entire_buffer_binding(),
+                camera: camera_buf.as_entire_buffer_binding(),
             },
         );
 
@@ -187,6 +188,16 @@ impl PlUnif {
             bg0,
             _topology: topology,
         }
+    }
+
+    /// 別にカメラバインドをする場合
+    pub fn make_camera_bg(device: &wgpu::Device, camera_buf: &wgpu::Buffer) -> CameraBindGroup {
+        CameraBindGroup::from_bindings(
+            device,
+            unif::bind_groups::BindGroupLayout0 {
+                camera: camera_buf.as_entire_buffer_binding(),
+            },
+        )
     }
 
     pub fn make_draw_unif(
@@ -199,6 +210,10 @@ impl PlUnif {
                 draw_info: object.buffer().as_entire_buffer_binding(),
             },
         )
+    }
+
+    pub fn pipeline(&self) -> &wgpu::RenderPipeline {
+        &self.pipe
     }
 
     /// レンダリング前のバインドグループ設定など

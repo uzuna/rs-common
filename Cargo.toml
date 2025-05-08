@@ -44,9 +44,11 @@ wasm-bindgen = "0.2.100"
 wasm-bindgen-futures = "0.4.50"
 wasm-util = { path = "crates/wasm-util" }
 wgpu-shader = { path = "crates/wgpu-shader" }
-wgpu = "24.0.1"
+wgpu = "24.0.0"
 web-sys = "0.3"
 xegl = { path = "crates/xegl" }
+eframe = "0.31.1"
+egui = "0.31.1"
 
 [profile.release.package.wasm-preview]
 opt-level = 3

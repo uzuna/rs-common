@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use wgpu_shader::WgpuContext;
 use winit::{
     event::*,
     event_loop::EventLoopBuilder,
@@ -58,7 +59,7 @@ pub async fn run(app_env: env::AppEnv, timeout: Option<Duration>) {
     let mut surface_configured = false;
     let timer = render::Timer::new();
 
-    let _r = render::particle::Context::new(&state, state.config());
+    let _r = render::particle::Context::new(state.device(), state.config());
     let _r = render::tutorial::Context::new(&state, state.config(), &app_env.assets);
 
     // 有効なのは1つだけ

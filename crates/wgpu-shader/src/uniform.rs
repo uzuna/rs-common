@@ -62,17 +62,6 @@ impl<U> UniformBuffer<U> {
         })
     }
 
-    /// UniformBufferの複製
-    pub fn clone_object(&self, device: &wgpu::Device) -> Self {
-        // 既存のUniformBufferの内容で新しいUniformBufferを作成
-        let s = self.buffer.slice(0..self.buffer.size());
-        let buffer = Self::create_buffer_init(device, s.get_mapped_range().as_ref());
-        Self {
-            buffer,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-
     /// バッファの取得
     pub fn buffer(&self) -> &wgpu::Buffer {
         &self.buffer

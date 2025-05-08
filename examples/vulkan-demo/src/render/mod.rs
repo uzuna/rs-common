@@ -369,18 +369,6 @@ pub mod unif {
         Transparent(Drawable),
     }
 
-    impl ModelNodeImplClone for SlotType {
-        fn clone_object(&self, device: &wgpu::Device) -> Self {
-            match self {
-                SlotType::Draw(d) => SlotType::Draw(d.clone_object(device)),
-                SlotType::Bone => SlotType::Bone,
-                SlotType::FollowCamera(c) => SlotType::FollowCamera(c.clone_object(device)),
-                SlotType::Shadow(s) => SlotType::Shadow(s.clone_object(device)),
-                SlotType::Transparent(t) => SlotType::Transparent(t.clone_object(device)),
-            }
-        }
-    }
-
     impl PartialEq for SlotType {
         fn eq(&self, other: &Self) -> bool {
             matches!(
@@ -457,19 +445,6 @@ pub mod unif {
             self.vb.set(rp);
             rp.draw(0..self.vb.len(), 0..1);
         }
-
-        // オブジェクトの複製
-        fn clone_object(&self, device: &wgpu::Device) -> Self {
-            let buffer = self.buffer.clone_object(device);
-            let bg = colored::PlUnif::make_draw_unif(device, &buffer);
-            let vb = self.vb.clone();
-            Self {
-                color: self.color,
-                buffer,
-                bg,
-                vb,
-            }
-        }
     }
 
     struct FloorShadow {
@@ -513,10 +488,6 @@ pub mod unif {
             self.vb.set(rp);
             rp.draw(0..self.vb.len(), 0..1);
         }
-
-        fn clone_object(&self, device: &wgpu::Device) -> Self {
-            Self::new(device, self.vb.clone())
-        }
     }
 
     struct CameraObj {
@@ -534,10 +505,6 @@ pub mod unif {
 
         fn update(&mut self, queue: &wgpu::Queue, matrix: Mat4) {
             self.cam.update_world_pos(queue, matrix);
-        }
-
-        fn clone_object(&self, debice: &wgpu::Device) -> Self {
-            Self::new(self.cam.clone_object(debice))
         }
     }
 
@@ -557,10 +524,7 @@ pub mod unif {
         node: String,
     }
 
-    impl<N> ObjectHistory<N>
-    where
-        N: ModelNodeImplClone,
-    {
+    impl<N> ObjectHistory<N> {
         fn new(node: String) -> Self {
             Self {
                 v: VecDeque::new(),
@@ -586,7 +550,7 @@ pub mod unif {
                         self.v.pop_front();
                     }
                     // 履歴に追加
-                    self.v.push_back(b.clone_object(state.device()));
+                    // self.v.push_back(b.clone_object(state.device()));
                 }
             }
         }

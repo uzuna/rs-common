@@ -397,12 +397,6 @@ where
     }
 }
 
-/// [ModelNode]に渡すユーザー定義型に実装を期待するトレイトです
-pub trait ModelNodeImplClone {
-    /// オブジェクトをクローンします。コピーにGPUへの操作が伴う場合があるので引数にデバイスを持っています
-    fn clone_object(&self, device: &wgpu::Device) -> Self;
-}
-
 /// グラフノードの基本実装です。[Trs]やノード名、親子関係を持ちます
 ///
 /// 実際に利用する情報は[ModelNode::value]に格納します
@@ -522,23 +516,6 @@ impl<T> ModelNodeImpl for ModelNode<T> {
         self.world_updated = true;
         self.world = world * self.local.to_homogeneous();
         self.world
-    }
-}
-
-impl<T> ModelNodeImplClone for ModelNode<T>
-where
-    T: ModelNodeImplClone,
-{
-    fn clone_object(&self, device: &wgpu::Device) -> Self {
-        Self {
-            name: self.name.clone(),
-            parent: self.parent,
-            children: self.children.clone(),
-            local: self.local.clone(),
-            world: self.world,
-            world_updated: self.world_updated,
-            value: self.value.clone_object(device),
-        }
     }
 }
 

@@ -52,13 +52,13 @@ pub mod particle {
     }
 
     impl Context {
-        pub fn new(state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) -> Self {
+        pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
             let u_w = shader::Window {
                 resolution: [800.0, 600.0].into(),
                 pixel_size: [12.0, 12.0].into(),
             };
-            let uniform = UniformBuffer::new_encase(state.device(), &u_w);
-            let mut pipe = Pipeline::new(state.device(), config, &uniform);
+            let uniform = UniformBuffer::new_encase(device, &u_w);
+            let mut pipe = Pipeline::new(device, config, &uniform);
             pipe.set_bg_color(super::BG_COLOR);
 
             // init vertex
@@ -72,7 +72,7 @@ pub mod particle {
                 }
             }
 
-            let vb = VertexBufferSimple::new(state.device(), &verts, Some("Vertex Buffer"));
+            let vb = VertexBufferSimple::new(device, &verts, Some("Vertex Buffer"));
 
             Self {
                 pipe,
@@ -216,7 +216,7 @@ pub mod tutorial {
         fn load_model(state: &impl WgpuContext, path: &Path) -> Model {
             let model_data = ModelData::from_path(path).expect("Failed to load model data");
             let m = model_data.models.first().expect("Model data is empty");
-            let mesh = Self::load_model_inner(state, m);
+            let mesh = Self::load_model_inner(state.device(), m);
             let mat = model_data
                 .materials
                 .first()
@@ -232,7 +232,7 @@ pub mod tutorial {
             Model { mesh, material }
         }
 
-        fn load_model_inner(state: &impl WgpuContext, m: &tobj::Model) -> Mesh {
+        fn load_model_inner(device: &wgpu::Device, m: &tobj::Model) -> Mesh {
             let vertices = 0..m.mesh.positions.len() / 3;
 
             let vertices = vertices
@@ -253,7 +253,7 @@ pub mod tutorial {
                 })
                 .collect::<Vec<_>>();
             let indexies = m.mesh.indices.iter().map(|x| *x as u16).collect::<Vec<_>>();
-            let vb = VertexBuffer::new(state.device(), &vertices, &indexies);
+            let vb = VertexBuffer::new(device, &vertices, &indexies);
 
             Mesh {
                 name: m.name.clone(),

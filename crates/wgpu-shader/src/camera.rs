@@ -200,7 +200,7 @@ impl Cams {
     pub fn new(device: &wgpu::Device, camera: Camera) -> Self {
         let cam = FollowCamera::new(camera);
         let buffer: UniformBuffer<types::uniform::Camera> =
-            UniformBuffer::new(device, cam.camera().to_uniform());
+            UniformBuffer::new(device, &cam.camera().to_uniform());
         Self { cam, buffer }
     }
 

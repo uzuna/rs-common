@@ -57,7 +57,7 @@ pub mod particle {
                 resolution: [800.0, 600.0].into(),
                 pixel_size: [12.0, 12.0].into(),
             };
-            let uniform = UniformBuffer::new(state.device(), u_w);
+            let uniform = UniformBuffer::new_encase(state.device(), &u_w);
             let mut pipe = Pipeline::new(state.device(), config, &uniform);
             pipe.set_bg_color(super::BG_COLOR);
 
@@ -189,7 +189,7 @@ pub mod tutorial {
             let cam = Camera::with_aspect(config.width as f32 / config.height as f32);
             let cam = Cams::new(state.device(), cam);
             let cc = CameraController::new(0.01);
-            let ub_light = UniformBuffer::new(state.device(), create_light());
+            let ub_light = UniformBuffer::new_encase(state.device(), &create_light());
 
             let pipe_render = Pipeline::new(state.device(), config, cam.buffer(), &ub_light);
 
@@ -285,7 +285,7 @@ pub mod tutorial {
                 position: pos,
                 color: Vec3::new(1.0, 1.0, 1.0),
             };
-            self.ub_light.write(state.queue(), &light);
+            self.ub_light.write_encase(state.queue(), &light);
         }
 
         pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
@@ -430,7 +430,7 @@ pub mod unif {
                 matrix: glam::Mat4::IDENTITY,
                 color,
             };
-            let buffer = UniformBuffer::new(device, buffer);
+            let buffer = UniformBuffer::new_encase(device, &buffer);
             let bg = colored::PlUnif::make_draw_unif(device, &buffer);
             Self {
                 color,
@@ -449,7 +449,7 @@ pub mod unif {
                 matrix,
                 color: self.color,
             };
-            self.buffer.write(queue, &buffer);
+            self.buffer.write_encase(queue, &buffer);
         }
 
         fn draw(&self, rp: &mut wgpu::RenderPass<'_>) {
@@ -487,7 +487,7 @@ pub mod unif {
                 matrix: glam::Mat4::IDENTITY,
                 color: Self::SHADOW_COLLOR,
             };
-            let buffer = UniformBuffer::new(device, buffer);
+            let buffer = UniformBuffer::new_encase(device, &buffer);
             let bg = colored::PlUnif::make_draw_unif(device, &buffer);
             Self {
                 color: Self::SHADOW_COLLOR,
@@ -505,7 +505,7 @@ pub mod unif {
                 matrix,
                 color: self.color,
             };
-            self.buffer.write(queue, &buffer);
+            self.buffer.write_encase(queue, &buffer);
         }
 
         fn draw(&self, rp: &mut wgpu::RenderPass<'_>) {

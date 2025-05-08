@@ -33,10 +33,11 @@ pub mod uniform {
 }
 
 pub mod vertex {
+    use encase::ShaderType;
 
     /// 色付き頂点型
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+    #[derive(Debug, Copy, Clone, PartialEq, ShaderType)]
     pub struct Color3 {
         pub position: glam::Vec3,
         pub color: glam::Vec3,

@@ -1,6 +1,7 @@
 use camera::{CamBufs, CamObjs, CameraBufferRequest};
 use eframe::egui_wgpu;
 use egui::{response, Color32};
+use encase::StorageBuffer;
 use fxhash::FxHashMap;
 use wgpu_shader::{
     camera::FollowCamera,
@@ -30,18 +31,22 @@ impl DrawableResource {
             matrix: glam::Mat4::IDENTITY,
             color,
         };
-        let buffer = UniformBuffer::new(device, buffer);
+        let buffer = UniformBuffer::new_encase(device, &buffer);
         let bg = colored::PlUnif::make_draw_unif(device, &buffer);
         let buffer = buffer.into_inner();
         Self { buffer, bg }
     }
 
     fn update(&self, queue: &wgpu::Queue, color: glam::Vec4) {
-        let buffer = colored::unif::DrawInfo {
+        let drawinfo = colored::unif::DrawInfo {
             matrix: glam::Mat4::IDENTITY,
             color,
         };
-        queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(&[buffer]));
+
+        let mut byte_buffer: Vec<u8> = Vec::new();
+        let mut buffer = StorageBuffer::new(&mut byte_buffer);
+        buffer.write(&drawinfo).unwrap();
+        queue.write_buffer(&self.buffer, 0, buffer.as_ref());
     }
 }
 
@@ -247,7 +252,7 @@ pub mod camera {
         for (i, aspect) in aspects.iter().enumerate() {
             let id = i as u32;
             let cam_obj = FollowCamera::new(Camera::with_aspect(*aspect));
-            let buffer = UniformBuffer::new(device, cam_obj.camera().to_uniform());
+            let buffer = UniformBuffer::new_encase(device, &cam_obj.camera().to_uniform());
             cam.insert(id, cam_obj);
             let buf = buffer.into_inner();
             cam_buf.insert(id, buf);

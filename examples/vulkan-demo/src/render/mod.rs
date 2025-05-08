@@ -618,21 +618,21 @@ pub mod unif {
             let p_poly = colored::PlUnif::new(
                 state.device(),
                 config.format,
-                cam.buffer(),
+                cam.buffer().buffer(),
                 wgpu::PrimitiveTopology::TriangleList,
                 Blend::Replace,
             );
             let p_line = colored::PlUnif::new(
                 state.device(),
                 config.format,
-                cam.buffer(),
+                cam.buffer().buffer(),
                 wgpu::PrimitiveTopology::LineList,
                 Blend::Replace,
             );
             let p_poly_trans = colored::PlUnif::new(
                 state.device(),
                 config.format,
-                cam.buffer(),
+                cam.buffer().buffer(),
                 wgpu::PrimitiveTopology::TriangleList,
                 Blend::Alpha,
             );

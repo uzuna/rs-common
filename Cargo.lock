@@ -1599,6 +1599,7 @@ dependencies = [
  "eframe",
  "egui",
  "encase",
+ "fxhash",
  "wgpu 24.0.3",
  "wgpu-shader",
 ]

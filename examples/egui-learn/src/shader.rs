@@ -1,8 +1,11 @@
+use camera::{CamBufs, CamObjs, CameraBufferRequest};
 use eframe::egui_wgpu;
-use egui::Color32;
+use egui::{response, Color32};
+use fxhash::FxHashMap;
 use wgpu_shader::{
-    camera::{Camera, Cams, FollowCamera},
-    colored, model,
+    camera::FollowCamera,
+    colored::{self, CameraBindGroup},
+    model,
     prelude::{glam, Blend},
     types::{self, vertex::Color4},
     uniform::UniformBuffer,
@@ -46,37 +49,40 @@ impl DrawableResource {
 ///
 /// gpuリソースに関しては何も知らず、GUIからの更新で変わる可能性のある変数を保持することが期待される
 pub struct Context {
-    cam: FollowCamera,
+    cams: CamObjs,
     color: glam::Vec4,
 }
 
 impl Context {
-    pub fn new(
-        device: &wgpu::Device,
-        aspect: f32,
-        format: wgpu::TextureFormat,
-    ) -> (Self, RenderResources) {
-        let cam = Camera::with_aspect(aspect);
-        let cam = Cams::new(device, cam);
+    pub const DEFAULT_ASPECT: f32 = 1280.0 / 720.0;
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> (Self, RenderResources) {
+        let (cams, cambufs) = camera::build_cameras(device, &[1.0, Self::DEFAULT_ASPECT]);
+        let cambuf = cambufs.get(&0).unwrap();
         let p_poly = colored::PlUnif::new(
             device,
             format,
-            cam.buffer(),
+            cambuf,
             wgpu::PrimitiveTopology::TriangleList,
             Blend::Replace,
         );
         let vb = VertexBufferSimple::new(device, &model::cube(1.0), None);
-        let (cam, ub) = cam.into_inner();
+
+        let cambinds = cambufs
+            .iter()
+            .map(|(id, buf)| (*id, colored::PlUnif::make_camera_bg(device, buf)))
+            .collect::<FxHashMap<u32, CameraBindGroup>>();
+
         let color = glam::Vec4::new(1.0, 1.0, 1.0, 1.0);
         let dr = DrawableResource::new(device, color);
         let rr = RenderResources {
-            cam: ub,
+            cambufs,
+            cambinds,
             p: p_poly,
             dr,
             vb,
         };
 
-        (Self { cam, color }, rr)
+        (Self { cams, color }, rr)
     }
 
     pub fn custom_painting(&mut self, ui: &mut egui::Ui) {
@@ -98,21 +104,41 @@ impl Context {
     fn paint_canvas(&mut self, ui: &mut egui::Ui, color: Option<glam::Vec4>) {
         let (rect, response) =
             ui.allocate_exact_size(egui::Vec2::splat(300.0), egui::Sense::drag());
-
-        let motion = response.drag_motion();
-        let cam = if motion.x != 0.0 || motion.y != 0.0 {
-            let yaw = response.drag_motion().x * -0.01;
-            let pitch = response.drag_motion().y * -0.01;
-            self.cam.update(pitch, yaw, 0.0, false);
-            Some(self.cam.to_uniform())
-        } else {
-            None
-        };
+        let cam = Self::drag_interaction(self.cams.get_mut(&0).unwrap(), response);
 
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
             rect,
-            FrameResources::new(cam, color),
+            FrameResources::new(0, cam.map(|x| CameraBufferRequest::new(0, x)), color),
         ));
+    }
+
+    fn drag_interaction(
+        cam: &mut FollowCamera,
+        response: response::Response,
+    ) -> Option<types::uniform::Camera> {
+        let motion = response.drag_motion();
+        if motion.x != 0.0 || motion.y != 0.0 {
+            let yaw = response.drag_motion().x * -0.01;
+            let pitch = response.drag_motion().y * -0.01;
+            cam.update(pitch, yaw, 0.0, false);
+            Some(cam.to_uniform())
+        } else {
+            None
+        }
+    }
+
+    pub fn shape(&mut self, ui: &mut egui::Ui) {
+        egui::Frame::canvas(ui.style())
+            .fill(BG_COLOR)
+            .show(ui, |ui| {
+                let (rect, response) =
+                    ui.allocate_exact_size(egui::Vec2::new(1280.0, 720.0), egui::Sense::drag());
+                let cam = Self::drag_interaction(self.cams.get_mut(&1).unwrap(), response);
+                ui.painter().add(egui_wgpu::Callback::new_paint_callback(
+                    rect,
+                    FrameResources::new(1, cam.map(|x| CameraBufferRequest::new(1, x)), None),
+                ));
+            });
     }
 }
 
@@ -120,7 +146,8 @@ impl Context {
 ///
 /// レンダリング前、レンダリング時に固定的なリソースはここにまとめておく
 pub struct RenderResources {
-    cam: wgpu::Buffer,
+    cambufs: CamBufs,
+    cambinds: FxHashMap<u32, CameraBindGroup>,
     p: colored::PlUnif,
     dr: DrawableResource,
     vb: VertexBufferSimple<Color4>,
@@ -129,15 +156,21 @@ pub struct RenderResources {
 impl RenderResources {
     fn prepare(&self, _device: &wgpu::Device, queue: &wgpu::Queue, f: &FrameResources) {
         if let Some(cam) = &f.cam {
-            queue.write_buffer(&self.cam, 0, bytemuck::cast_slice(&[*cam]));
+            if let Some(buf) = self.cambufs.get(&cam.id) {
+                queue.write_buffer(buf, 0, bytemuck::cast_slice(&[cam.cam]));
+            }
         }
         if let Some(color) = &f.color {
             self.dr.update(queue, *color);
         }
     }
 
-    fn paint(&self, render_pass: &mut wgpu::RenderPass<'static>) {
-        self.p.set(render_pass);
+    fn paint(&self, render_pass: &mut wgpu::RenderPass<'static>, f: &FrameResources) {
+        render_pass.set_pipeline(self.p.pipeline());
+        if let Some(cambind) = self.cambinds.get(&f.cam_id) {
+            cambind.set(render_pass);
+        }
+
         self.dr.bg.set(render_pass);
         self.vb.set(render_pass, 0);
         render_pass.draw(0..self.vb.len(), 0..1);
@@ -147,14 +180,16 @@ impl RenderResources {
 /// レンダリング更新時にデータを配置するための型
 /// 常に使い捨てる情報となっている
 pub struct FrameResources {
+    // レンダリングカメラセレクタ
+    pub cam_id: u32,
     // 更新不要な場合は書き込みをしないためにNoneを許す
-    pub cam: Option<types::uniform::Camera>,
+    pub cam: Option<CameraBufferRequest>,
     pub color: Option<glam::Vec4>,
 }
 
 impl FrameResources {
-    pub fn new(cam: Option<types::uniform::Camera>, color: Option<glam::Vec4>) -> Self {
-        Self { cam, color }
+    pub fn new(cam_id: u32, cam: Option<CameraBufferRequest>, color: Option<glam::Vec4>) -> Self {
+        Self { cam_id, cam, color }
     }
 }
 
@@ -167,7 +202,7 @@ impl egui_wgpu::CallbackTrait for FrameResources {
     ) {
         // ここで方の対応付が行われている
         let resources: &RenderResources = resources.get().unwrap();
-        resources.paint(render_pass);
+        resources.paint(render_pass, self);
     }
 
     fn prepare(
@@ -181,5 +216,42 @@ impl egui_wgpu::CallbackTrait for FrameResources {
         let resources: &RenderResources = resources.get().unwrap();
         resources.prepare(device, queue, self);
         Vec::new()
+    }
+}
+
+pub mod camera {
+    use fxhash::FxHashMap;
+    use wgpu_shader::{
+        camera::{Camera, FollowCamera},
+        types,
+        uniform::UniformBuffer,
+    };
+
+    pub type CamObjs = FxHashMap<u32, FollowCamera>;
+    pub type CamBufs = FxHashMap<u32, wgpu::Buffer>;
+
+    pub struct CameraBufferRequest {
+        pub id: u32,
+        pub cam: types::uniform::Camera,
+    }
+
+    impl CameraBufferRequest {
+        pub fn new(id: u32, cam: types::uniform::Camera) -> Self {
+            Self { id, cam }
+        }
+    }
+
+    pub fn build_cameras(device: &wgpu::Device, aspects: &[f32]) -> (CamObjs, CamBufs) {
+        let mut cam = CamObjs::default();
+        let mut cam_buf = CamBufs::default();
+        for (i, aspect) in aspects.iter().enumerate() {
+            let id = i as u32;
+            let cam_obj = FollowCamera::new(Camera::with_aspect(*aspect));
+            let buffer = UniformBuffer::new(device, cam_obj.camera().to_uniform());
+            cam.insert(id, cam_obj);
+            let buf = buffer.into_inner();
+            cam_buf.insert(id, buf);
+        }
+        (cam, cam_buf)
     }
 }

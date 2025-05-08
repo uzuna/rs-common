@@ -55,7 +55,7 @@ where
     }
 
     /// GPU上のUniformBufferの参照を取得
-    pub(crate) fn buffer(&self) -> &wgpu::Buffer {
+    pub fn buffer(&self) -> &wgpu::Buffer {
         &self.buffer
     }
 

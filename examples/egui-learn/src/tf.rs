@@ -50,6 +50,15 @@ mod tests {
                         );
                     }
                 });
+                let material = primitive.material();
+                println!("      Material: {:?}", material.name());
+                let base_color = material.pbr_metallic_roughness().base_color_factor();
+                println!("        Base Color: {:?}", base_color);
+                if let Some(texture) = material.pbr_metallic_roughness().base_color_texture() {
+                    let texture = texture.texture();
+                    let image = texture.source();
+                    println!("        Image: {:?}", image.index());
+                }
             }
         }
 

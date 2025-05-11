@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use gltf::accessor::Accessor;
+    use gltf::{accessor::Accessor, buffer::View};
 
     fn read_buffer<'a>(buffer: &'a [u8], a: &'a Accessor<'_>) -> &'a [u8] {
         let length = a.size() * a.count();
@@ -8,10 +8,16 @@ mod tests {
         let end = start + length;
         buffer.get(start..end).expect("Buffer out of range")
     }
+    fn read_buffer_view<'a>(buffer: &'a [u8], a: &'a View<'_>) -> &'a [u8] {
+        let length = a.length();
+        let start = a.offset();
+        let end = start + length;
+        buffer.get(start..end).expect("Buffer out of range")
+    }
 
     fn traverse_node(buffer: &[u8], node: &gltf::Node) {
         println!(
-            "Node: {:?}, {:?}, {:?}",
+            "  Node: {:?}, {:?}, {:?}",
             node.name(),
             node.index(),
             node.transform()
@@ -19,15 +25,25 @@ mod tests {
 
         // メッシュデータへのアクセス
         if let Some(mesh) = node.mesh() {
-            println!("  Mesh: {:?}", mesh.name());
+            println!("    Mesh: {:?}", mesh.name());
             for primitive in mesh.primitives() {
-                println!("    Primitive: {:?}", primitive.mode());
+                println!("      Primitive: {:?}", primitive.mode());
+                if let Some(index) = primitive.indices() {
+                    println!("        Indices: {:?}", index.count());
+                    let buf = read_buffer(buffer, &index);
+                    println!(
+                        "          Detail: {:?} {:?} {:?}",
+                        index.data_type(),
+                        index.dimensions(),
+                        buf.len(),
+                    );
+                }
                 primitive.attributes().for_each(|(semantic, _)| {
-                    println!("    Attribute: {:?}", semantic);
+                    println!("      Attribute: {:?}", semantic);
                     if let Some(a) = primitive.get(&semantic) {
                         let buf = read_buffer(buffer, &a);
                         println!(
-                            "      Detail: {:?} {:?} {:?}",
+                            "        Detail: {:?} {:?} {:?}",
                             a.data_type(),
                             a.dimensions(),
                             buf.len(),
@@ -41,6 +57,7 @@ mod tests {
             traverse_node(buffer, &child);
         }
     }
+
     #[test]
     fn test_load_glb() {
         use std::path::PathBuf;
@@ -48,6 +65,7 @@ mod tests {
         let l = ["testdata/box.glb", "testdata/duck.glb"];
 
         for path in l.iter() {
+            println!("Loading: {}", path);
             let path = PathBuf::from(path);
             let glb = gltf::Glb::from_reader(std::fs::File::open(path).unwrap()).unwrap();
             let g = gltf::Gltf::from_slice(&glb.json).unwrap();
@@ -59,10 +77,17 @@ mod tests {
                     traverse_node(buffer.as_ref(), &node);
                 }
             }
-            // g.images()
-            //     .for_each(|image| println!("Image: {:?}", image.source()));
-            // g.textures()
-            //     .for_each(|texture| println!("Texture: {:?}", texture.sampler()));
+            g.images().for_each(|image| match image.source() {
+                gltf::image::Source::View { view, mime_type } => {
+                    println!("  Image: {:?} {:?}", view.index(), mime_type);
+                    let view = g.views().nth(view.index()).unwrap();
+                    let buf = read_buffer_view(buffer.as_ref(), &view);
+                    println!("    Length: {}", buf.len());
+                }
+                gltf::image::Source::Uri { uri, mime_type } => {
+                    println!("  Image: {:?} {:?}", uri, mime_type);
+                }
+            });
         }
     }
 }

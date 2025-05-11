@@ -13,5 +13,6 @@ eframe = { workspace = true, features = ["wgpu"] }
 egui.workspace = true
 encase = "0.10.0"
 fxhash.workspace = true
+gltf = "1.4.1"
 wgpu.workspace = true
 wgpu-shader.workspace = true

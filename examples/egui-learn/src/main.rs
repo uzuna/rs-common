@@ -1,6 +1,7 @@
 use shader::Context;
 
 mod shader;
+mod tf;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {

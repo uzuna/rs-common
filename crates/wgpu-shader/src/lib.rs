@@ -1,11 +1,11 @@
 pub mod camera;
 pub mod colored;
 pub(crate) mod common;
-pub mod gltf;
 pub mod graph;
 pub mod model;
 pub mod particle;
 pub mod prelude;
+pub mod rgltf;
 pub mod texture;
 pub mod tutorial;
 pub mod types;

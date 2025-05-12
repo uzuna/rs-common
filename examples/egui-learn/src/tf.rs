@@ -1,4 +1,7 @@
-use std::fmt::{Debug, Display};
+use std::{
+    fmt::{Debug, Display},
+    path::Path,
+};
 
 use fxhash::FxHashMap;
 use gltf::{buffer::View, texture, Accessor};
@@ -7,12 +10,35 @@ use wgpu_shader::{
     prelude::glam::{Quat, Vec2, Vec3, Vec4},
 };
 
+/// GLTFのバッファを読み込む
+pub fn load(path: impl AsRef<Path>) -> anyhow::Result<GraphBuilder> {
+    let glb = gltf::Glb::from_reader(std::fs::File::open(path)?)?;
+    let mut builder = GraphBuilder::new();
+    builder.build(&glb)?;
+    Ok(builder)
+}
+
 /// gltfのグラフ構造にある追加要素
 #[derive(Debug, Clone)]
 pub enum GltfSlot {
     None,
     Camera(Camera),
     Draw(Mesh),
+}
+
+impl Display for GltfSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GltfSlot::None => write!(f, "Empty"),
+            GltfSlot::Camera(camera) => write!(f, "Camera: {}", camera.name),
+            GltfSlot::Draw(mesh) => write!(
+                f,
+                "Mesh: {}, Primitive: {}",
+                mesh.name,
+                mesh.primitives.len()
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -185,7 +211,10 @@ impl Material {
         material
             .name()
             .map(|s| s.to_string())
-            .unwrap_or(format!("material_id_{}", material.index().unwrap()))
+            .unwrap_or_else(|| match material.index() {
+                Some(i) => format!("material_id_{}", i),
+                None => "default".to_string(),
+            })
     }
 }
 

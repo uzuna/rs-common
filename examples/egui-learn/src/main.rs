@@ -1,5 +1,6 @@
 use shader::Context;
 
+mod gltf_view;
 mod shader;
 mod tf;
 
@@ -41,6 +42,7 @@ impl State {
 struct CustomApp {
     state: State,
     ctx: Context,
+    viewapp: gltf_view::ViewApp,
 }
 
 impl CustomApp {
@@ -57,12 +59,13 @@ impl CustomApp {
         Self {
             state: State::new(),
             ctx,
+            viewapp: gltf_view::ViewApp::new(),
         }
     }
 }
 
 impl eframe::App for CustomApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // top level panel
         egui::CentralPanel::default().show(ctx, |ui| {
             self.ctx.shape(ui);
@@ -92,6 +95,8 @@ impl eframe::App for CustomApp {
                 ui.label(format!("Hello '{name}', age {age}"));
                 self.ctx.custom_painting(ui);
             });
+
+        self.viewapp.update(ctx, frame);
 
         if let Some(title) = self.state.fetch_title() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));

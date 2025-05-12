@@ -1,6 +1,8 @@
 pub mod uniform {
     use glam::{Vec4, Vec4Swizzles};
 
+    use crate::graph::Trs;
+
     /// カメラ型
     #[repr(C)]
     #[derive(
@@ -28,6 +30,58 @@ pub mod uniform {
             self.view_pos =
                 matrix * glam::Vec4::new(self.view_pos.x, self.view_pos.y, self.view_pos.z, 1.0);
             self.view_proj *= matrix;
+        }
+    }
+    /// インスタンスごとの移動とノーマル行列を持つ
+    #[repr(C)]
+    #[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
+    pub struct Model {
+        /// グローバルからローカル座標系への変換行列
+        pub matrix: glam::Mat4,
+        /// matrixに合わせた法線の変換行列
+        pub normal: glam::Mat4,
+    }
+
+    impl From<&Trs> for Model {
+        fn from(trs: &Trs) -> Self {
+            let matrix = trs.to_homogeneous();
+            let normal = matrix.inverse().transpose();
+            Self { matrix, normal }
+        }
+    }
+
+    /// gltf brdf(Bidirectional Reflectance Distribution Function)マテリアル情報
+    #[repr(C)]
+    #[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
+    pub struct Material {
+        /// ベースカラー。何もなければ白を指定する
+        pub color: glam::Vec4,
+        /// 金属光沢度[0.0, 1.0]
+        pub metallic: f32,
+        /// 表面粗さ度[0.0, 1.0]
+        pub roughness: f32,
+    }
+
+    impl Material {
+        const MIN: f32 = 0.0;
+        const MAX: f32 = 1.0;
+
+        pub fn set_metallic(&mut self, metallic: f32) {
+            self.metallic = metallic.clamp(Self::MIN, Self::MAX);
+        }
+
+        pub fn set_roughness(&mut self, roughness: f32) {
+            self.roughness = roughness.clamp(Self::MIN, Self::MAX);
+        }
+    }
+
+    impl Default for Material {
+        fn default() -> Self {
+            Self {
+                color: glam::Vec4::new(1.0, 1.0, 1.0, 1.0),
+                metallic: 0.0,
+                roughness: 1.0,
+            }
         }
     }
 }

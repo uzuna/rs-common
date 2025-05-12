@@ -22,7 +22,6 @@ pub struct Material {
 pub struct VertexInput {
     pub position: glam::Vec3,
     pub normal: glam::Vec3,
-    pub color: glam::Vec3,
 }
 pub const PI: f32 = 3.1415927f32;
 pub mod bind_groups {
@@ -196,7 +195,7 @@ pub fn set_bind_groups<P: bind_groups::SetBindGroup>(
     bind_group2.set(pass);
 }
 impl VertexInput {
-    pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
+    pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
         wgpu::VertexAttribute {
             format: wgpu::VertexFormat::Float32x3,
             offset: std::mem::offset_of!(VertexInput, position) as u64,
@@ -206,11 +205,6 @@ impl VertexInput {
             format: wgpu::VertexFormat::Float32x3,
             offset: std::mem::offset_of!(VertexInput, normal) as u64,
             shader_location: 1,
-        },
-        wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Float32x3,
-            offset: std::mem::offset_of!(VertexInput, color) as u64,
-            shader_location: 2,
         },
     ];
     pub const fn vertex_buffer_layout(
@@ -279,7 +273,7 @@ pub fn fs_main_entry(targets: [Option<wgpu::ColorTargetState>; 1]) -> FragmentEn
         constants: Default::default(),
     }
 }
-pub const SOURCE: &str = include_str!("vertex_color.wgsl");
+pub const SOURCE: &str = include_str!("vertex_normal.wgsl");
 pub fn create_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
     let source = std::borrow::Cow::Borrowed(SOURCE);
     device.create_shader_module(wgpu::ShaderModuleDescriptor {

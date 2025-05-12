@@ -1,9 +1,8 @@
-use std::vec;
-
+use fxhash::FxHashMap;
 use gltf::Accessor;
 use wgpu_shader::{
-    graph::{ModelNodeImpl, Trs},
-    prelude::glam::{self, Vec2, Vec3},
+    graph::Trs,
+    prelude::glam::{Quat, Vec2, Vec3, Vec4},
 };
 
 pub enum GltfSlot {
@@ -38,10 +37,10 @@ impl Mesh {
 pub struct Primitive {
     pub primitive: wgpu::PrimitiveTopology,
     pub index: Option<Vec<u16>>,
-    pub position: Option<Vec<glam::Vec3>>,
-    pub normal: Option<Vec<glam::Vec3>>,
-    pub color: Option<Vec<glam::Vec3>>,
-    pub texcoord: Option<Vec<glam::Vec2>>,
+    pub position: Option<Vec<Vec3>>,
+    pub normal: Option<Vec<Vec3>>,
+    pub color: Option<Vec<Vec3>>,
+    pub texcoord: Option<Vec<Vec2>>,
     pub material: String,
 }
 
@@ -88,14 +87,28 @@ impl Primitive {
     }
 }
 
+/// GLTFのマテリアル情報
 pub struct Material {
     pub name: String,
-    pub base_color: glam::Vec4,
+    pub base_color: Vec4,
     pub metallic: f32,
     pub roughness: f32,
 }
 
 impl Material {
+    fn new(mat: &gltf::Material) -> Self {
+        let pbr = mat.pbr_metallic_roughness();
+        let name = Material::parse_name(mat);
+        let base_color = Vec4::from(pbr.base_color_factor());
+        let metallic = pbr.metallic_factor();
+        let roughness = pbr.roughness_factor();
+        Self {
+            name,
+            base_color,
+            metallic,
+            roughness,
+        }
+    }
     fn parse_name(material: &gltf::Material) -> String {
         material
             .name()
@@ -105,13 +118,15 @@ impl Material {
 }
 
 pub struct GraphBuilder {
-    graph: wgpu_shader::graph::ModelGraph<wgpu_shader::graph::ModelNode<GltfSlot>>,
+    pub graph: wgpu_shader::graph::ModelGraph<wgpu_shader::graph::ModelNode<GltfSlot>>,
+    pub materials: FxHashMap<String, Material>,
 }
 
 impl GraphBuilder {
     pub fn new() -> Self {
         Self {
             graph: wgpu_shader::graph::ModelGraph::new(),
+            materials: FxHashMap::default(),
         }
     }
 
@@ -149,19 +164,19 @@ impl GraphBuilder {
     }
 
     /// GLBファイルからグラフを構築する
-    pub fn build(
-        mut self,
-        glb: &gltf::Glb,
-    ) -> anyhow::Result<wgpu_shader::graph::ModelGraph<wgpu_shader::graph::ModelNode<GltfSlot>>>
-    {
+    pub fn build(&mut self, glb: &gltf::Glb) -> anyhow::Result<()> {
         let g = gltf::Gltf::from_slice(&glb.json)?;
-        let buffer = glb.bin.as_ref().unwrap();
+        let buffer = glb.bin.as_ref().ok_or(anyhow::anyhow!("No buffer found"))?;
         for scene in g.scenes() {
             for node in scene.nodes() {
                 self.traverse_inner(buffer.as_ref(), None, &node, &Self::parse_node)?;
             }
         }
-        Ok(self.graph)
+        for mat in g.materials() {
+            let m = Material::new(&mat);
+            self.materials.insert(m.name.clone(), m);
+        }
+        Ok(())
     }
 }
 // GLTFのバッファを取得する
@@ -193,9 +208,9 @@ fn gltf_trans_to_trs(trans: gltf::scene::Transform) -> Trs {
     let decon = trans.decomposed();
 
     Trs {
-        translation: glam::Vec3::from(decon.0),
-        rotation: glam::Quat::from_array(decon.1),
-        scale: glam::Vec3::from(decon.2),
+        translation: Vec3::from(decon.0),
+        rotation: Quat::from_array(decon.1),
+        scale: Vec3::from(decon.2),
     }
 }
 
@@ -313,9 +328,9 @@ mod tests {
         let path = PathBuf::from(PATH);
         let glb = gltf::Glb::from_reader(std::fs::File::open(path).unwrap()).unwrap();
 
-        let builder = GraphBuilder::new();
-        let g = builder.build(&glb)?;
-        for node in g.iter() {
+        let mut builder = GraphBuilder::new();
+        builder.build(&glb)?;
+        for node in builder.graph.iter() {
             println!("Node: {:?} {:?}", node.name(), node.trs());
             let v = node.value();
             match v {
@@ -343,6 +358,12 @@ mod tests {
                 }
                 GltfSlot::None => {}
             }
+        }
+        for (name, mat) in builder.materials.iter() {
+            println!("Material: {:?}", name);
+            println!("  Base Color: {:?}", mat.base_color);
+            println!("  Metallic: {:?}", mat.metallic);
+            println!("  Roughness: {:?}", mat.roughness);
         }
         Ok(())
     }

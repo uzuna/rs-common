@@ -106,10 +106,17 @@ impl Context {
         ui.label("Drag to rotate!");
     }
 
+    fn wheel_zoom(ui: &mut egui::Ui) -> f32 {
+        // wheelの回転を取得 常に1notch 40というのを勘案して調整すること
+        // uiを使うということは、対象のGUI領域と無関係に行われるので、利用時には対象かどうか注意する
+        ui.input(|i| i.raw_scroll_delta[1]) * -0.01
+    }
+
     fn paint_canvas(&mut self, ui: &mut egui::Ui, color: Option<glam::Vec4>) {
         let (rect, response) =
             ui.allocate_exact_size(egui::Vec2::splat(300.0), egui::Sense::drag());
-        let cam = Self::drag_interaction(self.cams.get_mut(&0).unwrap(), response);
+        let zoom = Self::wheel_zoom(ui);
+        let cam = Self::drag_interaction(self.cams.get_mut(&0).unwrap(), response, zoom);
 
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
             rect,
@@ -120,12 +127,14 @@ impl Context {
     fn drag_interaction(
         cam: &mut FollowCamera,
         response: response::Response,
+        zoom: f32,
     ) -> Option<types::uniform::Camera> {
         let motion = response.drag_motion();
-        if motion.x != 0.0 || motion.y != 0.0 {
+
+        if motion.x != 0.0 || motion.y != 0.0 || (zoom != 0.0 && response.contains_pointer()) {
             let yaw = response.drag_motion().x * -0.01;
             let pitch = response.drag_motion().y * -0.01;
-            cam.update(pitch, yaw, 0.0, false);
+            cam.update(pitch, yaw, zoom, false);
             Some(cam.to_uniform())
         } else {
             None
@@ -138,7 +147,8 @@ impl Context {
             .show(ui, |ui| {
                 let (rect, response) =
                     ui.allocate_exact_size(egui::Vec2::new(1280.0, 720.0), egui::Sense::drag());
-                let cam = Self::drag_interaction(self.cams.get_mut(&1).unwrap(), response);
+                let zoom = Self::wheel_zoom(ui);
+                let cam = Self::drag_interaction(self.cams.get_mut(&1).unwrap(), response, zoom);
                 ui.painter().add(egui_wgpu::Callback::new_paint_callback(
                     rect,
                     FrameResources::new(1, cam.map(|x| CameraBufferRequest::new(1, x)), None),

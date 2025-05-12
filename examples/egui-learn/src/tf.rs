@@ -11,7 +11,59 @@ use wgpu_shader::{
 #[derive(Debug, Clone)]
 pub enum GltfSlot {
     None,
+    Camera(Camera),
     Draw(Mesh),
+}
+
+#[derive(Debug, Clone)]
+pub enum Projection {
+    Perspective(Perspective),
+}
+
+impl From<gltf::camera::Projection<'_>> for Projection {
+    fn from(p: gltf::camera::Projection<'_>) -> Self {
+        match p {
+            gltf::camera::Projection::Orthographic(_) => unimplemented!(),
+            gltf::camera::Projection::Perspective(p) => Self::Perspective(p.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Perspective {
+    aspect_ratio: f32,
+    yfov: f32,
+    znear: f32,
+    zfar: f32,
+}
+
+impl From<gltf::camera::Perspective<'_>> for Perspective {
+    fn from(p: gltf::camera::Perspective<'_>) -> Self {
+        Perspective {
+            aspect_ratio: p.aspect_ratio().unwrap_or(1.0),
+            yfov: p.yfov(),
+            znear: p.znear(),
+            zfar: p.zfar().unwrap_or(100.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Camera {
+    pub name: String,
+    pub projection: Projection,
+}
+
+impl Camera {
+    pub fn new(camera: gltf::Camera) -> Self {
+        Self {
+            name: camera
+                .name()
+                .map(|s| s.to_string())
+                .unwrap_or(format!("camera_id_{}", camera.index())),
+            projection: Projection::from(camera.projection()),
+        }
+    }
 }
 
 /// [GltfSlot::Draw]が持つメッシュ情報
@@ -277,6 +329,8 @@ impl GraphBuilder {
     fn parse_node(buffer: &[u8], node: &gltf::Node) -> GltfSlot {
         if let Some(mesh) = node.mesh() {
             GltfSlot::Draw(Mesh::new(buffer, mesh))
+        } else if let Some(camera) = node.camera() {
+            GltfSlot::Camera(Camera::new(camera))
         } else {
             GltfSlot::None
         }
@@ -511,6 +565,10 @@ mod tests {
 
                         println!("    Material: {:?}", primitive.material);
                     }
+                }
+                GltfSlot::Camera(camera) => {
+                    println!("  Camera: {:?}", camera.name);
+                    println!("    Projection: {:?}", camera.projection);
                 }
                 GltfSlot::None => {}
             }

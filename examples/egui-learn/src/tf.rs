@@ -1,15 +1,21 @@
+use std::fmt::{Debug, Display};
+
 use fxhash::FxHashMap;
-use gltf::Accessor;
+use gltf::{buffer::View, texture, Accessor};
 use wgpu_shader::{
     graph::Trs,
     prelude::glam::{Quat, Vec2, Vec3, Vec4},
 };
 
+/// gltfのグラフ構造にある追加要素
+#[derive(Debug, Clone)]
 pub enum GltfSlot {
     None,
     Draw(Mesh),
 }
 
+/// [GltfSlot::Draw]が持つメッシュ情報
+#[derive(Debug, Clone)]
 pub struct Mesh {
     pub name: String,
     pub primitives: Vec<Primitive>,
@@ -34,6 +40,8 @@ impl Mesh {
     }
 }
 
+/// [Mesh]に含まれるプリミティブ
+#[derive(Debug, Clone)]
 pub struct Primitive {
     pub primitive: wgpu::PrimitiveTopology,
     pub index: Option<Vec<u16>>,
@@ -88,11 +96,14 @@ impl Primitive {
 }
 
 /// GLTFのマテリアル情報
+#[derive(Debug, Clone)]
 pub struct Material {
     pub name: String,
     pub base_color: Vec4,
     pub metallic: f32,
     pub roughness: f32,
+    pub color_texture: Option<String>,
+    pub normal_texture: Option<String>,
 }
 
 impl Material {
@@ -102,13 +113,22 @@ impl Material {
         let base_color = Vec4::from(pbr.base_color_factor());
         let metallic = pbr.metallic_factor();
         let roughness = pbr.roughness_factor();
+        let color_texture = pbr
+            .base_color_texture()
+            .map(|t| Texture::parse_name(&t.texture()));
+        let normal_texture = mat
+            .normal_texture()
+            .map(|t| Texture::parse_name(&t.texture()));
         Self {
             name,
             base_color,
             metallic,
             roughness,
+            color_texture,
+            normal_texture,
         }
     }
+
     fn parse_name(material: &gltf::Material) -> String {
         material
             .name()
@@ -117,9 +137,131 @@ impl Material {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Texture {
+    pub name: String,
+    pub sampler: Sampler,
+    pub image: Image,
+}
+
+impl Texture {
+    fn new(buffer: &[u8], texture: &gltf::Texture) -> Self {
+        let name = Self::parse_name(texture);
+        let sampler = Sampler::new(&texture.sampler());
+        let image = Image::new(buffer, &texture.source().source());
+        Self {
+            name,
+            sampler,
+            image,
+        }
+    }
+
+    fn parse_name(texture: &gltf::Texture) -> String {
+        texture
+            .name()
+            .map(|s| s.to_string())
+            .unwrap_or(format!("texture_id_{}", texture.index()))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Sampler {
+    pub name: String,
+    pub mag_filter: wgpu::FilterMode,
+    pub min_filter: wgpu::FilterMode,
+    pub wrap_s: wgpu::AddressMode,
+    pub wrap_t: wgpu::AddressMode,
+}
+
+impl Sampler {
+    fn wrap_mode(s: texture::WrappingMode) -> wgpu::AddressMode {
+        match s {
+            texture::WrappingMode::ClampToEdge => wgpu::AddressMode::ClampToEdge,
+            texture::WrappingMode::MirroredRepeat => wgpu::AddressMode::MirrorRepeat,
+            texture::WrappingMode::Repeat => wgpu::AddressMode::Repeat,
+        }
+    }
+    fn new(sampler: &gltf::texture::Sampler) -> Self {
+        let name = sampler.name().map(|s| s.to_string()).unwrap_or(format!(
+            "sampler_id_{}",
+            sampler.index().unwrap_or_default()
+        ));
+        let mag_filter = match sampler.mag_filter() {
+            Some(texture::MagFilter::Nearest) => wgpu::FilterMode::Nearest,
+            Some(texture::MagFilter::Linear) => wgpu::FilterMode::Linear,
+            _ => wgpu::FilterMode::Linear,
+        };
+        let min_filter = match sampler.min_filter() {
+            Some(texture::MinFilter::Nearest) => wgpu::FilterMode::Nearest,
+            Some(texture::MinFilter::Linear) => wgpu::FilterMode::Linear,
+            _ => wgpu::FilterMode::Linear,
+        };
+        let wrap_s = Self::wrap_mode(sampler.wrap_s());
+        let wrap_t = Self::wrap_mode(sampler.wrap_t());
+        Self {
+            name,
+            mag_filter,
+            min_filter,
+            wrap_s,
+            wrap_t,
+        }
+    }
+}
+
+/// 画像情報
+#[derive(Debug, Clone)]
+pub enum Image {
+    View {
+        mime_type: String,
+        buf: Vec<u8>,
+    },
+    Uri {
+        mime_type: Option<String>,
+        uri: String,
+    },
+}
+
+impl Image {
+    fn new(buffer: &[u8], image: &gltf::image::Source) -> Self {
+        match image {
+            gltf::image::Source::View { view, mime_type } => {
+                let buf = read_buffer_view(buffer, view);
+                Self::View {
+                    mime_type: mime_type.to_string(),
+                    buf: buf.to_vec(),
+                }
+            }
+            gltf::image::Source::Uri { uri, mime_type } => Self::Uri {
+                mime_type: mime_type.map(|s| s.to_string()),
+                uri: uri.to_string(),
+            },
+        }
+    }
+}
+
+impl Display for Image {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Image::View { mime_type, buf } => {
+                write!(
+                    f,
+                    "Image: View, MimeType: {}, Size: {}",
+                    mime_type,
+                    buf.len()
+                )
+            }
+            Image::Uri { mime_type, uri } => {
+                write!(f, "Image: Uri, MimeType: {:?}, Uri: {}", mime_type, uri)
+            }
+        }
+    }
+}
+
+/// gltfのデータを読み出してレンダリングリソースを構築するための情報に変換するクラス
 pub struct GraphBuilder {
     pub graph: wgpu_shader::graph::ModelGraph<wgpu_shader::graph::ModelNode<GltfSlot>>,
     pub materials: FxHashMap<String, Material>,
+    pub textures: FxHashMap<String, Texture>,
 }
 
 impl GraphBuilder {
@@ -127,6 +269,7 @@ impl GraphBuilder {
         Self {
             graph: wgpu_shader::graph::ModelGraph::new(),
             materials: FxHashMap::default(),
+            textures: FxHashMap::default(),
         }
     }
 
@@ -176,12 +319,24 @@ impl GraphBuilder {
             let m = Material::new(&mat);
             self.materials.insert(m.name.clone(), m);
         }
+        for texture in g.textures() {
+            let t = Texture::new(buffer, &texture);
+            self.textures.insert(t.name.clone(), t);
+        }
         Ok(())
     }
 }
+
 // GLTFのバッファを取得する
 fn read_buffer<'a>(buffer: &'a [u8], a: &'a Accessor<'_>) -> &'a [u8] {
     let length = a.size() * a.count();
+    let start = a.offset();
+    let end = start + length;
+    buffer.get(start..end).expect("Buffer out of range")
+}
+
+fn read_buffer_view<'a>(buffer: &'a [u8], a: &'a View<'_>) -> &'a [u8] {
+    let length = a.length();
     let start = a.offset();
     let end = start + length;
     buffer.get(start..end).expect("Buffer out of range")
@@ -324,7 +479,7 @@ mod tests {
 
     #[test]
     fn test_build_graph() -> anyhow::Result<()> {
-        const PATH: &str = "testdata/box2.glb";
+        const PATH: &str = "testdata/duck.glb";
         let path = PathBuf::from(PATH);
         let glb = gltf::Glb::from_reader(std::fs::File::open(path).unwrap()).unwrap();
 
@@ -353,6 +508,7 @@ mod tests {
                         if let Some(texcoord) = &primitive.texcoord {
                             println!("    TexCoord: {:?}", texcoord.len());
                         }
+
                         println!("    Material: {:?}", primitive.material);
                     }
                 }
@@ -364,7 +520,20 @@ mod tests {
             println!("  Base Color: {:?}", mat.base_color);
             println!("  Metallic: {:?}", mat.metallic);
             println!("  Roughness: {:?}", mat.roughness);
+            if let Some(texture) = &mat.color_texture {
+                println!("  Color Texture: {:?}", texture);
+            }
+            if let Some(texture) = &mat.normal_texture {
+                println!("  Normal Texture: {:?}", texture);
+            }
         }
+
+        for (name, texture) in builder.textures.iter() {
+            println!("Texture: {}", name);
+            println!("  Sampler: {}", texture.sampler.name);
+            println!("  {}", texture.image);
+        }
+
         Ok(())
     }
 }

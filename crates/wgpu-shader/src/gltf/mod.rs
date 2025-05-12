@@ -4,6 +4,7 @@ use wgpu::PrimitiveTopology;
 
 use crate::prelude::Blend;
 
+#[allow(dead_code)]
 mod vertex_color;
 
 /// カメラのバインドグループ

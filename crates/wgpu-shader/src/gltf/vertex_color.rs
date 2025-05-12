@@ -14,6 +14,8 @@ pub struct Model {
 #[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
 pub struct Material {
     pub color: glam::Vec4,
+    pub metallic: f32,
+    pub roughness: f32,
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -22,6 +24,7 @@ pub struct VertexInput {
     pub normal: glam::Vec3,
     pub color: glam::Vec3,
 }
+pub const PI: f32 = 3.1415927f32;
 pub mod bind_groups {
     #[derive(Debug)]
     pub struct BindGroup0(wgpu::BindGroup);

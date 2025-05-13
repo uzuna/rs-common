@@ -4,7 +4,11 @@ use std::path::PathBuf;
 
 use eframe::egui_wgpu::RenderState;
 use wgpu_shader::{
-    graph::ModelNodeImpl, rgltf::PlNormal, types, uniform::UniformBuffer, vertex::VertexBuffer,
+    graph::{ModelNodeImpl, Trs},
+    rgltf::PlNormal,
+    types,
+    uniform::UniformBuffer,
+    vertex::VertexBuffer,
 };
 
 use crate::{
@@ -16,6 +20,7 @@ pub struct ViewApp {
     loaded: Option<PathBuf>,
     error: Option<String>,
     graph: Option<GraphBuilder>,
+    selected: Option<(String, Trs)>,
 }
 
 impl ViewApp {
@@ -24,6 +29,7 @@ impl ViewApp {
             loaded: None,
             error: None,
             graph: None,
+            selected: None,
         }
     }
 
@@ -85,6 +91,18 @@ impl ViewApp {
         }
 
         rs.renderer.write().callback_resources.insert(rr);
+
+        if let Some(s) = rs
+            .renderer
+            .write()
+            .callback_resources
+            .get_mut::<SceneResource>()
+        {
+            s.import_graph(&graph.graph)?;
+        } else {
+            return Err(anyhow::anyhow!("No scene resource found"));
+        }
+
         Ok(())
     }
 }
@@ -107,12 +125,23 @@ impl eframe::App for ViewApp {
                         }
                         match tf::load(&path) {
                             Ok(builder) => {
-                                self.loaded = Some(path);
-                                self.graph = Some(builder);
-                                self.error = None;
-
-                                // wgpu_shaderのリソースを作る
                                 if let Some(wgpu_render_state) = frame.wgpu_render_state.as_ref() {
+                                    // 既存のグラフを削除
+                                    if let Some(graph) = self.graph.as_ref() {
+                                        if let Some(sr) = wgpu_render_state
+                                            .renderer
+                                            .write()
+                                            .callback_resources
+                                            .get_mut::<SceneResource>()
+                                        {
+                                            sr.remove_graph(&graph.graph);
+                                        }
+                                    }
+
+                                    // 新しいグラフを読み込む
+                                    self.loaded = Some(path);
+                                    self.graph = Some(builder);
+                                    self.error = None;
                                     self.build_render_resources(wgpu_render_state)
                                         .expect("Failed to build render resources");
                                 }
@@ -132,9 +161,40 @@ impl eframe::App for ViewApp {
                 if let Some(error) = &self.error {
                     ui.label(format!("Error: {}", error));
                 }
+                // 裏で更新するケースでは適当なタイミングで同期が必要
                 if let Some(graph) = &self.graph {
                     for node in graph.graph.iter() {
-                        ui.label(format!("Node: {} {}", node.name(), node.value()));
+                        let res = ui.label(format!("Node: {} {}", node.name(), node.value()));
+                        if res.clicked() {
+                            self.selected = Some((node.name().to_string(), node.local().clone()));
+                        }
+                    }
+                }
+                if let Some((name, trs)) = &mut self.selected {
+                    let r_max = 4.0;
+                    ui.label(format!("Selected: {}", name));
+                    let res = [
+                        ui.add(egui::Slider::new(&mut trs.translation.x, -r_max..=r_max).text("X")),
+                        ui.add(egui::Slider::new(&mut trs.translation.y, -r_max..=r_max).text("Y")),
+                        ui.add(egui::Slider::new(&mut trs.translation.z, -r_max..=r_max).text("Z")),
+                    ];
+                    if res.iter().any(|r: &egui::Response| r.changed()) {
+                        if let Some(graph) = self.graph.as_mut() {
+                            *graph.graph.get_must_mut(name).trs_mut() = trs.clone();
+                        }
+                        // 描画リストの更新
+                        // SceneResourceの更新
+                        if let Some(wgpu_render_state) = frame.wgpu_render_state.as_ref() {
+                            if let Some(sr) = wgpu_render_state
+                                .renderer
+                                .write()
+                                .callback_resources
+                                .get_mut::<SceneResource>()
+                            {
+                                sr.update_local(name, trs.clone())
+                                    .expect("Failed to update local");
+                            }
+                        }
                     }
                 }
             });

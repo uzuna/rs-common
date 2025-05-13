@@ -150,6 +150,7 @@ pub trait ModelNodeImpl {
 
     // 座標更新に関する実装
     fn world(&self) -> glam::Mat4;
+    fn local(&self) -> &Trs;
     fn update_world(&mut self, world: glam::Mat4) -> glam::Mat4;
 }
 
@@ -223,6 +224,11 @@ impl<M> ModelGraph<M> {
         self.counter += 1;
         id
     }
+
+    /// ノードの名前を取得します
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.names.keys().map(|s| s.as_str())
+    }
 }
 
 impl<M> ModelGraph<M>
@@ -267,7 +273,7 @@ where
             (glam::Mat4::IDENTITY, id)
         };
         // 親子関係に基づいてワールド座標を更新する
-        self.update_world_inner(world, &[id]);
+        self.update_world_inner(world, &[id], &mut |_, _| {});
         Ok(())
     }
 
@@ -317,18 +323,48 @@ where
                 })
                 .unwrap_or(glam::Mat4::IDENTITY)
         };
-        self.update_world_inner(world, &[node_id]);
+        self.update_world_inner(world, &[node_id], &mut |_, _| {});
         Ok(())
     }
 
     // ワールド座標再帰更新の実装です
-    fn update_world_inner(&mut self, world: glam::Mat4, nodes: &[u64]) {
+    fn update_world_inner(
+        &mut self,
+        world: glam::Mat4,
+        nodes: &[u64],
+        f: &mut impl FnMut(&str, glam::Mat4),
+    ) {
         for node_id in nodes {
             let node = self.map.get_mut(node_id).unwrap();
             let world = node.update_world(world);
+            f(node.name(), world);
             let children = node.children().to_vec();
-            self.update_world_inner(world, &children);
+            self.update_world_inner(world, &children, f);
         }
+    }
+
+    /// 更新結果をコールバックで受け取ります
+    pub fn update_world_with_cb(
+        &mut self,
+        name: &str,
+        f: &mut impl FnMut(&str, glam::Mat4),
+    ) -> anyhow::Result<()> {
+        // 指定されたノードの親のワールド座標を取得して再帰更新をする
+        let Some(node_id) = self.names.get(name) else {
+            return Err(anyhow::anyhow!("not found node {name}"));
+        };
+        let node_id = *node_id;
+        let world = {
+            let node = self.map.get_mut(&node_id).unwrap();
+            node.parent()
+                .map(|id| match self.map.get(&id) {
+                    Some(parent) => parent.world(),
+                    None => glam::Mat4::IDENTITY,
+                })
+                .unwrap_or(glam::Mat4::IDENTITY)
+        };
+        self.update_world_inner(world, &[node_id], f);
+        Ok(())
     }
 
     /// グラフが持つノード数を取得します
@@ -386,6 +422,38 @@ where
                 self.traverse_inner(*id, 0, fmt);
             }
         }
+    }
+
+    fn traverse_pair_inner(
+        &self,
+        node_id: u64,
+        parent: Option<&M>,
+        f: &mut impl FnMut(Option<&M>, &M) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        let node = self.map.get(&node_id).unwrap();
+        f(parent, node)?;
+        for child in node.children() {
+            self.traverse_pair_inner(*child, Some(node), f)?;
+        }
+        Ok(())
+    }
+
+    /// 親子関係がわかる形でトラバース
+    pub fn traverse_pair(
+        &self,
+        f: &mut impl FnMut(Option<&M>, &M) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        // parentを持たないリストから、全てのノードを表示する
+        let roots = self
+            .map
+            .iter()
+            .filter(|(_, node)| node.parent().is_none())
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        for id in roots {
+            self.traverse_pair_inner(*id, None, f)?;
+        }
+        Ok(())
     }
 }
 
@@ -493,6 +561,11 @@ impl<T> ModelNode<T> {
         self.world_updated = false;
         flag
     }
+
+    /// 名前とローカル座標をそのままに、ユーザーデータを複製したノードを作成します
+    pub fn duplicate_with<U>(&self, value: U) -> ModelNode<U> {
+        ModelNode::new(self.name.clone(), self.local.clone(), value)
+    }
 }
 
 impl<T> ModelNodeImpl for ModelNode<T> {
@@ -522,6 +595,10 @@ impl<T> ModelNodeImpl for ModelNode<T> {
 
     fn world(&self) -> glam::Mat4 {
         self.world
+    }
+
+    fn local(&self) -> &Trs {
+        &self.local
     }
 
     // グラフノードの親からのワールド座標を受け取り、ローカル座標を掛け算してワールド座標を更新します

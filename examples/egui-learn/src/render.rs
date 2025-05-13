@@ -4,6 +4,7 @@ use wgpu::PrimitiveTopology;
 use wgpu_shader::{
     camera::{Camera, ControlProperty, FollowCamera},
     constraint::{BindGroupImpl, PipelineConstraint},
+    graph::{ModelGraph, ModelNode, ModelNodeImpl, Trs},
     model,
     prelude::{
         glam::{Mat4, Vec3},
@@ -176,6 +177,12 @@ where
     }
 }
 
+/// ノードのワールド座標更新
+struct NodeUpdate {
+    name: String,
+    mat: Mat4,
+}
+
 /// シーン全体で共通のリソース
 pub struct SceneResource {
     // 名前 -> ID変換
@@ -184,6 +191,10 @@ pub struct SceneResource {
     cams: FxHashMap<u32, FollowCamera>,
     // カメラのUniformBuffer
     cambufs: FxHashMap<u32, UniformBuffer<types::uniform::Camera>>,
+    // ノードの親子関係
+    graph: ModelGraph<ModelNode<()>>,
+    // ノードのワールド座標更新リスト
+    queue: Vec<NodeUpdate>,
 }
 
 impl SceneResource {
@@ -194,6 +205,8 @@ impl SceneResource {
             names: FxHashMap::default(),
             cams: FxHashMap::default(),
             cambufs: FxHashMap::default(),
+            graph: ModelGraph::new(),
+            queue: Vec::new(),
         };
         s.init(device, aspect);
         s
@@ -243,6 +256,37 @@ impl SceneResource {
     // カメラバッファリストの取得
     fn buffers(&self) -> impl Iterator<Item = (u32, &UniformBuffer<types::uniform::Camera>)> {
         self.cambufs.iter().map(|(k, v)| (*k, v))
+    }
+
+    /// 元のグラフノードを深さ優先でたどって追加する
+    // world座標が計算できれば良いのでvalue=()で良い
+    pub fn import_graph<T>(&mut self, graph: &ModelGraph<ModelNode<T>>) -> anyhow::Result<()> {
+        graph.traverse_pair(&mut |parent, child| {
+            self.graph
+                .add_node(parent.map(|x| x.name()), child.duplicate_with(()))
+        })?;
+        Ok(())
+    }
+
+    /// グラフに対応するノードを削除
+    pub fn remove_graph<T>(&mut self, graph: &ModelGraph<T>) {
+        for id in graph.keys() {
+            let _ = self.graph.remove_node(id);
+        }
+    }
+
+    /// 特定ノードのローカル座標を更新する
+    pub fn update_local(&mut self, name: &str, local: Trs) -> anyhow::Result<()> {
+        if let Some(node) = self.graph.get_node_mut(name) {
+            *node.trs_mut() = local;
+        }
+
+        self.graph.update_world_with_cb(name, &mut |name, mat| {
+            self.queue.push(NodeUpdate {
+                name: name.to_string(),
+                mat,
+            });
+        })
     }
 }
 
@@ -386,6 +430,21 @@ where
     pub fn get_material_name(&self, id: &u32) -> Option<&String> {
         self.primitive_materials.get(id)
     }
+
+    /// 描画ノードの位置を更新する
+    pub fn update_node_matrix(
+        &mut self,
+        queue: &wgpu::Queue,
+        name: &str,
+        world: &Mat4,
+    ) -> Option<()> {
+        if let Some(node) = self.nodes.get_mut(name) {
+            if let RenderSlot::Opacity(obj) = node {
+                obj.model.write(queue, &types::uniform::Model::from(world));
+            }
+        }
+        None
+    }
 }
 
 impl<P> RenderResource<P>
@@ -523,9 +582,20 @@ impl egui_wgpu::CallbackTrait for RenderFrame {
         _egui_encoder: &mut wgpu::CommandEncoder,
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        let rr: &mut SceneResource = resources.get_mut().unwrap();
-        if let Some(request) = &self.camera_update {
-            rr.update(queue, request);
+        let reqs = if let Some(sr) = resources.get_mut::<SceneResource>() {
+            if let Some(request) = &self.camera_update {
+                sr.update(queue, request);
+            }
+            let queue = sr.queue.drain(..).collect::<Vec<_>>();
+            queue
+        } else {
+            return Vec::new();
+        };
+
+        if let Some(rr) = resources.get_mut::<RenderResource<PlNormal>>() {
+            for q in &reqs {
+                rr.update_node_matrix(queue, &q.name, &q.mat);
+            }
         }
         Vec::new()
     }

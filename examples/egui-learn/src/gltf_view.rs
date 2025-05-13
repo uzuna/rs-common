@@ -2,25 +2,20 @@
 
 use std::path::PathBuf;
 
-use eframe::egui_wgpu::{self, RenderState};
+use eframe::egui_wgpu::RenderState;
 use wgpu_shader::{
     graph::ModelNodeImpl, rgltf::PlNormal, types, uniform::UniformBuffer, vertex::VertexBuffer,
 };
 
 use crate::{
-    render::{
-        sample, CameraUpdateRequest, PipeType, RenderFrame, RenderResource, SceneResource,
-        VertexWrap,
-    },
+    render::{sample, PipeType, RenderResource, SceneResource, VertexWrap},
     tf::{self, GraphBuilder},
-    ui::move_camera_by_pointer,
 };
 
 pub struct ViewApp {
     loaded: Option<PathBuf>,
     error: Option<String>,
     graph: Option<GraphBuilder>,
-    rframe: Option<RenderFrame>,
 }
 
 impl ViewApp {
@@ -29,7 +24,6 @@ impl ViewApp {
             loaded: None,
             error: None,
             graph: None,
-            rframe: None,
         }
     }
 
@@ -91,13 +85,6 @@ impl ViewApp {
         }
 
         rs.renderer.write().callback_resources.insert(rr);
-        self.rframe = Some(RenderFrame::new());
-        Ok(())
-    }
-
-    fn build_sample_render(&mut self, rs: &RenderState) -> anyhow::Result<()> {
-        sample(rs);
-        self.rframe = Some(RenderFrame::new());
         Ok(())
     }
 }
@@ -137,8 +124,7 @@ impl eframe::App for ViewApp {
                     }
                 }
                 if ui.button("load default").clicked() {
-                    self.build_sample_render(frame.wgpu_render_state.as_ref().unwrap())
-                        .expect("Failed to load default");
+                    sample(frame.wgpu_render_state.as_ref().unwrap());
                 }
                 if let Some(path) = &self.loaded {
                     ui.label(format!("Loaded: {}", path.display()));
@@ -149,27 +135,6 @@ impl eframe::App for ViewApp {
                 if let Some(graph) = &self.graph {
                     for node in graph.graph.iter() {
                         ui.label(format!("Node: {} {}", node.name(), node.value()));
-                    }
-                }
-                if let Some(rframe) = &self.rframe {
-                    ui.label("Render frame:");
-
-                    let (rect, response) =
-                        ui.allocate_exact_size(egui::Vec2::splat(300.0), egui::Sense::drag());
-
-                    if let Some(prop) = move_camera_by_pointer(ui, response) {
-                        let mut rframe = rframe.clone();
-                        rframe.camera_update = Some(CameraUpdateRequest::new(
-                            SceneResource::DEFAULT_CAMERA,
-                            prop,
-                        ));
-                        ui.painter()
-                            .add(egui_wgpu::Callback::new_paint_callback(rect, rframe));
-                    } else {
-                        ui.painter().add(egui_wgpu::Callback::new_paint_callback(
-                            rect,
-                            rframe.clone(),
-                        ));
                     }
                 }
             });

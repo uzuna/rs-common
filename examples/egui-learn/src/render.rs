@@ -100,6 +100,45 @@ pub fn sample(rs: &RenderState) {
     }
 }
 
+/// カメラの追加
+pub fn add_camera(
+    rs: &RenderState,
+    name: impl Into<String>,
+    cam: FollowCamera,
+) -> anyhow::Result<u32> {
+    let (id, buffer) = if let Some(sc) = rs
+        .renderer
+        .write()
+        .callback_resources
+        .get_mut::<SceneResource>()
+    {
+        let id = sc.add_camera(&rs.device, name, cam);
+        let buffer = sc.camera_buffer(id);
+        (id, buffer.buffer().clone())
+    } else {
+        return Err(anyhow::anyhow!("No scene resource found"));
+    };
+
+    // TODO: 行数を圧縮して書きたい
+    if let Some(rr) = rs
+        .renderer
+        .write()
+        .callback_resources
+        .get_mut::<RenderResource<PlColor>>()
+    {
+        rr.add_camera(&rs.device, id, &buffer);
+    }
+    if let Some(rr) = rs
+        .renderer
+        .write()
+        .callback_resources
+        .get_mut::<RenderResource<PlNormal>>()
+    {
+        rr.add_camera(&rs.device, id, &buffer);
+    }
+    Ok(id)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PipeType {
     // トポロジがラインリスト
@@ -167,12 +206,24 @@ impl SceneResource {
     }
 
     /// カメラの追加
-    fn add_camera(&mut self, device: &wgpu::Device, name: impl Into<String>, cam: FollowCamera) {
+    fn add_camera(
+        &mut self,
+        device: &wgpu::Device,
+        name: impl Into<String>,
+        cam: FollowCamera,
+    ) -> u32 {
         let id = self.names.len() as u32;
         self.names.insert(name.into(), id);
         self.cams.insert(id, cam);
         let buffer = UniformBuffer::new_encase(device, &self.cams[&id].camera().to_uniform());
         self.cambufs.insert(id, buffer);
+        id
+    }
+
+    fn camera_buffer(&self, id: u32) -> &UniformBuffer<types::uniform::Camera> {
+        self.cambufs
+            .get(&id)
+            .unwrap_or_else(|| panic!("No camera buffer found: {}", id))
     }
 
     /// カメラの移動
@@ -313,15 +364,9 @@ where
             .insert(name.to_string(), RenderSlot::Opacity(obj));
     }
 
-    /// 新しいカメラの追加
-    #[allow(dead_code)]
-    fn add_camera(
-        &mut self,
-        device: &wgpu::Device,
-        cam_id: u32,
-        cam: &UniformBuffer<types::uniform::Model>,
-    ) {
-        let bg: P::CameraBg = P::camera_bg(device, cam.buffer());
+    // 新しいカメラの追加
+    fn add_camera(&mut self, device: &wgpu::Device, cam_id: u32, cam: &wgpu::Buffer) {
+        let bg: P::CameraBg = P::camera_bg(device, cam);
         self.cambgs.insert(cam_id, bg);
     }
 
@@ -352,7 +397,10 @@ where
     P::Vertex: bytemuck::Pod,
 {
     fn paint(&self, render_pass: &mut wgpu::RenderPass<'static>, cam_id: u32) {
-        let cambg = self.cambgs.get(&cam_id).expect("No default camera found");
+        let cambg = self
+            .cambgs
+            .get(&cam_id)
+            .unwrap_or_else(|| panic!("No camera found: {}", cam_id));
         for (_name, node) in self.nodes.iter() {
             if let RenderSlot::Opacity(obj) = node {
                 let pipe = self.pipelines.get(&obj.pipetype).unwrap();
@@ -433,11 +481,21 @@ pub struct RenderFrame {
 }
 
 impl RenderFrame {
-    pub fn new() -> Self {
+    pub fn new(camera_update: Option<CameraUpdateRequest>, camera_id: u32) -> Self {
         Self {
-            camera_update: None,
-            camera_id: SceneResource::DEFAULT_CAMERA,
+            camera_update,
+            camera_id,
         }
+    }
+
+    pub fn with_camera(camera_id: u32) -> Self {
+        Self::new(None, camera_id)
+    }
+}
+
+impl Default for RenderFrame {
+    fn default() -> Self {
+        Self::new(None, SceneResource::DEFAULT_CAMERA)
     }
 }
 

@@ -1,8 +1,8 @@
-use shader::Context;
+use app::Context;
 
+mod app;
 mod gltf_view;
 mod render;
-mod shader;
 mod tf;
 mod ui;
 
@@ -49,16 +49,12 @@ struct CustomApp {
 
 impl CustomApp {
     pub fn new<'a>(cc: &'a eframe::CreationContext<'a>) -> Self {
-        let wgpu_render_state = cc.wgpu_render_state.as_ref().unwrap();
-        let device = &wgpu_render_state.device;
-        let (ctx, rr) = Context::new(device, wgpu_render_state.target_format);
-        wgpu_render_state
-            .renderer
-            .write()
-            .callback_resources
-            .insert(rr);
-
+        let wgpu_render_state = cc
+            .wgpu_render_state
+            .as_ref()
+            .expect("Failed to get WGPU render state");
         render::init(wgpu_render_state, 1.0);
+        let ctx = Context::new(wgpu_render_state).expect("Failed to create context");
 
         Self {
             state: State::new(),

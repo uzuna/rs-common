@@ -1,6 +1,7 @@
 use shader::Context;
 
 mod gltf_view;
+mod render;
 mod shader;
 mod tf;
 mod ui;
@@ -57,10 +58,12 @@ impl CustomApp {
             .callback_resources
             .insert(rr);
 
+        render::init(wgpu_render_state, 1.0);
+
         Self {
             state: State::new(),
             ctx,
-            viewapp: gltf_view::ViewApp::new(wgpu_render_state, 1.0),
+            viewapp: gltf_view::ViewApp::new(),
         }
     }
 }

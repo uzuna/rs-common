@@ -11,9 +11,10 @@ use wgpu_shader::{
     graph::ModelNodeImpl,
     model,
     prelude::{glam, Blend},
-    rgltf::PlNormal,
+    rgltf::{PlColor, PlNormal},
     types,
     uniform::UniformBuffer,
+    util::GridDrawer,
     vertex::{VertexBuffer, VertexBufferSimple},
 };
 
@@ -37,11 +38,11 @@ impl ViewApp {
             graph: None,
             rframe: None,
         };
-        s.init_camera(rs, aspect);
+        s.init(rs, aspect);
         s
     }
 
-    fn init_camera(&mut self, rs: &RenderState, aspect: f32) {
+    fn init(&mut self, rs: &RenderState, aspect: f32) {
         // カメラ作成がまだの場合は作成する
         if rs
             .renderer
@@ -52,6 +53,44 @@ impl ViewApp {
         {
             let sc = SceneResource::new(&rs.device, aspect);
             rs.renderer.write().callback_resources.insert(sc);
+        }
+
+        // グリッドの描画リソースを作成する
+        if rs
+            .renderer
+            .read()
+            .callback_resources
+            .get::<RenderResource<PlColor>>()
+            .is_none()
+        {
+            let mut rr = RenderResource::<PlColor>::new(
+                &rs.device,
+                rs.target_format,
+                rs.renderer
+                    .read()
+                    .callback_resources
+                    .get::<SceneResource>()
+                    .unwrap(),
+            );
+            let grid = GridDrawer::default().gen_normal_color3(&rs.device);
+            rr.primitives.insert(0, VertexImpl::NormalSimple(grid));
+            rr.add_material(
+                &rs.device,
+                "grid",
+                UniformBuffer::new_encase(&rs.device, &types::uniform::Material::default()),
+            );
+            rr.add_draw_node(
+                &rs.device,
+                "grid",
+                PipeType::LineList,
+                0,
+                "grid".to_string(),
+                UniformBuffer::new_encase(
+                    &rs.device,
+                    &types::uniform::Model::from(&glam::Mat4::IDENTITY),
+                ),
+            );
+            rs.renderer.write().callback_resources.insert(rr);
         }
     }
 
@@ -103,7 +142,14 @@ impl ViewApp {
                     .ok_or(anyhow::anyhow!("No material found"))?;
                 let trs = n.world();
                 let model = UniformBuffer::new_encase(device, &types::uniform::Model::from(&trs));
-                rr.add_draw_node(device, n.name(), *mesh, material.clone(), model);
+                rr.add_draw_node(
+                    device,
+                    n.name(),
+                    PipeType::Opacity,
+                    *mesh,
+                    material.clone(),
+                    model,
+                );
             }
         }
 
@@ -147,7 +193,14 @@ impl ViewApp {
 
         let model =
             UniformBuffer::new_encase(device, &types::uniform::Model::from(&glam::Mat4::IDENTITY));
-        rr.add_draw_node(device, "default", 0, "red".to_string(), model);
+        rr.add_draw_node(
+            device,
+            "default",
+            PipeType::Opacity,
+            0,
+            "red".to_string(),
+            model,
+        );
 
         rs.renderer.write().callback_resources.insert(rr);
         self.rframe = Some(RenderFrame::new());
@@ -230,9 +283,12 @@ impl eframe::App for ViewApp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Pipe {
+pub enum PipeType {
+    // トポロジがラインリスト
     LineList,
+    // 不透明のトライアングル
     Opacity,
+    // 透明のトライアングル
     Transparent,
 }
 
@@ -323,7 +379,7 @@ where
     P: PipelineConstraint,
 {
     // 描画パイプライン
-    pipelines: FxHashMap<Pipe, P>,
+    pipelines: FxHashMap<PipeType, P>,
     // カメラのBindGroup
     cambgs: FxHashMap<u32, P::CameraBg>,
     // マテリアルのUniformBuffer
@@ -351,14 +407,18 @@ where
         let primitives = FxHashMap::default();
         let primitive_materials = FxHashMap::default();
         let params = [
-            (Pipe::LineList, PrimitiveTopology::LineList, Blend::Replace),
             (
-                Pipe::Opacity,
+                PipeType::LineList,
+                PrimitiveTopology::LineList,
+                Blend::Replace,
+            ),
+            (
+                PipeType::Opacity,
                 PrimitiveTopology::TriangleList,
                 Blend::Replace,
             ),
             (
-                Pipe::Transparent,
+                PipeType::Transparent,
                 PrimitiveTopology::TriangleList,
                 Blend::Alpha,
             ),
@@ -415,6 +475,7 @@ where
         &mut self,
         device: &wgpu::Device,
         name: &str,
+        pipetype: PipeType,
         primitive: u32,
         material: String,
         model: UniformBuffer<types::uniform::Model>,
@@ -425,6 +486,7 @@ where
             bg,
             primitive,
             material,
+            pipetype,
         };
         self.nodes
             .insert(name.to_string(), RenderSlot::Opacity(obj));
@@ -455,7 +517,7 @@ where
         let cambg = self.cambgs.get(&cam_id).expect("No default camera found");
         for (_name, node) in self.nodes.iter() {
             if let RenderSlot::Opacity(obj) = node {
-                let pipe = self.pipelines.get(&Pipe::Opacity).unwrap();
+                let pipe = self.pipelines.get(&obj.pipetype).unwrap();
                 render_pass.set_pipeline(pipe.pipeline());
                 cambg.set(render_pass);
                 obj.bg.set(render_pass);
@@ -507,6 +569,7 @@ struct DrawObject<Mbg> {
     bg: Mbg,
     primitive: u32,
     material: String,
+    pipetype: PipeType,
 }
 
 #[derive(Debug, Clone)]
@@ -526,12 +589,14 @@ impl CameraUpdateRequest {
 #[derive(Debug, Clone)]
 pub struct RenderFrame {
     camera_update: Option<CameraUpdateRequest>,
+    camera_id: u32,
 }
 
 impl RenderFrame {
     pub fn new() -> Self {
         Self {
             camera_update: None,
+            camera_id: SceneResource::DEFAULT_CAMERA,
         }
     }
 }
@@ -543,8 +608,10 @@ impl egui_wgpu::CallbackTrait for RenderFrame {
         render_pass: &mut wgpu::RenderPass<'static>,
         resources: &egui_wgpu::CallbackResources,
     ) {
-        let resources: &RenderResource<PlNormal> = resources.get().unwrap();
-        resources.paint(render_pass, 0);
+        let rr: &RenderResource<PlColor> = resources.get().unwrap();
+        rr.paint(render_pass, self.camera_id);
+        let rr: &RenderResource<PlNormal> = resources.get().unwrap();
+        rr.paint(render_pass, self.camera_id);
     }
 
     fn prepare(
@@ -555,9 +622,9 @@ impl egui_wgpu::CallbackTrait for RenderFrame {
         _egui_encoder: &mut wgpu::CommandEncoder,
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        let resources: &mut SceneResource = resources.get_mut().unwrap();
+        let rr: &mut SceneResource = resources.get_mut().unwrap();
         if let Some(request) = &self.camera_update {
-            resources.update(queue, request);
+            rr.update(queue, request);
         }
         Vec::new()
     }

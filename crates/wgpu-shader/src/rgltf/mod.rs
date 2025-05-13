@@ -73,40 +73,54 @@ impl PlColor {
 
         Self { pipe: pipeline }
     }
+}
 
-    /// レンダリングパイプラインを取得
-    pub fn pipeline(&self) -> &wgpu::RenderPipeline {
+impl PipelineConstraint for PlColor {
+    type CameraBg = PlColorCameraBg;
+    type ModelBg = PlColorModelBg;
+    type Material = crate::types::uniform::Material;
+    type MaterialBg = PlColorMaterialBg;
+    type Vertex = crate::types::vertex::NormalColor3;
+
+    fn new_pipeline(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        topology: wgpu::PrimitiveTopology,
+        blend: crate::prelude::Blend,
+    ) -> Self {
+        Self::new(device, format, topology, blend)
+    }
+
+    fn pipeline(&self) -> &wgpu::RenderPipeline {
         &self.pipe
     }
 
-    /// カメラバッファのバインドグループを作成
-    pub fn camera_bg(device: &wgpu::Device, camera_buf: &wgpu::Buffer) -> PlColorCameraBg {
-        PlColorCameraBg::from_bindings(
+    fn camera_bg(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Self::CameraBg {
+        Self::CameraBg::from_bindings(
             device,
             vertex_color::bind_groups::BindGroupLayout0 {
-                camera: camera_buf.as_entire_buffer_binding(),
+                camera: buffer.as_entire_buffer_binding(),
             },
         )
     }
-
-    /// モデルバッファのバインドグループを作成
-    pub fn model_bg(device: &wgpu::Device, model_buf: &wgpu::Buffer) -> PlColorModelBg {
-        PlColorModelBg::from_bindings(
+    fn model_bg(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Self::ModelBg {
+        Self::ModelBg::from_bindings(
             device,
             vertex_color::bind_groups::BindGroupLayout1 {
-                model: model_buf.as_entire_buffer_binding(),
+                model: buffer.as_entire_buffer_binding(),
             },
         )
     }
-
-    /// マテリアルバッファのバインドグループを作成
-    pub fn material_bg(device: &wgpu::Device, material_buf: &wgpu::Buffer) -> PlColorMaterialBg {
-        PlColorMaterialBg::from_bindings(
+    fn material_bg(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Self::MaterialBg {
+        Self::MaterialBg::from_bindings(
             device,
             vertex_color::bind_groups::BindGroupLayout2 {
-                material: material_buf.as_entire_buffer_binding(),
+                material: buffer.as_entire_buffer_binding(),
             },
         )
+    }
+    fn default_material() -> Self::Material {
+        Self::Material::default()
     }
 }
 

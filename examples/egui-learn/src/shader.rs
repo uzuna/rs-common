@@ -5,6 +5,7 @@ use encase::StorageBuffer;
 use fxhash::FxHashMap;
 use wgpu_shader::{
     camera::FollowCamera,
+    constraint::PipelineConstraint,
     model,
     prelude::{glam, Blend},
     rgltf::{PlColor, PlColorCameraBg, PlColorMaterialBg, PlColorModelBg},

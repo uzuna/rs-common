@@ -60,7 +60,7 @@ impl CustomApp {
         Self {
             state: State::new(),
             ctx,
-            viewapp: gltf_view::ViewApp::new(),
+            viewapp: gltf_view::ViewApp::new(wgpu_render_state, 1.0),
         }
     }
 }

@@ -2,7 +2,10 @@
 
 use wgpu::PrimitiveTopology;
 
-use crate::prelude::Blend;
+use crate::{
+    constraint::{BindGroupImpl, PipelineConstraint},
+    prelude::Blend,
+};
 
 #[allow(dead_code)]
 mod vertex_color;
@@ -15,6 +18,22 @@ pub type PlColorCameraBg = vertex_color::bind_groups::BindGroup0;
 pub type PlColorModelBg = vertex_color::bind_groups::BindGroup1;
 /// マテリアルのバインドグループ
 pub type PlColorMaterialBg = vertex_color::bind_groups::BindGroup2;
+
+impl BindGroupImpl for PlColorCameraBg {
+    fn set(&self, pass: &mut wgpu::RenderPass<'_>) {
+        self.set(pass);
+    }
+}
+impl BindGroupImpl for PlColorModelBg {
+    fn set(&self, pass: &mut wgpu::RenderPass<'_>) {
+        self.set(pass);
+    }
+}
+impl BindGroupImpl for PlColorMaterialBg {
+    fn set(&self, pass: &mut wgpu::RenderPass<'_>) {
+        self.set(pass);
+    }
+}
 
 pub struct PlColor {
     pipe: wgpu::RenderPipeline,
@@ -98,6 +117,22 @@ pub type PlNormalModelBg = vertex_normal::bind_groups::BindGroup1;
 /// マテリアルのバインドグループ
 pub type PlNormalMaterialBg = vertex_normal::bind_groups::BindGroup2;
 
+impl BindGroupImpl for PlNormalCameraBg {
+    fn set(&self, pass: &mut wgpu::RenderPass<'_>) {
+        self.set(pass);
+    }
+}
+impl BindGroupImpl for PlNormalModelBg {
+    fn set(&self, pass: &mut wgpu::RenderPass<'_>) {
+        self.set(pass);
+    }
+}
+impl BindGroupImpl for PlNormalMaterialBg {
+    fn set(&self, pass: &mut wgpu::RenderPass<'_>) {
+        self.set(pass);
+    }
+}
+
 pub struct PlNormal {
     pipe: wgpu::RenderPipeline,
 }
@@ -136,39 +171,53 @@ impl PlNormal {
 
         Self { pipe: pipeline }
     }
+}
 
-    /// レンダリングパイプラインを取得
-    pub fn pipeline(&self) -> &wgpu::RenderPipeline {
+impl PipelineConstraint for PlNormal {
+    type CameraBg = PlNormalCameraBg;
+    type ModelBg = PlNormalModelBg;
+    type Material = crate::types::uniform::Material;
+    type MaterialBg = PlNormalMaterialBg;
+    type Vertex = crate::types::vertex::Normal;
+
+    fn new_pipeline(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        topology: wgpu::PrimitiveTopology,
+        blend: crate::prelude::Blend,
+    ) -> Self {
+        Self::new(device, format, topology, blend)
+    }
+
+    fn pipeline(&self) -> &wgpu::RenderPipeline {
         &self.pipe
     }
 
-    /// カメラバッファのバインドグループを作成
-    pub fn camera_bg(device: &wgpu::Device, camera_buf: &wgpu::Buffer) -> PlNormalCameraBg {
-        PlNormalCameraBg::from_bindings(
+    fn camera_bg(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Self::CameraBg {
+        Self::CameraBg::from_bindings(
             device,
             vertex_normal::bind_groups::BindGroupLayout0 {
-                camera: camera_buf.as_entire_buffer_binding(),
+                camera: buffer.as_entire_buffer_binding(),
             },
         )
     }
-
-    /// モデルバッファのバインドグループを作成
-    pub fn model_bg(device: &wgpu::Device, model_buf: &wgpu::Buffer) -> PlNormalModelBg {
-        PlNormalModelBg::from_bindings(
+    fn model_bg(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Self::ModelBg {
+        Self::ModelBg::from_bindings(
             device,
             vertex_normal::bind_groups::BindGroupLayout1 {
-                model: model_buf.as_entire_buffer_binding(),
+                model: buffer.as_entire_buffer_binding(),
             },
         )
     }
-
-    /// マテリアルバッファのバインドグループを作成
-    pub fn material_bg(device: &wgpu::Device, material_buf: &wgpu::Buffer) -> PlNormalMaterialBg {
-        PlNormalMaterialBg::from_bindings(
+    fn material_bg(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Self::MaterialBg {
+        Self::MaterialBg::from_bindings(
             device,
             vertex_normal::bind_groups::BindGroupLayout2 {
-                material: material_buf.as_entire_buffer_binding(),
+                material: buffer.as_entire_buffer_binding(),
             },
         )
+    }
+    fn default_material() -> Self::Material {
+        Self::Material::default()
     }
 }

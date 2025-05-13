@@ -1,6 +1,7 @@
 pub mod camera;
 pub mod colored;
 pub(crate) mod common;
+pub mod constraint;
 pub mod graph;
 pub mod model;
 pub mod particle;

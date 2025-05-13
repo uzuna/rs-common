@@ -3,6 +3,7 @@ use shader::Context;
 mod gltf_view;
 mod shader;
 mod tf;
+mod ui;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {

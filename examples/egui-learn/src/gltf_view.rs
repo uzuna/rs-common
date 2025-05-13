@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use eframe::egui_wgpu::{self, RenderState};
 use fxhash::FxHashMap;
 use wgpu_shader::{
-    camera::{Camera, FollowCamera},
+    camera::{Camera, ControlProperty, FollowCamera},
     graph::ModelNodeImpl,
     model,
     prelude::glam,
@@ -15,7 +15,10 @@ use wgpu_shader::{
     vertex::{VertexBuffer, VertexBufferSimple},
 };
 
-use crate::tf::{self, GraphBuilder};
+use crate::{
+    tf::{self, GraphBuilder},
+    ui::move_camera_by_pointer,
+};
 
 pub struct ViewApp {
     loaded: Option<PathBuf>,
@@ -180,11 +183,20 @@ impl eframe::App for ViewApp {
                 if let Some(rframe) = &self.rframe {
                     ui.label("Render frame:");
 
-                    let (rect, _response) =
+                    let (rect, response) =
                         ui.allocate_exact_size(egui::Vec2::splat(300.0), egui::Sense::drag());
 
-                    ui.painter()
-                        .add(egui_wgpu::Callback::new_paint_callback(rect, *rframe));
+                    if let Some(prop) = move_camera_by_pointer(ui, response) {
+                        let mut rframe = rframe.clone();
+                        rframe.camera_update = Some(CameraUpdateRequest::new("default", prop));
+                        ui.painter()
+                            .add(egui_wgpu::Callback::new_paint_callback(rect, rframe));
+                    } else {
+                        ui.painter().add(egui_wgpu::Callback::new_paint_callback(
+                            rect,
+                            rframe.clone(),
+                        ));
+                    }
                 }
             });
     }
@@ -373,6 +385,19 @@ impl RenderResource {
             }
         }
     }
+
+    fn update_camera(&mut self, queue: &wgpu::Queue, req: &CameraUpdateRequest) {
+        if let Some(cam) = self.cams.get_mut(&req.cam) {
+            cam.update_by_property(&req.prop, false);
+            if let Some(buf) = self.cambufs.get_mut(&req.cam) {
+                queue.write_buffer(
+                    buf.buffer(),
+                    0,
+                    bytemuck::cast_slice(&[cam.camera().to_uniform()]),
+                );
+            }
+        }
+    }
 }
 
 enum RenderSlot {
@@ -409,14 +434,33 @@ struct DrawObject {
     material: String,
 }
 
+#[derive(Debug, Clone)]
+struct CameraUpdateRequest {
+    cam: String,
+    prop: ControlProperty,
+}
+
+impl CameraUpdateRequest {
+    pub fn new(cam: impl Into<String>, prop: ControlProperty) -> Self {
+        Self {
+            cam: cam.into(),
+            prop,
+        }
+    }
+}
+
 /// レンダリング更新時にデータを配置するための型
 /// 常に使い捨てる情報となっている
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RenderFrame {}
+#[derive(Debug, Clone)]
+pub struct RenderFrame {
+    camera_update: Option<CameraUpdateRequest>,
+}
 
 impl RenderFrame {
     pub fn new() -> Self {
-        Self {}
+        Self {
+            camera_update: None,
+        }
     }
 }
 
@@ -434,11 +478,15 @@ impl egui_wgpu::CallbackTrait for RenderFrame {
     fn prepare(
         &self,
         _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
+        queue: &wgpu::Queue,
         _screen_descriptor: &egui_wgpu::ScreenDescriptor,
         _egui_encoder: &mut wgpu::CommandEncoder,
-        _resources: &mut egui_wgpu::CallbackResources,
+        resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
+        let resources: &mut RenderResource = resources.get_mut().unwrap();
+        if let Some(request) = &self.camera_update {
+            resources.update_camera(queue, request);
+        }
         Vec::new()
     }
 }

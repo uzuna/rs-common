@@ -106,6 +106,7 @@ impl Camera {
 }
 
 /// [FollowCamera]の操作に必要な情報を持つ構造体
+#[derive(Debug, Default, Clone, Copy)]
 pub struct ControlProperty {
     /// 上下方向の移動
     pub up: f32,

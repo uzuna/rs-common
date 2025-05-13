@@ -22,14 +22,6 @@ pub const ROS_TO_GLTF: Mat4 = Mat4::from_cols_array(&[
     0.0, 0.0, 0.0, 1.0,
 ]);
 
-#[rustfmt::skip]
-pub const GLTF_TO_ROS: Mat4 = Mat4::from_cols_array(&[
-    0.0, 0.0, -1.0, 0.0,
-    1.0, 0.0, 0.0, 0.0,
-    0.0, -1.0, 0.0, 0.0,
-    0.0, 0.0, 0.0, 1.0,
-]);
-
 /// GLTFのバッファを読み込む
 pub fn load(path: impl AsRef<Path>) -> anyhow::Result<GraphBuilder> {
     let glb = gltf::Glb::from_reader(std::fs::File::open(path)?)?;
@@ -150,7 +142,7 @@ impl Primitive {
         let buf = read_buffer(buffer, &a);
         parse_buffer::<Vec3>(buf, a.size(), a.count())
             .into_iter()
-            .map(|v| GLTF_TO_ROS.transform_vector3(v))
+            .map(|v| ROS_TO_GLTF.transform_vector3(v))
             .collect()
     }
     fn parse(buffer: &[u8], prim: gltf::Primitive) -> Self {
@@ -508,7 +500,7 @@ fn gltf_trans_to_trs(trans: gltf::scene::Transform) -> Trs {
         rotation: Quat::from_array(decon.1),
         scale: Vec3::from(decon.2),
     }
-    .transform(&GLTF_TO_ROS)
+    .transform(&ROS_TO_GLTF)
 }
 
 #[cfg(test)]

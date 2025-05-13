@@ -117,7 +117,7 @@ impl Context {
 
         egui::Frame::canvas(ui.style())
             .fill(BG_COLOR)
-            .show(ui, |ui| {
+            .show(ui, |ui: &mut egui::Ui| {
                 self.paint_canvas(ui, color);
             });
         ui.label("Drag to rotate!");

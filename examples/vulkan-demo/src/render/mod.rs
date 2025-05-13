@@ -600,7 +600,7 @@ pub mod unif {
                 wgpu::PrimitiveTopology::TriangleList,
                 Blend::Alpha,
             );
-            let grid_vb = GridDrawer::default().gen(state.device());
+            let grid_vb = GridDrawer::default().gen_color4(state.device());
             let vb = VertexBufferSimple::new(state.device(), &model::cube(1.0), None);
             let frustum_vb = VertexBufferSimple::new(
                 state.device(),

@@ -7,8 +7,28 @@ use fxhash::FxHashMap;
 use gltf::{buffer::View, texture, Accessor};
 use wgpu_shader::{
     graph::Trs,
-    prelude::glam::{Quat, Vec2, Vec3, Vec4},
+    prelude::glam::{Mat4, Quat, Vec2, Vec3, Vec4},
 };
+
+/// GLTFの座標系を右手系に変換する行列
+/// 
+/// reference: https://www.khronos.org/gltf/
+/// ros: https://www.ros.org/reps/rep-0103.html#axis-orientation
+#[rustfmt::skip]
+pub const ROS_TO_GLTF: Mat4 = Mat4::from_cols_array(&[
+    0.0, -1.0, 0.0, 0.0,
+    0.0, 0.0, 1.0, 0.0,
+    -1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 1.0,
+]);
+
+#[rustfmt::skip]
+pub const GLTF_TO_ROS: Mat4 = Mat4::from_cols_array(&[
+    0.0, 0.0, -1.0, 0.0,
+    1.0, 0.0, 0.0, 0.0,
+    0.0, -1.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 1.0,
+]);
 
 /// GLTFのバッファを読み込む
 pub fn load(path: impl AsRef<Path>) -> anyhow::Result<GraphBuilder> {
@@ -126,6 +146,13 @@ pub struct Primitive {
 }
 
 impl Primitive {
+    fn read_buffer_vec3(buffer: &[u8], a: Accessor<'_>) -> Vec<Vec3> {
+        let buf = read_buffer(buffer, &a);
+        parse_buffer::<Vec3>(buf, a.size(), a.count())
+            .into_iter()
+            .map(|v| GLTF_TO_ROS.transform_vector3(v))
+            .collect()
+    }
     fn parse(buffer: &[u8], prim: gltf::Primitive) -> Self {
         let material = prim.material();
         let mut p = Primitive {
@@ -146,17 +173,14 @@ impl Primitive {
         // attributesを取得
         prim.attributes().for_each(|(semantic, a)| match semantic {
             gltf::mesh::Semantic::Positions => {
-                let buf = read_buffer(buffer, &a);
-                p.position = Some(parse_buffer::<Vec3>(buf, a.size(), a.count()));
+                p.position = Some(Self::read_buffer_vec3(buffer, a));
             }
             gltf::mesh::Semantic::Normals => {
-                let buf = read_buffer(buffer, &a);
-                p.normal = Some(parse_buffer::<Vec3>(buf, a.size(), a.count()));
+                p.normal = Some(Self::read_buffer_vec3(buffer, a));
             }
             gltf::mesh::Semantic::Colors(_) => {
                 // TODO: Vec4カラーに対応
-                let buf = read_buffer(buffer, &a);
-                p.color = Some(parse_buffer::<Vec3>(buf, a.size(), a.count()));
+                p.color = Some(Self::read_buffer_vec3(buffer, a));
             }
             gltf::mesh::Semantic::TexCoords(_) => {
                 let buf = read_buffer(buffer, &a);
@@ -484,6 +508,7 @@ fn gltf_trans_to_trs(trans: gltf::scene::Transform) -> Trs {
         rotation: Quat::from_array(decon.1),
         scale: Vec3::from(decon.2),
     }
+    .transform(&GLTF_TO_ROS)
 }
 
 #[cfg(test)]

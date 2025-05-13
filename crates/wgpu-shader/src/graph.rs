@@ -12,6 +12,7 @@
 //! 具体的な例として[Unityのシーン](https://docs.unity3d.com/ja/2022.3/Manual/CreatingScenes.html)やBlenderの[シーン](https://docs.blender.org/manual/ja/latest/scene_layout/index.html)を参照してください。
 
 use fxhash::FxHashMap;
+use glam::Quat;
 
 /// 移動-回転-拡大の等長写像変換の定義型です。[ModelNode]のローカル座標として利用します
 ///
@@ -102,6 +103,18 @@ impl Trs {
             mat.y_axis.length(),
             mat.z_axis.length(),
         );
+        Self {
+            translation,
+            rotation,
+            scale,
+        }
+    }
+
+    pub fn transform(&self, mat: &glam::Mat4) -> Self {
+        let translation = mat.transform_vector3(self.translation);
+        let q = mat.transform_vector3(self.rotation.xyz());
+        let scale = mat.transform_vector3(self.scale).abs();
+        let rotation = Quat::from_xyzw(q.x, q.y, q.z, self.rotation.w);
         Self {
             translation,
             rotation,

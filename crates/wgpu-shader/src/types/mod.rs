@@ -152,6 +152,25 @@ pub mod vertex {
             Self { position, normal }
         }
     }
+
+    /// 法線付き頂点型
+    #[repr(C)]
+    #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+    pub struct NormalColor3 {
+        pub position: glam::Vec3,
+        pub normal: glam::Vec3,
+        pub color: glam::Vec3,
+    }
+
+    impl NormalColor3 {
+        pub const fn new(position: glam::Vec3, normal: glam::Vec3, color: glam::Vec3) -> Self {
+            Self {
+                position,
+                normal,
+                color,
+            }
+        }
+    }
 }
 
 /// インスタンス向けの型定義

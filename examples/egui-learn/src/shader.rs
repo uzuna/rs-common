@@ -5,10 +5,10 @@ use encase::StorageBuffer;
 use fxhash::FxHashMap;
 use wgpu_shader::{
     camera::FollowCamera,
-    colored::{self, CameraBindGroup},
     model,
     prelude::{glam, Blend},
-    types::{self, vertex::Color4},
+    rgltf::{PlColor, PlColorCameraBg, PlColorMaterialBg, PlColorModelBg},
+    types::{self, vertex::NormalColor3},
     uniform::UniformBuffer,
     vertex::VertexBufferSimple,
 };
@@ -21,32 +21,43 @@ pub const BG_COLOR: Color32 = Color32::from_rgb(25, 51, 77);
 /// eguiはUIで更新情報を作り、レンダリングコンテキストで更新をする
 /// もとのデータ更新をする構造体からこれらの情報を切り離して置くと扱いやすい
 struct DrawableResource {
-    buffer: wgpu::Buffer,
-    bg: colored::DrawInfoBindGroup,
+    buffer: UniformBuffer<types::uniform::Model>,
+    bg: PlColorModelBg,
+    material: UniformBuffer<types::uniform::Material>,
+    material_bg: PlColorMaterialBg,
 }
 
 impl DrawableResource {
     pub fn new(device: &wgpu::Device, color: glam::Vec4) -> Self {
-        let buffer = colored::unif::DrawInfo {
-            matrix: glam::Mat4::IDENTITY,
-            color,
-        };
+        let buffer = types::uniform::Model::from(&glam::Mat4::IDENTITY);
         let buffer = UniformBuffer::new_encase(device, &buffer);
-        let bg = colored::PlUnif::make_draw_unif(device, &buffer);
-        let buffer = buffer.into_inner();
-        Self { buffer, bg }
+        let bg = PlColor::model_bg(device, buffer.buffer());
+
+        let material = types::uniform::Material {
+            color,
+            ..Default::default()
+        };
+        let material = UniformBuffer::new_encase(device, &material);
+        let material_bg = PlColor::material_bg(device, material.buffer());
+
+        Self {
+            buffer,
+            bg,
+            material,
+            material_bg,
+        }
     }
 
     fn update(&self, queue: &wgpu::Queue, color: glam::Vec4) {
-        let drawinfo = colored::unif::DrawInfo {
-            matrix: glam::Mat4::IDENTITY,
+        let material = types::uniform::Material {
             color,
+            ..Default::default()
         };
 
         let mut byte_buffer: Vec<u8> = Vec::new();
         let mut buffer = StorageBuffer::new(&mut byte_buffer);
-        buffer.write(&drawinfo).unwrap();
-        queue.write_buffer(&self.buffer, 0, buffer.as_ref());
+        buffer.write(&material).unwrap();
+        queue.write_buffer(self.material.buffer(), 0, buffer.as_ref());
     }
 }
 
@@ -62,20 +73,26 @@ impl Context {
     pub const DEFAULT_ASPECT: f32 = 1280.0 / 720.0;
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> (Self, RenderResources) {
         let (cams, cambufs) = camera::build_cameras(device, &[1.0, Self::DEFAULT_ASPECT]);
-        let cambuf = cambufs.get(&0).unwrap();
-        let p_poly = colored::PlUnif::new(
+        let p_poly = PlColor::new(
             device,
             format,
-            cambuf,
             wgpu::PrimitiveTopology::TriangleList,
             Blend::Replace,
         );
-        let vb = VertexBufferSimple::new(device, &model::cube(1.0), None);
+        let vert = model::cube(1.0)
+            .into_iter()
+            .map(|x| NormalColor3 {
+                position: glam::Vec3::new(x.position.x, x.position.y, x.position.z),
+                normal: glam::Vec3::new(1.0, 0.0, 0.0),
+                color: glam::Vec3::new(x.color.x, x.color.y, x.color.z),
+            })
+            .collect::<Vec<_>>();
+        let vb = VertexBufferSimple::new(device, &vert, None);
 
         let cambinds = cambufs
             .iter()
-            .map(|(id, buf)| (*id, colored::PlUnif::make_camera_bg(device, buf)))
-            .collect::<FxHashMap<u32, CameraBindGroup>>();
+            .map(|(id, buf)| (*id, PlColor::camera_bg(device, buf)))
+            .collect::<FxHashMap<u32, PlColorCameraBg>>();
 
         let color = glam::Vec4::new(1.0, 1.0, 1.0, 1.0);
         let dr = DrawableResource::new(device, color);
@@ -162,10 +179,10 @@ impl Context {
 /// レンダリング前、レンダリング時に固定的なリソースはここにまとめておく
 pub struct RenderResources {
     cambufs: CamBufs,
-    cambinds: FxHashMap<u32, CameraBindGroup>,
-    p: colored::PlUnif,
+    cambinds: FxHashMap<u32, PlColorCameraBg>,
+    p: PlColor,
     dr: DrawableResource,
-    vb: VertexBufferSimple<Color4>,
+    vb: VertexBufferSimple<NormalColor3>,
 }
 
 impl RenderResources {
@@ -187,6 +204,7 @@ impl RenderResources {
         }
 
         self.dr.bg.set(render_pass);
+        self.dr.material_bg.set(render_pass);
         self.vb.set(render_pass, 0);
         render_pass.draw(0..self.vb.len(), 0..1);
     }

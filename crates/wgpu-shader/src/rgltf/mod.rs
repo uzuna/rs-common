@@ -23,7 +23,7 @@ pub struct PlColor {
 impl PlColor {
     pub fn new(
         device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration,
+        format: wgpu::TextureFormat,
         topology: PrimitiveTopology,
         blend: Blend,
     ) -> Self {
@@ -31,7 +31,7 @@ impl PlColor {
         let shader = s::create_shader_module(device);
 
         let layout = s::create_pipeline_layout(device);
-        let fs_target = crate::common::create_fs_target(config.format, blend);
+        let fs_target = crate::common::create_fs_target(format, blend);
         let ve = s::vs_main_entry(wgpu::VertexStepMode::Vertex);
         let vs = s::vertex_state(&shader, &ve);
         let fe = s::fs_main_entry(fs_target);

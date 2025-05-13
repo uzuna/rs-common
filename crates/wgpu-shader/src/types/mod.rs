@@ -32,9 +32,21 @@ pub mod uniform {
             self.view_proj *= matrix;
         }
     }
+
+    impl Default for Camera {
+        fn default() -> Self {
+            Self {
+                view_pos: glam::Vec4::new(0.0, 0.0, 0.0, 1.0),
+                view_proj: glam::Mat4::IDENTITY,
+            }
+        }
+    }
+
     /// インスタンスごとの移動とノーマル行列を持つ
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
+    #[derive(
+        Debug, Copy, Clone, PartialEq, encase::ShaderType, bytemuck::Pod, bytemuck::Zeroable,
+    )]
     pub struct Model {
         /// グローバルからローカル座標系への変換行列
         pub matrix: glam::Mat4,
@@ -50,9 +62,19 @@ pub mod uniform {
         }
     }
 
+    impl From<&glam::Mat4> for Model {
+        fn from(matrix: &glam::Mat4) -> Self {
+            let normal = matrix.inverse().transpose();
+            Self {
+                matrix: *matrix,
+                normal,
+            }
+        }
+    }
+
     /// gltf brdf(Bidirectional Reflectance Distribution Function)マテリアル情報
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
+    #[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType, bytemuck::Zeroable)]
     pub struct Material {
         /// ベースカラー。何もなければ白を指定する
         pub color: glam::Vec4,
@@ -114,6 +136,20 @@ pub mod vertex {
     impl Color4 {
         pub const fn new(position: glam::Vec4, color: glam::Vec4) -> Self {
             Self { position, color }
+        }
+    }
+
+    /// 法線付き頂点型
+    #[repr(C)]
+    #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+    pub struct Normal {
+        pub position: glam::Vec3,
+        pub normal: glam::Vec3,
+    }
+
+    impl Normal {
+        pub const fn new(position: glam::Vec3, normal: glam::Vec3) -> Self {
+            Self { position, normal }
         }
     }
 }

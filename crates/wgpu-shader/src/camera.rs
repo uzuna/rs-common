@@ -105,6 +105,16 @@ impl Camera {
     }
 }
 
+/// [FollowCamera]の操作に必要な情報を持つ構造体
+pub struct ControlProperty {
+    /// 上下方向の移動
+    pub up: f32,
+    /// 左右方向の移動
+    pub left: f32,
+    /// 前後方向の移動
+    pub front: f32,
+}
+
 /// 注視点を回転中心として、距離と回転で操作をするカメラ
 pub struct FollowCamera {
     // 行列計算そのものはCameraを使う
@@ -143,6 +153,10 @@ impl FollowCamera {
 
     pub fn camera_mut(&mut self) -> &mut Camera {
         &mut self.camera
+    }
+
+    pub fn update_by_property(&mut self, prop: &ControlProperty, update_target: bool) {
+        self.update(prop.up, prop.left, prop.front, update_target);
     }
 
     /// カメラ位置の更新

@@ -23,7 +23,7 @@ pub fn load(path: impl AsRef<Path>) -> anyhow::Result<GraphBuilder> {
 pub enum GltfSlot {
     None,
     Camera(Camera),
-    Draw(Mesh),
+    Draw(u32),
 }
 
 impl Display for GltfSlot {
@@ -31,12 +31,7 @@ impl Display for GltfSlot {
         match self {
             GltfSlot::None => write!(f, "Empty"),
             GltfSlot::Camera(camera) => write!(f, "Camera: {}", camera.name),
-            GltfSlot::Draw(mesh) => write!(
-                f,
-                "Mesh: {}, Primitive: {}",
-                mesh.name,
-                mesh.primitives.len()
-            ),
+            GltfSlot::Draw(mesh) => write!(f, "Mesh: {mesh}"),
         }
     }
 }
@@ -171,6 +166,23 @@ impl Primitive {
         });
         p
     }
+
+    /// Position + Normalのプリミティブ
+    pub fn try_to_normal(&self) -> anyhow::Result<Vec<wgpu_shader::types::vertex::Normal>> {
+        let pos = self
+            .position
+            .as_ref()
+            .ok_or(anyhow::anyhow!("No position"))?;
+        let normal = self.normal.as_ref().ok_or(anyhow::anyhow!("No normal"))?;
+        let mut normals = Vec::with_capacity(pos.len());
+        for (pos, normal) in pos.iter().zip(normal.iter()) {
+            normals.push(wgpu_shader::types::vertex::Normal {
+                position: *pos,
+                normal: *normal,
+            });
+        }
+        Ok(normals)
+    }
 }
 
 /// GLTFのマテリアル情報
@@ -215,6 +227,16 @@ impl Material {
                 Some(i) => format!("material_id_{}", i),
                 None => "default".to_string(),
             })
+    }
+}
+
+impl From<Material> for wgpu_shader::types::uniform::Material {
+    fn from(m: Material) -> Self {
+        wgpu_shader::types::uniform::Material {
+            color: m.base_color,
+            metallic: m.metallic,
+            roughness: m.roughness,
+        }
     }
 }
 
@@ -343,6 +365,7 @@ pub struct GraphBuilder {
     pub graph: wgpu_shader::graph::ModelGraph<wgpu_shader::graph::ModelNode<GltfSlot>>,
     pub materials: FxHashMap<String, Material>,
     pub textures: FxHashMap<String, Texture>,
+    pub meshes: FxHashMap<u32, Mesh>,
 }
 
 impl GraphBuilder {
@@ -351,13 +374,14 @@ impl GraphBuilder {
             graph: wgpu_shader::graph::ModelGraph::new(),
             materials: FxHashMap::default(),
             textures: FxHashMap::default(),
+            meshes: FxHashMap::default(),
         }
     }
 
     // GLTFノードを解析して必要なデータを読み出す
-    fn parse_node(buffer: &[u8], node: &gltf::Node) -> GltfSlot {
+    fn parse_node(node: &gltf::Node) -> GltfSlot {
         if let Some(mesh) = node.mesh() {
-            GltfSlot::Draw(Mesh::new(buffer, mesh))
+            GltfSlot::Draw(mesh.index() as u32)
         } else if let Some(camera) = node.camera() {
             GltfSlot::Camera(Camera::new(camera))
         } else {
@@ -368,10 +392,9 @@ impl GraphBuilder {
     /// ノードを再帰的にたどる
     fn traverse_inner(
         &mut self,
-        buffer: &[u8],
         parent: Option<&str>,
         node: &gltf::Node,
-        f: &impl Fn(&[u8], &gltf::Node) -> GltfSlot,
+        f: &impl Fn(&gltf::Node) -> GltfSlot,
     ) -> anyhow::Result<()> {
         let name = node
             .name()
@@ -380,11 +403,11 @@ impl GraphBuilder {
         let n = wgpu_shader::graph::ModelNode::new(
             name.clone(),
             gltf_trans_to_trs(node.transform()),
-            f(buffer, node),
+            f(node),
         );
         self.graph.add_node(parent, n)?;
         for child in node.children() {
-            self.traverse_inner(buffer, Some(name.as_str()), &child, f)?;
+            self.traverse_inner(Some(name.as_str()), &child, f)?;
         }
         Ok(())
     }
@@ -395,7 +418,7 @@ impl GraphBuilder {
         let buffer = glb.bin.as_ref().ok_or(anyhow::anyhow!("No buffer found"))?;
         for scene in g.scenes() {
             for node in scene.nodes() {
-                self.traverse_inner(buffer.as_ref(), None, &node, &Self::parse_node)?;
+                self.traverse_inner(None, &node, &Self::parse_node)?;
             }
         }
         for mat in g.materials() {
@@ -405,6 +428,11 @@ impl GraphBuilder {
         for texture in g.textures() {
             let t = Texture::new(buffer, &texture);
             self.textures.insert(t.name.clone(), t);
+        }
+        for mesh in g.meshes() {
+            let id = mesh.index() as u32;
+            let m = Mesh::new(buffer, mesh);
+            self.meshes.insert(id, m);
         }
         Ok(())
     }
@@ -573,27 +601,7 @@ mod tests {
             let v = node.value();
             match v {
                 GltfSlot::Draw(draw) => {
-                    println!("  Draw: {:?}", draw.name);
-                    for primitive in &draw.primitives {
-                        println!("    Primitive: {:?}", primitive.primitive);
-                        if let Some(index) = &primitive.index {
-                            println!("    Index: {:?}", index.len());
-                        }
-                        if let Some(position) = &primitive.position {
-                            println!("    Position: {:?}", position.len());
-                        }
-                        if let Some(normal) = &primitive.normal {
-                            println!("    Normal: {:?}", normal.len());
-                        }
-                        if let Some(color) = &primitive.color {
-                            println!("    Color: {:?}", color.len());
-                        }
-                        if let Some(texcoord) = &primitive.texcoord {
-                            println!("    TexCoord: {:?}", texcoord.len());
-                        }
-
-                        println!("    Material: {:?}", primitive.material);
-                    }
+                    println!("  Draw: {}", draw);
                 }
                 GltfSlot::Camera(camera) => {
                     println!("  Camera: {:?}", camera.name);
@@ -619,6 +627,28 @@ mod tests {
             println!("Texture: {}", name);
             println!("  Sampler: {}", texture.sampler.name);
             println!("  {}", texture.image);
+        }
+
+        for (id, mesh) in builder.meshes.iter() {
+            println!("Mesh: [{}] {}", id, mesh.name);
+            for primitive in mesh.primitives.iter() {
+                println!("  Primitive: {:?}", primitive.primitive);
+                if let Some(index) = &primitive.index {
+                    println!("    Index: {}", index.len());
+                }
+                if let Some(position) = &primitive.position {
+                    println!("    Position: {}", position.len());
+                }
+                if let Some(normal) = &primitive.normal {
+                    println!("    Normal: {}", normal.len());
+                }
+                if let Some(color) = &primitive.color {
+                    println!("    Color: {}", color.len());
+                }
+                if let Some(texcoord) = &primitive.texcoord {
+                    println!("    TexCoord: {}", texcoord.len());
+                }
+            }
         }
 
         Ok(())

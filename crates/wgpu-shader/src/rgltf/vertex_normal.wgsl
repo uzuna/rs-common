@@ -13,18 +13,18 @@ var<uniform> camera: Camera;
 // モデルごとの頂点位置調整
 struct Model{
     // 頂点の変換行列
-    @location(0) matrix: mat4x4<f32>,
+    matrix: mat4x4<f32>,
     // ノーマルマップ変更行列
-    @location(1) normal: mat4x4<f32>,
+    normal: mat4x4<f32>,
 }
 @group(1) @binding(0)
 var<uniform> model: Model;
 
 struct Material{
     // オブジェクトの色補正
-    @location(0) color: vec4<f32>,
-    @location(1) metallic: f32,
-    @location(2) roughness: f32,
+    color: vec4<f32>,
+    metallic: f32,
+    roughness: f32,
 }
 @group(2) @binding(0)
 var<uniform> material: Material;
@@ -59,7 +59,7 @@ fn vs_main(
     var out: VertexOutput;
 
     // 頂点の位置をワールド座標に変換
-    var world_position: vec4<f32> = model_matrix * vert.position;
+    var world_position: vec4<f32> = model_matrix * vec4<f32>(vert.position, 1.0);
     out.world_normal = normalize((normal_matrix * vec4<f32>(vert.normal, 0.0)).xyz);
 
     // カメラの射影行列を使ってクリップ座標に変換

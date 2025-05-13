@@ -1,6 +1,5 @@
 use encase::StorageBuffer;
 
-// TODO: ubが不要なので解体する
 // RAIIリソース開放するクローン不可構造体を作ることを考える
 pub struct UniformBuffer<U> {
     // GPU上のメモリ位置

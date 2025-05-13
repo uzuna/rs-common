@@ -8,7 +8,7 @@ use wgpu_shader::{
     model,
     prelude::{glam, Blend},
     rgltf::{PlColor, PlColorCameraBg, PlColorMaterialBg, PlColorModelBg},
-    types::{self, vertex::NormalColor3},
+    types,
     uniform::UniformBuffer,
     vertex::VertexBufferSimple,
 };
@@ -81,7 +81,7 @@ impl Context {
         );
         let vert = model::cube(1.0)
             .into_iter()
-            .map(|x| NormalColor3 {
+            .map(|x| types::vertex::NormalColor3 {
                 position: glam::Vec3::new(x.position.x, x.position.y, x.position.z),
                 normal: glam::Vec3::new(1.0, 0.0, 0.0),
                 color: glam::Vec3::new(x.color.x, x.color.y, x.color.z),
@@ -182,7 +182,7 @@ pub struct RenderResources {
     cambinds: FxHashMap<u32, PlColorCameraBg>,
     p: PlColor,
     dr: DrawableResource,
-    vb: VertexBufferSimple<NormalColor3>,
+    vb: VertexBufferSimple<types::vertex::NormalColor3>,
 }
 
 impl RenderResources {

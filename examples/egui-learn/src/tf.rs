@@ -251,7 +251,7 @@ impl Texture {
     fn new(buffer: &[u8], texture: &gltf::Texture) -> Self {
         let name = Self::parse_name(texture);
         let sampler = Sampler::new(&texture.sampler());
-        let image = Image::new(buffer, &texture.source().source());
+        let image = Image::new(buffer, texture.source().source());
         Self {
             name,
             sampler,
@@ -325,7 +325,7 @@ pub enum Image {
 }
 
 impl Image {
-    fn new(buffer: &[u8], image: &gltf::image::Source) -> Self {
+    fn new(buffer: &[u8], image: gltf::image::Source) -> Self {
         match image {
             gltf::image::Source::View { view, mime_type } => {
                 let buf = read_buffer_view(buffer, view);
@@ -440,13 +440,19 @@ impl GraphBuilder {
 
 // GLTFのバッファを取得する
 fn read_buffer<'a>(buffer: &'a [u8], a: &'a Accessor<'_>) -> &'a [u8] {
+    if let Some(view) = a.view() {
+        if buffer.len() != view.length() {
+            let buf = read_buffer_view(buffer, view);
+            return read_buffer(buf, a);
+        }
+    }
     let length = a.size() * a.count();
     let start = a.offset();
     let end = start + length;
     buffer.get(start..end).expect("Buffer out of range")
 }
 
-fn read_buffer_view<'a>(buffer: &'a [u8], a: &'a View<'_>) -> &'a [u8] {
+fn read_buffer_view<'a>(buffer: &'a [u8], a: View<'_>) -> &'a [u8] {
     let length = a.length();
     let start = a.offset();
     let end = start + length;
@@ -590,7 +596,7 @@ mod tests {
 
     #[test]
     fn test_build_graph() -> anyhow::Result<()> {
-        const PATH: &str = "testdata/duck.glb";
+        const PATH: &str = "testdata/box.glb";
         let path = PathBuf::from(PATH);
         let glb = gltf::Glb::from_reader(std::fs::File::open(path).unwrap()).unwrap();
 
@@ -634,10 +640,10 @@ mod tests {
             for primitive in mesh.primitives.iter() {
                 println!("  Primitive: {:?}", primitive.primitive);
                 if let Some(index) = &primitive.index {
-                    println!("    Index: {}", index.len());
+                    println!("    Index: {:?}", index);
                 }
                 if let Some(position) = &primitive.position {
-                    println!("    Position: {}", position.len());
+                    println!("    Position: {:?}", position);
                 }
                 if let Some(normal) = &primitive.normal {
                     println!("    Normal: {}", normal.len());

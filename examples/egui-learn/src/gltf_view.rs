@@ -7,10 +7,12 @@ use fxhash::FxHashMap;
 use wgpu_shader::{
     camera::{Camera, FollowCamera},
     graph::ModelNodeImpl,
+    model,
+    prelude::glam,
     rgltf::{PlNormal, PlNormalCameraBg, PlNormalMaterialBg, PlNormalModelBg},
     types,
     uniform::UniformBuffer,
-    vertex::VertexBuffer,
+    vertex::{VertexBuffer, VertexBufferSimple},
 };
 
 use crate::tf::{self, GraphBuilder};
@@ -61,19 +63,19 @@ impl ViewApp {
             let buffer = p.try_to_normal()?;
             let index = p.index.as_ref().ok_or(anyhow::anyhow!("No index found"))?;
             let buffer = VertexBuffer::new(device, &buffer, index);
-            rr.primitives.insert(*id, buffer);
+            rr.primitives.insert(*id, VertexImpl::Normal(buffer));
             rr.primitive_materials.insert(*id, p.material.clone());
         }
 
         for n in graph.graph.iter() {
             if let tf::GltfSlot::Draw(mesh) = n.value() {
-                let trs = n.world();
                 let material = rr
                     .primitive_materials
                     .get(mesh)
                     .ok_or(anyhow::anyhow!("No material found"))?;
-                let buffer = UniformBuffer::new_encase(device, &types::uniform::Model::from(&trs));
-                rr.add_draw_node(device, n.name(), *mesh, material.clone(), buffer);
+                let trs = n.world();
+                let model = UniformBuffer::new_encase(device, &types::uniform::Model::from(&trs));
+                rr.add_draw_node(device, n.name(), *mesh, material.clone(), model);
             }
         }
 
@@ -84,6 +86,42 @@ impl ViewApp {
         // 通常のゲームとの違いは、一定のモデルと一時的なデータの関係と違い
         // 認識情報が1フレームのみ有効な点。
         // モデルの移動に関しては、各フレームで変化があった(Name, Trs)を保持していれば良さそう -> KeyFrameの考え方
+        rs.renderer.write().callback_resources.insert(rr);
+        self.rframe = Some(RenderFrame::new());
+        Ok(())
+    }
+
+    fn build_sample_render(&mut self, rs: &RenderState, aspect: f32) -> anyhow::Result<()> {
+        let device = &rs.device;
+        let mut rr = RenderResource::new(device, rs.target_format, aspect);
+
+        let vert = model::CUBE
+            .into_iter()
+            .map(|x| types::vertex::Normal {
+                position: glam::Vec3::new(x.x, x.y, x.z),
+                normal: glam::Vec3::new(1.0, 0.0, 0.0),
+            })
+            .collect::<Vec<_>>();
+        let index = model::CUBE_INDEX;
+        let vb = VertexBuffer::new(device, &vert, &index);
+        rr.primitives.insert(0, VertexImpl::Normal(vb));
+
+        rr.add_material(
+            device,
+            "red",
+            UniformBuffer::new_encase(
+                device,
+                &types::uniform::Material {
+                    color: glam::Vec4::new(1.0, 0.0, 0.0, 1.0),
+                    ..Default::default()
+                },
+            ),
+        );
+
+        let model =
+            UniformBuffer::new_encase(device, &types::uniform::Model::from(&glam::Mat4::IDENTITY));
+        rr.add_draw_node(device, "default", 0, "red".to_string(), model);
+
         rs.renderer.write().callback_resources.insert(rr);
         self.rframe = Some(RenderFrame::new());
         Ok(())
@@ -124,6 +162,10 @@ impl eframe::App for ViewApp {
                         }
                     }
                 }
+                if ui.button("load default").clicked() {
+                    self.build_sample_render(frame.wgpu_render_state.as_ref().unwrap(), 1.0)
+                        .expect("Failed to load default");
+                }
                 if let Some(path) = &self.loaded {
                     ui.label(format!("Loaded: {}", path.display()));
                 }
@@ -155,6 +197,30 @@ enum Pipe {
     Transparent,
 }
 
+enum VertexImpl<V> {
+    Normal(VertexBuffer<V>),
+    NormalSimple(VertexBufferSimple<V>),
+}
+
+impl<V> VertexImpl<V>
+where
+    V: bytemuck::Pod,
+{
+    fn set(&self, render_pass: &mut wgpu::RenderPass<'static>, slot: u32) {
+        match self {
+            VertexImpl::Normal(vb) => vb.set(render_pass, slot),
+            VertexImpl::NormalSimple(vb) => vb.set(render_pass, slot),
+        }
+    }
+
+    fn draw(&self, render_pass: &mut wgpu::RenderPass<'static>) {
+        match self {
+            VertexImpl::Normal(vb) => render_pass.draw_indexed(0..vb.len(), 0, 0..1),
+            VertexImpl::NormalSimple(vb) => render_pass.draw(0..vb.len(), 0..1),
+        }
+    }
+}
+
 pub struct RenderResource {
     // 描画パイプライン
     pipelines: FxHashMap<Pipe, PlNormal>,
@@ -168,7 +234,7 @@ pub struct RenderResource {
     materials: FxHashMap<String, UniformBuffer<types::uniform::Material>>,
     materials_bg: FxHashMap<String, PlNormalMaterialBg>,
     // 描画するプリミティブの頂点データ
-    primitives: FxHashMap<u32, VertexBuffer<types::vertex::Normal>>,
+    primitives: FxHashMap<u32, VertexImpl<types::vertex::Normal>>,
     // プリミティブに関連付けられたデフォルトのマテリアルのキー
     primitive_materials: FxHashMap<u32, String>,
     // 描画するノードの情報
@@ -303,7 +369,7 @@ impl RenderResource {
                     .get(&obj.primitive)
                     .expect("No primitive found");
                 mesh.set(render_pass, 0);
-                render_pass.draw_indexed(0..mesh.len(), 0, 0..1);
+                mesh.draw(render_pass);
             }
         }
     }
@@ -317,12 +383,12 @@ enum RenderSlot {
 
 impl PartialEq for RenderSlot {
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (RenderSlot::None, RenderSlot::None) => true,
-            (RenderSlot::Opacity(_), RenderSlot::Opacity(_)) => true,
-            (RenderSlot::Transparent(_), RenderSlot::Transparent(_)) => true,
-            _ => false,
-        }
+        matches!(
+            (self, other),
+            (RenderSlot::None, RenderSlot::None)
+                | (RenderSlot::Opacity(_), RenderSlot::Opacity(_))
+                | (RenderSlot::Transparent(_), RenderSlot::Transparent(_))
+        )
     }
 }
 

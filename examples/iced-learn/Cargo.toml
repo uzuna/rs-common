@@ -10,7 +10,7 @@ rust-version.workspace = true
 anyhow.workspace = true
 bytesize = "2.0.1"
 dirs = "6.0.0"
-iced = { version = "0.13.0", features = ["system"] }
+iced = { version = "0.13.1", features = ["system"] }
 rusqlite = { version = "0.35.0", features = ["bundled"] }
 serde.workspace = true
 serde_json = "1.0.140"

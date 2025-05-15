@@ -600,3 +600,10 @@ impl egui_wgpu::CallbackTrait for RenderFrame {
         Vec::new()
     }
 }
+
+/// 特定ノードへのTrsの適用
+///
+pub struct AnimProperty {
+    pub name: String,
+    pub prop: Trs,
+}

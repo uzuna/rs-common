@@ -1,4 +1,5 @@
-use app::Context;
+use app::{Context, BG_COLOR};
+use egui::{Color32, CornerRadius};
 
 mod app;
 mod gltf_view;
@@ -41,6 +42,17 @@ impl State {
     }
 }
 
+fn new_frame(bgcolor: Color32) -> egui::containers::Frame {
+    egui::containers::Frame {
+        inner_margin: egui::epaint::Margin::ZERO,
+        outer_margin: egui::epaint::Margin::ZERO,
+        corner_radius: CornerRadius::ZERO,
+        stroke: egui::Stroke::default(),
+        shadow: egui::epaint::Shadow::NONE,
+        fill: bgcolor,
+    }
+}
+
 struct CustomApp {
     state: State,
     ctx: Context,
@@ -67,9 +79,11 @@ impl CustomApp {
 impl eframe::App for CustomApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // top level panel
-        egui::CentralPanel::default().show(ctx, |ui| {
-            self.ctx.shape(ui);
-        });
+        egui::CentralPanel::default()
+            .frame(new_frame(BG_COLOR))
+            .show(ctx, |ui| {
+                self.ctx.shape(ui);
+            });
 
         // SubWindow
         egui::Window::new("Spine Control")
@@ -101,5 +115,7 @@ impl eframe::App for CustomApp {
         if let Some(title) = self.state.fetch_title() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
+
+        // animation
     }
 }

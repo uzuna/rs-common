@@ -14,6 +14,12 @@
 use fxhash::FxHashMap;
 use glam::Quat;
 
+pub struct TrsUpdate {
+    pub translation: Option<glam::Vec3>,
+    pub rotation: Option<glam::Quat>,
+    pub scale: Option<glam::Vec3>,
+}
+
 /// 移動-回転-拡大の等長写像変換の定義型です。[ModelNode]のローカル座標として利用します
 ///
 /// TRSとしているのはそれが人間から見て匝瑳市やすさのためで、

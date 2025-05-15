@@ -63,17 +63,13 @@ impl Context {
     }
 
     pub fn shape(&mut self, ui: &mut egui::Ui) {
-        egui::Frame::canvas(ui.style())
-            .fill(BG_COLOR)
-            .show(ui, |ui| {
-                let (rect, response) =
-                    ui.allocate_exact_size(egui::Vec2::new(1280.0, 720.0), egui::Sense::drag());
-                let prop = move_camera_by_pointer(ui, response)
-                    .map(|p| CameraUpdateRequest::new(self.cam_id, p));
-                ui.painter().add(egui_wgpu::Callback::new_paint_callback(
-                    rect,
-                    RenderFrame::new(prop, self.cam_id),
-                ));
-            });
+        let (rect, response) =
+            ui.allocate_exact_size(egui::Vec2::new(1280.0, 720.0), egui::Sense::drag());
+        let prop =
+            move_camera_by_pointer(ui, response).map(|p| CameraUpdateRequest::new(self.cam_id, p));
+        ui.painter().add(egui_wgpu::Callback::new_paint_callback(
+            rect,
+            RenderFrame::new(prop, self.cam_id),
+        ));
     }
 }

@@ -1,9 +1,13 @@
 pub mod uniform {
     use glam::{Vec4, Vec4Swizzles};
 
+    use crate::graph::Trs;
+
     /// カメラ型
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
+    #[derive(
+        Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable, encase::ShaderType,
+    )]
     pub struct Camera {
         pub view_pos: glam::Vec4,
         pub view_proj: glam::Mat4,
@@ -28,13 +32,88 @@ pub mod uniform {
             self.view_proj *= matrix;
         }
     }
+
+    impl Default for Camera {
+        fn default() -> Self {
+            Self {
+                view_pos: glam::Vec4::new(0.0, 0.0, 0.0, 1.0),
+                view_proj: glam::Mat4::IDENTITY,
+            }
+        }
+    }
+
+    /// インスタンスごとの移動とノーマル行列を持つ
+    #[repr(C)]
+    #[derive(
+        Debug, Copy, Clone, PartialEq, encase::ShaderType, bytemuck::Pod, bytemuck::Zeroable,
+    )]
+    pub struct Model {
+        /// グローバルからローカル座標系への変換行列
+        pub matrix: glam::Mat4,
+        /// matrixに合わせた法線の変換行列
+        pub normal: glam::Mat4,
+    }
+
+    impl From<&Trs> for Model {
+        fn from(trs: &Trs) -> Self {
+            let matrix = trs.to_homogeneous();
+            let normal = matrix.inverse().transpose();
+            Self { matrix, normal }
+        }
+    }
+
+    impl From<&glam::Mat4> for Model {
+        fn from(matrix: &glam::Mat4) -> Self {
+            let normal = matrix.inverse().transpose();
+            Self {
+                matrix: *matrix,
+                normal,
+            }
+        }
+    }
+
+    /// gltf brdf(Bidirectional Reflectance Distribution Function)マテリアル情報
+    #[repr(C)]
+    #[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType, bytemuck::Zeroable)]
+    pub struct Material {
+        /// ベースカラー。何もなければ白を指定する
+        pub color: glam::Vec4,
+        /// 金属光沢度[0.0, 1.0]
+        pub metallic: f32,
+        /// 表面粗さ度[0.0, 1.0]
+        pub roughness: f32,
+    }
+
+    impl Material {
+        const MIN: f32 = 0.0;
+        const MAX: f32 = 1.0;
+
+        pub fn set_metallic(&mut self, metallic: f32) {
+            self.metallic = metallic.clamp(Self::MIN, Self::MAX);
+        }
+
+        pub fn set_roughness(&mut self, roughness: f32) {
+            self.roughness = roughness.clamp(Self::MIN, Self::MAX);
+        }
+    }
+
+    impl Default for Material {
+        fn default() -> Self {
+            Self {
+                color: glam::Vec4::new(1.0, 1.0, 1.0, 1.0),
+                metallic: 0.0,
+                roughness: 1.0,
+            }
+        }
+    }
 }
 
 pub mod vertex {
+    use encase::ShaderType;
 
     /// 色付き頂点型
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+    #[derive(Debug, Copy, Clone, PartialEq, ShaderType)]
     pub struct Color3 {
         pub position: glam::Vec3,
         pub color: glam::Vec3,
@@ -57,6 +136,39 @@ pub mod vertex {
     impl Color4 {
         pub const fn new(position: glam::Vec4, color: glam::Vec4) -> Self {
             Self { position, color }
+        }
+    }
+
+    /// 法線付き頂点型
+    #[repr(C)]
+    #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+    pub struct Normal {
+        pub position: glam::Vec3,
+        pub normal: glam::Vec3,
+    }
+
+    impl Normal {
+        pub const fn new(position: glam::Vec3, normal: glam::Vec3) -> Self {
+            Self { position, normal }
+        }
+    }
+
+    /// 法線付き頂点型
+    #[repr(C)]
+    #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+    pub struct NormalColor3 {
+        pub position: glam::Vec3,
+        pub normal: glam::Vec3,
+        pub color: glam::Vec3,
+    }
+
+    impl NormalColor3 {
+        pub const fn new(position: glam::Vec3, normal: glam::Vec3, color: glam::Vec3) -> Self {
+            Self {
+                position,
+                normal,
+                color,
+            }
         }
     }
 }

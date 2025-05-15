@@ -52,13 +52,13 @@ pub mod particle {
     }
 
     impl Context {
-        pub fn new(state: &impl WgpuContext, config: &wgpu::SurfaceConfiguration) -> Self {
+        pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
             let u_w = shader::Window {
                 resolution: [800.0, 600.0].into(),
                 pixel_size: [12.0, 12.0].into(),
             };
-            let uniform = UniformBuffer::new(state.device(), u_w);
-            let mut pipe = Pipeline::new(state.device(), config, &uniform);
+            let uniform = UniformBuffer::new_encase(device, &u_w);
+            let mut pipe = Pipeline::new(device, config, &uniform);
             pipe.set_bg_color(super::BG_COLOR);
 
             // init vertex
@@ -72,7 +72,7 @@ pub mod particle {
                 }
             }
 
-            let vb = VertexBufferSimple::new(state.device(), &verts, Some("Vertex Buffer"));
+            let vb = VertexBufferSimple::new(device, &verts, Some("Vertex Buffer"));
 
             Self {
                 pipe,
@@ -101,7 +101,7 @@ pub mod tutorial {
     use glam::Vec3;
     use nalgebra::{Rotation3, Scale3, Translation3, Vector3};
     use wgpu_shader::{
-        camera::Camera,
+        camera::{Camera, Cams},
         prelude::*,
         tutorial::{shader::VertexInput, *},
         uniform::UniformBuffer,
@@ -110,10 +110,7 @@ pub mod tutorial {
         WgpuContext,
     };
 
-    use crate::{
-        camera::{CameraController, Cams},
-        resources::ModelData,
-    };
+    use crate::{camera::CameraController, resources::ModelData};
 
     use super::BG_COLOR;
 
@@ -192,7 +189,7 @@ pub mod tutorial {
             let cam = Camera::with_aspect(config.width as f32 / config.height as f32);
             let cam = Cams::new(state.device(), cam);
             let cc = CameraController::new(0.01);
-            let ub_light = UniformBuffer::new(state.device(), create_light());
+            let ub_light = UniformBuffer::new_encase(state.device(), &create_light());
 
             let pipe_render = Pipeline::new(state.device(), config, cam.buffer(), &ub_light);
 
@@ -219,7 +216,7 @@ pub mod tutorial {
         fn load_model(state: &impl WgpuContext, path: &Path) -> Model {
             let model_data = ModelData::from_path(path).expect("Failed to load model data");
             let m = model_data.models.first().expect("Model data is empty");
-            let mesh = Self::load_model_inner(state, m);
+            let mesh = Self::load_model_inner(state.device(), m);
             let mat = model_data
                 .materials
                 .first()
@@ -235,7 +232,7 @@ pub mod tutorial {
             Model { mesh, material }
         }
 
-        fn load_model_inner(state: &impl WgpuContext, m: &tobj::Model) -> Mesh {
+        fn load_model_inner(device: &wgpu::Device, m: &tobj::Model) -> Mesh {
             let vertices = 0..m.mesh.positions.len() / 3;
 
             let vertices = vertices
@@ -256,7 +253,7 @@ pub mod tutorial {
                 })
                 .collect::<Vec<_>>();
             let indexies = m.mesh.indices.iter().map(|x| *x as u16).collect::<Vec<_>>();
-            let vb = VertexBuffer::new(state.device(), &vertices, &indexies);
+            let vb = VertexBuffer::new(device, &vertices, &indexies);
 
             Mesh {
                 name: m.name.clone(),
@@ -288,7 +285,7 @@ pub mod tutorial {
                 position: pos,
                 color: Vec3::new(1.0, 1.0, 1.0),
             };
-            self.ub_light.write(state.queue(), &light);
+            self.ub_light.write_encase(state.queue(), &light);
         }
 
         pub fn render(&self, state: &impl WgpuContext) -> Result<(), wgpu::SurfaceError> {
@@ -343,7 +340,7 @@ pub mod unif {
 
     use glam::{Mat4, Vec3};
     use wgpu_shader::{
-        camera::{Camera, FollowCamera},
+        camera::{Camera, Cams, FollowCamera},
         colored, graph, model,
         prelude::*,
         types,
@@ -353,7 +350,7 @@ pub mod unif {
         WgpuContext,
     };
 
-    use crate::camera::{CameraController, Cams};
+    use crate::camera::CameraController;
 
     use super::BG_COLOR;
 
@@ -370,18 +367,6 @@ pub mod unif {
         // 影を描画するためのオブジェクト
         Shadow(FloorShadow),
         Transparent(Drawable),
-    }
-
-    impl ModelNodeImplClone for SlotType {
-        fn clone_object(&self, device: &wgpu::Device) -> Self {
-            match self {
-                SlotType::Draw(d) => SlotType::Draw(d.clone_object(device)),
-                SlotType::Bone => SlotType::Bone,
-                SlotType::FollowCamera(c) => SlotType::FollowCamera(c.clone_object(device)),
-                SlotType::Shadow(s) => SlotType::Shadow(s.clone_object(device)),
-                SlotType::Transparent(t) => SlotType::Transparent(t.clone_object(device)),
-            }
-        }
     }
 
     impl PartialEq for SlotType {
@@ -433,7 +418,7 @@ pub mod unif {
                 matrix: glam::Mat4::IDENTITY,
                 color,
             };
-            let buffer = UniformBuffer::new(device, buffer);
+            let buffer = UniformBuffer::new_encase(device, &buffer);
             let bg = colored::PlUnif::make_draw_unif(device, &buffer);
             Self {
                 color,
@@ -452,26 +437,13 @@ pub mod unif {
                 matrix,
                 color: self.color,
             };
-            self.buffer.write(queue, &buffer);
+            self.buffer.write_encase(queue, &buffer);
         }
 
         fn draw(&self, rp: &mut wgpu::RenderPass<'_>) {
             self.bg.set(rp);
             self.vb.set(rp);
             rp.draw(0..self.vb.len(), 0..1);
-        }
-
-        // オブジェクトの複製
-        fn clone_object(&self, device: &wgpu::Device) -> Self {
-            let buffer = self.buffer.clone_object(device);
-            let bg = colored::PlUnif::make_draw_unif(device, &buffer);
-            let vb = self.vb.clone();
-            Self {
-                color: self.color,
-                buffer,
-                bg,
-                vb,
-            }
         }
     }
 
@@ -490,7 +462,7 @@ pub mod unif {
                 matrix: glam::Mat4::IDENTITY,
                 color: Self::SHADOW_COLLOR,
             };
-            let buffer = UniformBuffer::new(device, buffer);
+            let buffer = UniformBuffer::new_encase(device, &buffer);
             let bg = colored::PlUnif::make_draw_unif(device, &buffer);
             Self {
                 color: Self::SHADOW_COLLOR,
@@ -508,17 +480,13 @@ pub mod unif {
                 matrix,
                 color: self.color,
             };
-            self.buffer.write(queue, &buffer);
+            self.buffer.write_encase(queue, &buffer);
         }
 
         fn draw(&self, rp: &mut wgpu::RenderPass<'_>) {
             self.bg.set(rp);
             self.vb.set(rp);
             rp.draw(0..self.vb.len(), 0..1);
-        }
-
-        fn clone_object(&self, device: &wgpu::Device) -> Self {
-            Self::new(device, self.vb.clone())
         }
     }
 
@@ -538,10 +506,6 @@ pub mod unif {
         fn update(&mut self, queue: &wgpu::Queue, matrix: Mat4) {
             self.cam.update_world_pos(queue, matrix);
         }
-
-        fn clone_object(&self, debice: &wgpu::Device) -> Self {
-            Self::new(self.cam.clone_object(debice))
-        }
     }
 
     impl From<Cams> for CameraObj {
@@ -560,10 +524,7 @@ pub mod unif {
         node: String,
     }
 
-    impl<N> ObjectHistory<N>
-    where
-        N: ModelNodeImplClone,
-    {
+    impl<N> ObjectHistory<N> {
         fn new(node: String) -> Self {
             Self {
                 v: VecDeque::new(),
@@ -589,7 +550,7 @@ pub mod unif {
                         self.v.pop_front();
                     }
                     // 履歴に追加
-                    self.v.push_back(b.clone_object(state.device()));
+                    // self.v.push_back(b.clone_object(state.device()));
                 }
             }
         }
@@ -620,26 +581,26 @@ pub mod unif {
             let cc = CameraController::new(0.05);
             let p_poly = colored::PlUnif::new(
                 state.device(),
-                config,
-                cam.buffer(),
+                config.format,
+                cam.buffer().buffer(),
                 wgpu::PrimitiveTopology::TriangleList,
                 Blend::Replace,
             );
             let p_line = colored::PlUnif::new(
                 state.device(),
-                config,
-                cam.buffer(),
+                config.format,
+                cam.buffer().buffer(),
                 wgpu::PrimitiveTopology::LineList,
                 Blend::Replace,
             );
             let p_poly_trans = colored::PlUnif::new(
                 state.device(),
-                config,
-                cam.buffer(),
+                config.format,
+                cam.buffer().buffer(),
                 wgpu::PrimitiveTopology::TriangleList,
                 Blend::Alpha,
             );
-            let grid_vb = GridDrawer::default().gen(state.device());
+            let grid_vb = GridDrawer::default().gen_color4(state.device());
             let vb = VertexBufferSimple::new(state.device(), &model::cube(1.0), None);
             let frustum_vb = VertexBufferSimple::new(
                 state.device(),

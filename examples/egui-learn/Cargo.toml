@@ -1,0 +1,19 @@
+[package]
+name = "egui-learn"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bytemuck.workspace = true
+eframe = { workspace = true, features = ["wgpu"] }
+egui.workspace = true
+encase = "0.10.0"
+fxhash.workspace = true
+gltf = "1.4.1"
+rfd = "0.15.3"
+wgpu.workspace = true
+wgpu-shader.workspace = true

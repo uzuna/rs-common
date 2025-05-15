@@ -12,12 +12,19 @@
 //! 具体的な例として[Unityのシーン](https://docs.unity3d.com/ja/2022.3/Manual/CreatingScenes.html)やBlenderの[シーン](https://docs.blender.org/manual/ja/latest/scene_layout/index.html)を参照してください。
 
 use fxhash::FxHashMap;
+use glam::Quat;
+
+pub struct TrsUpdate {
+    pub translation: Option<glam::Vec3>,
+    pub rotation: Option<glam::Quat>,
+    pub scale: Option<glam::Vec3>,
+}
 
 /// 移動-回転-拡大の等長写像変換の定義型です。[ModelNode]のローカル座標として利用します
 ///
 /// TRSとしているのはそれが人間から見て匝瑳市やすさのためで、
 /// 最終出力としてはアフィン変換と投資投影に使える[glam::Mat4]を得ることがこの型の目的です
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Trs {
     pub translation: glam::Vec3,
     pub rotation: glam::Quat,
@@ -89,6 +96,37 @@ impl Trs {
             * glam::Mat4::from_quat(self.rotation)
             * glam::Mat4::from_scale(self.scale)
     }
+
+    /// 行列からTRSを復元する。
+    ///
+    /// # 注意
+    /// スケールが1.0ではない場合にクオータニオンは正しく復元できない
+    pub fn from_homogeneous(mat: glam::Mat4) -> Self {
+        let translation = mat.w_axis.truncate();
+        let rotation = glam::Quat::from_mat4(&mat);
+        let scale = glam::Vec3::new(
+            mat.x_axis.length(),
+            mat.y_axis.length(),
+            mat.z_axis.length(),
+        );
+        Self {
+            translation,
+            rotation,
+            scale,
+        }
+    }
+
+    pub fn transform(&self, mat: &glam::Mat4) -> Self {
+        let translation = mat.transform_vector3(self.translation);
+        let q = mat.transform_vector3(self.rotation.xyz());
+        let scale = mat.transform_vector3(self.scale).abs();
+        let rotation = Quat::from_xyzw(q.x, q.y, q.z, self.rotation.w);
+        Self {
+            translation,
+            rotation,
+            scale,
+        }
+    }
 }
 
 impl Default for Trs {
@@ -118,7 +156,19 @@ pub trait ModelNodeImpl {
 
     // 座標更新に関する実装
     fn world(&self) -> glam::Mat4;
+    fn local(&self) -> &Trs;
     fn update_world(&mut self, world: glam::Mat4) -> glam::Mat4;
+}
+
+/// [ModelGraph]がレンダリング順序を計算するのに必要なトレイトです
+/// 3Dでもレンダリング順序を意識するべきシーンがあります。
+/// 例えば半透明オブジェクトやドロップシャドウは通常物体の後に描画する必要があります。
+/// このトレイトでレンダリング順序を守ることで期待される表示結果を得ることができます。
+pub trait ModelNodeImplRenderable {
+    /// レンダリング対象かどうかを返す
+    fn is_renderable(&self) -> bool;
+    /// レンダリング対象のノードの順序比較を行う
+    fn render_ord(&self, other: &Self) -> std::cmp::Ordering;
 }
 
 /// 3Dモデル向けのグラフ構造体でノードとして[ModelNode]を持つことを想定しています
@@ -137,6 +187,8 @@ pub struct ModelGraph<M> {
     names: FxHashMap<String, u64>,
     // ノードIDの自動採番用カウンタ
     counter: u64,
+    // レンダリング対象ノードを、レンダリング順序別に並べたもの
+    renderable_ord: Vec<u64>,
 }
 
 impl<M> Default for ModelGraph<M> {
@@ -152,6 +204,7 @@ impl<M> ModelGraph<M> {
             map: FxHashMap::default(),
             names: FxHashMap::default(),
             counter: 0,
+            renderable_ord: vec![],
         }
     }
 
@@ -176,6 +229,11 @@ impl<M> ModelGraph<M> {
         let id = self.counter;
         self.counter += 1;
         id
+    }
+
+    /// ノードの名前を取得します
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.names.keys().map(|s| s.as_str())
     }
 }
 
@@ -221,7 +279,7 @@ where
             (glam::Mat4::IDENTITY, id)
         };
         // 親子関係に基づいてワールド座標を更新する
-        self.update_world_inner(world, &[id]);
+        self.update_world_inner(world, &[id], &mut |_, _| {});
         Ok(())
     }
 
@@ -251,6 +309,10 @@ where
         Ok(())
     }
 
+    pub fn contains_key(&self, name: &str) -> bool {
+        self.names.contains_key(name)
+    }
+
     /// 任意ノードとその子のワールド座標を更新します。local座標を更新した後はこれを呼んでください
     pub fn update_world(&mut self, name: &str) -> anyhow::Result<()> {
         // 指定されたノードの親のワールド座標を取得して再帰更新をする
@@ -267,18 +329,48 @@ where
                 })
                 .unwrap_or(glam::Mat4::IDENTITY)
         };
-        self.update_world_inner(world, &[node_id]);
+        self.update_world_inner(world, &[node_id], &mut |_, _| {});
         Ok(())
     }
 
     // ワールド座標再帰更新の実装です
-    fn update_world_inner(&mut self, world: glam::Mat4, nodes: &[u64]) {
+    fn update_world_inner(
+        &mut self,
+        world: glam::Mat4,
+        nodes: &[u64],
+        f: &mut impl FnMut(&str, glam::Mat4),
+    ) {
         for node_id in nodes {
             let node = self.map.get_mut(node_id).unwrap();
             let world = node.update_world(world);
+            f(node.name(), world);
             let children = node.children().to_vec();
-            self.update_world_inner(world, &children);
+            self.update_world_inner(world, &children, f);
         }
+    }
+
+    /// 更新結果をコールバックで受け取ります
+    pub fn update_world_with_cb(
+        &mut self,
+        name: &str,
+        f: &mut impl FnMut(&str, glam::Mat4),
+    ) -> anyhow::Result<()> {
+        // 指定されたノードの親のワールド座標を取得して再帰更新をする
+        let Some(node_id) = self.names.get(name) else {
+            return Err(anyhow::anyhow!("not found node {name}"));
+        };
+        let node_id = *node_id;
+        let world = {
+            let node = self.map.get_mut(&node_id).unwrap();
+            node.parent()
+                .map(|id| match self.map.get(&id) {
+                    Some(parent) => parent.world(),
+                    None => glam::Mat4::IDENTITY,
+                })
+                .unwrap_or(glam::Mat4::IDENTITY)
+        };
+        self.update_world_inner(world, &[node_id], f);
+        Ok(())
     }
 
     /// グラフが持つノード数を取得します
@@ -337,12 +429,59 @@ where
             }
         }
     }
+
+    fn traverse_pair_inner(
+        &self,
+        node_id: u64,
+        parent: Option<&M>,
+        f: &mut impl FnMut(Option<&M>, &M) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        let node = self.map.get(&node_id).unwrap();
+        f(parent, node)?;
+        for child in node.children() {
+            self.traverse_pair_inner(*child, Some(node), f)?;
+        }
+        Ok(())
+    }
+
+    /// 親子関係がわかる形でトラバース
+    pub fn traverse_pair(
+        &self,
+        f: &mut impl FnMut(Option<&M>, &M) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        // parentを持たないリストから、全てのノードを表示する
+        let roots = self
+            .map
+            .iter()
+            .filter(|(_, node)| node.parent().is_none())
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        for id in roots {
+            self.traverse_pair_inner(*id, None, f)?;
+        }
+        Ok(())
+    }
 }
 
-/// [ModelNode]に渡すユーザー定義型に実装を期待するトレイトです
-pub trait ModelNodeImplClone {
-    /// オブジェクトをクローンします。コピーにGPUへの操作が伴う場合があるので引数にデバイスを持っています
-    fn clone_object(&self, device: &wgpu::Device) -> Self;
+impl<M> ModelGraph<M>
+where
+    M: ModelNodeImpl + ModelNodeImplRenderable,
+{
+    /// 現在のノードのレンダリング順序を更新します
+    pub fn update_renderable_ord(&mut self) {
+        let mut l = self
+            .map
+            .iter()
+            .filter(|(_, node)| node.is_renderable())
+            .collect::<Vec<_>>();
+        l.sort_by(|(_, a), (_, b)| a.render_ord(b));
+        self.renderable_ord = l.into_iter().map(|(id, _)| *id).collect();
+    }
+
+    /// レンダリング順にノードを取得します
+    pub fn iter_ordered(&self) -> impl Iterator<Item = &M> {
+        self.renderable_ord.iter().filter_map(|id| self.map.get(id))
+    }
 }
 
 /// グラフノードの基本実装です。[Trs]やノード名、親子関係を持ちます
@@ -392,7 +531,7 @@ impl<T> ModelNode<T> {
             children: vec![],
             local,
             world: glam::Mat4::IDENTITY,
-            world_updated: false,
+            world_updated: true,
             value,
         }
     }
@@ -412,6 +551,10 @@ impl<T> ModelNode<T> {
         &mut self.value
     }
 
+    pub fn trs(&self) -> &Trs {
+        &self.local
+    }
+
     /// local座標への可変参照を取得します
     pub fn trs_mut(&mut self) -> &mut Trs {
         &mut self.local
@@ -423,6 +566,11 @@ impl<T> ModelNode<T> {
         let flag = self.world_updated;
         self.world_updated = false;
         flag
+    }
+
+    /// 名前とローカル座標をそのままに、ユーザーデータを複製したノードを作成します
+    pub fn duplicate_with<U>(&self, value: U) -> ModelNode<U> {
+        ModelNode::new(self.name.clone(), self.local.clone(), value)
     }
 }
 
@@ -455,6 +603,10 @@ impl<T> ModelNodeImpl for ModelNode<T> {
         self.world
     }
 
+    fn local(&self) -> &Trs {
+        &self.local
+    }
+
     // グラフノードの親からのワールド座標を受け取り、ローカル座標を掛け算してワールド座標を更新します
     fn update_world(&mut self, world: glam::Mat4) -> glam::Mat4 {
         self.world_updated = true;
@@ -463,20 +615,16 @@ impl<T> ModelNodeImpl for ModelNode<T> {
     }
 }
 
-impl<T> ModelNodeImplClone for ModelNode<T>
+impl<T> ModelNodeImplRenderable for ModelNode<T>
 where
-    T: ModelNodeImplClone,
+    T: ModelNodeImplRenderable,
 {
-    fn clone_object(&self, device: &wgpu::Device) -> Self {
-        Self {
-            name: self.name.clone(),
-            parent: self.parent,
-            children: self.children.clone(),
-            local: self.local.clone(),
-            world: self.world,
-            world_updated: self.world_updated,
-            value: self.value.clone_object(device),
-        }
+    fn is_renderable(&self) -> bool {
+        self.value.is_renderable()
+    }
+
+    fn render_ord(&self, other: &Self) -> std::cmp::Ordering {
+        self.value.render_ord(&other.value)
     }
 }
 
@@ -561,6 +709,37 @@ mod tests {
             assert!(node.world_updated);
         }
 
+        model.get_must_mut("r1").trs_mut().set_translation(Vec3::Y);
+        model.update_world("r1")?;
+
+        for (_, name, _, expect) in names {
+            let node = model.get_node(name).unwrap();
+            let pos = node.world * glam::Vec4::new(0.0, 0.0, 0.0, 1.0);
+            // r1以下は親の影響を受けるので、r1の移動分を加算する
+            if name == "r2" || name == "r3" {
+                assert_eq!(pos.xyz(), expect, "name: {name}");
+            } else {
+                assert_eq!(pos.xyz(), expect + Vec3::Y - Vec3::X, "name: {name}");
+            }
+            assert!(node.world_updated);
+        }
+
         Ok(())
+    }
+
+    #[test]
+    fn test_homogeneous() {
+        let trs = Trs::new(
+            glam::Vec3::new(1.0, 2.0, 3.0),
+            glam::Quat::from_rotation_y(0.5),
+            glam::Vec3::new(1.0, 1.0, 1.0),
+        );
+        let mat = trs.to_homogeneous();
+        let trs2 = Trs::from_homogeneous(mat);
+        assert_eq!(trs.translation, trs2.translation);
+        assert_eq!(trs.scale, trs2.scale);
+        approx::assert_abs_diff_eq!(trs.rotation.x, trs2.rotation.x, epsilon = 0.0001);
+        approx::assert_abs_diff_eq!(trs.rotation.y, trs2.rotation.y, epsilon = 0.0001);
+        approx::assert_abs_diff_eq!(trs.rotation.z, trs2.rotation.z, epsilon = 0.0001);
     }
 }

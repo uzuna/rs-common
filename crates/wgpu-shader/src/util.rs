@@ -80,8 +80,10 @@ impl GridDrawer {
     const GV: f32 = 0.35;
     const GLAY: glam::Vec3 = glam::Vec3::new(Self::GV, Self::GV, Self::GV);
 
-    /// grid頂点データ生成
-    pub fn gen(&self, device: &wgpu::Device) -> VertexBufferSimple<types::vertex::Color4> {
+    // Linesを作成
+    // position: Vec3
+    // color: Vec3
+    fn gen_inner<T>(&self, f: impl Fn(Vec3, Vec3) -> T) -> Vec<T> {
         use glam::Vec3;
         #[allow(unused)]
         enum Axis {
@@ -158,20 +160,39 @@ impl GridDrawer {
         ];
         for (fixed, moving) in loops.iter() {
             for (v, color) in moving.range_vec(self.color_mul, self.color_gray) {
-                let color = color.extend(1.0);
                 let (min, max) = fixed.min_max_vec();
                 let min = v + min;
                 let max = v + max;
-                lines.push(types::vertex::Color4 {
-                    position: min.extend(1.0),
-                    color,
-                });
-                lines.push(types::vertex::Color4 {
-                    position: max.extend(1.0),
-                    color,
-                });
+
+                let start = f(min, color);
+                let end = f(max, color);
+                lines.push(start);
+                lines.push(end);
             }
         }
-        VertexBufferSimple::new(device, &lines, Some("Grid Lines"))
+        lines
+    }
+
+    /// grid頂点データ生成
+    pub fn gen_color4(&self, device: &wgpu::Device) -> VertexBufferSimple<types::vertex::Color4> {
+        use glam::Vec4;
+        let verts = self.gen_inner(|v, c| types::vertex::Color4 {
+            position: Vec4::new(v.x, v.y, v.z, 1.0),
+            color: Vec4::new(c.x, c.y, c.z, 1.0),
+        });
+        VertexBufferSimple::new(device, &verts, Some("Grid"))
+    }
+
+    /// grid頂点データ生成
+    pub fn gen_normal_color3(
+        &self,
+        device: &wgpu::Device,
+    ) -> VertexBufferSimple<types::vertex::NormalColor3> {
+        let verts = self.gen_inner(|v, c| types::vertex::NormalColor3 {
+            position: Vec3::new(v.x, v.y, v.z),
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            color: Vec3::new(c.x, c.y, c.z),
+        });
+        VertexBufferSimple::new(device, &verts, Some("Grid"))
     }
 }

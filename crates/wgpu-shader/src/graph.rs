@@ -728,7 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn test_homogeourneous() {
+    fn test_homogeneous() {
         let trs = Trs::new(
             glam::Vec3::new(1.0, 2.0, 3.0),
             glam::Quat::from_rotation_y(0.5),

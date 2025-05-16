@@ -11,9 +11,11 @@ anyhow.workspace = true
 bytemuck.workspace = true
 eframe = { workspace = true, features = ["wgpu"] }
 egui.workspace = true
+egui_plot = "0.32.1"
 encase = "0.10.0"
 fxhash.workspace = true
 gltf = "1.4.1"
+rand.workspace = true
 rfd = "0.15.3"
 wgpu.workspace = true
 wgpu-shader.workspace = true

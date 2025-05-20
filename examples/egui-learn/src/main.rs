@@ -1,5 +1,8 @@
+use std::collections::VecDeque;
+
 use app::{Context, BG_COLOR};
-use egui::{Color32, CornerRadius};
+use egui::{Color32, CornerRadius, NumExt, Response};
+use egui_plot::{Legend, Line, Plot, PlotPoints};
 
 mod app;
 mod gltf_view;
@@ -57,6 +60,8 @@ struct CustomApp {
     state: State,
     ctx: Context,
     viewapp: gltf_view::ViewApp,
+
+    line_demo: LineDemo,
 }
 
 impl CustomApp {
@@ -72,6 +77,7 @@ impl CustomApp {
             state: State::new(),
             ctx,
             viewapp: gltf_view::ViewApp::new(),
+            line_demo: LineDemo::default(),
         }
     }
 }
@@ -110,6 +116,13 @@ impl eframe::App for CustomApp {
                 self.ctx.custom_painting(ui);
             });
 
+        egui::Window::new("plot test")
+            .default_width(300.0)
+            .default_height(300.0)
+            .resizable([true, false])
+            .scroll(false)
+            .show(ctx, |ui| self.line_demo.ui(ui));
+
         self.viewapp.update(ctx, frame);
 
         if let Some(title) = self.state.fetch_title() {
@@ -117,5 +130,67 @@ impl eframe::App for CustomApp {
         }
 
         // animation
+    }
+}
+
+struct LineDemo {
+    animate: bool,
+    time: f64,
+    show_axes: bool,
+    show_grid: bool,
+    plot_data: VecDeque<(f64, f64)>,
+}
+
+impl Default for LineDemo {
+    fn default() -> Self {
+        Self {
+            animate: true,
+            time: 0.0,
+            show_axes: true,
+            show_grid: true,
+            plot_data: VecDeque::new(),
+        }
+    }
+}
+
+impl LineDemo {
+    const LEN: usize = 256;
+    fn rand<'a>(&self) -> Line<'a> {
+        Line::new(
+            "random + sin(time)",
+            PlotPoints::from_iter(self.plot_data.iter().map(|(x, y)| {
+                let x = *x;
+                let y = *y;
+                [x, y]
+            })),
+        )
+        .color(Color32::from_rgb(100, 150, 250))
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) -> Response {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.animate, "Animate");
+            ui.checkbox(&mut self.show_axes, "Show Axes");
+            ui.checkbox(&mut self.show_grid, "Show Grid");
+        });
+        if self.animate {
+            ui.ctx().request_repaint();
+            self.time += ui.input(|i| i.unstable_dt).at_most(1.0 / 30.0) as f64;
+            if self.plot_data.len() > Self::LEN {
+                self.plot_data.pop_front();
+            }
+            self.plot_data
+                .push_back((self.time, rand::random::<f64>() + self.time.sin()));
+        };
+
+        let plot = Plot::new("lines_demo")
+            .legend(Legend::default())
+            .show_axes(self.show_axes)
+            .show_grid(self.show_grid)
+            .center_y_axis(true);
+        plot.show(ui, |plot_ui| {
+            plot_ui.line(self.rand());
+        })
+        .response
     }
 }

@@ -1,0 +1,7 @@
+package component:wasm-plugin-hello;
+
+/// An example world for the component to target.
+world example {
+    export hello-world: func() -> string;
+    export add: func(a: u32, b: u32) -> u32;
+}

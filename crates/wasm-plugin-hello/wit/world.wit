@@ -1,7 +1,23 @@
 package component:wasm-plugin-hello;
 
+interface types {
+    record pos2 {
+        x: f32,
+        y: f32,
+    }
+
+    resource setter {
+        new: static func() -> setter;
+        set: func(p: pos2);
+        get: func() -> pos2;
+    }
+}
+
+
 /// An example world for the component to target.
 world example {
+    export types;
+
     export hello-world: func() -> string;
     export add: func(a: u32, b: u32) -> u32;
 }

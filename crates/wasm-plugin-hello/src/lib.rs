@@ -1,8 +1,54 @@
 #[allow(warnings)]
 mod bindings;
 
-use bindings::Guest;
+use std::cell::RefCell;
 
+use bindings::{
+    exports::component::wasm_plugin_hello::types::{
+        Guest as SetterTrait, GuestSetter, Pos2, Setter,
+    },
+    Guest,
+};
+
+struct HostSetter {
+    value: Pos2,
+}
+
+impl HostSetter {
+    fn new() -> Self {
+        HostSetter {
+            value: Pos2 { x: 0.0, y: 0.0 },
+        }
+    }
+
+    fn set(&mut self, p: Pos2) {
+        self.value = p;
+    }
+
+    fn get(&self) -> Pos2 {
+        self.value
+    }
+}
+
+struct GuestSetterImpl {
+    inner: RefCell<HostSetter>,
+}
+
+impl GuestSetter for GuestSetterImpl {
+    fn new() -> Setter {
+        let inner = HostSetter::new();
+        let inner = RefCell::new(inner);
+        Setter::new(GuestSetterImpl { inner })
+    }
+
+    fn set(&self, p: Pos2) {
+        self.inner.borrow_mut().set(p);
+    }
+
+    fn get(&self) -> Pos2 {
+        self.inner.borrow().get()
+    }
+}
 struct Component;
 
 impl Guest for Component {
@@ -14,6 +60,10 @@ impl Guest for Component {
     fn add(a: u32, b: u32) -> u32 {
         a + b
     }
+}
+
+impl SetterTrait for Component {
+    type Setter = GuestSetterImpl;
 }
 
 bindings::export!(Component with_types_in bindings);

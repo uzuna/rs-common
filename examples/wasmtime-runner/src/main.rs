@@ -1,6 +1,10 @@
 use clap::Parser;
+use exports::component::wasm_plugin_hello::types::Pos2;
 use std::{error::Error, path::PathBuf};
-use wasmtime::{component::Component, *};
+use wasmtime::{
+    component::{Component, ResourceAny},
+    *,
+};
 use wasmtime_wasi::{
     p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView},
     ResourceTable,
@@ -59,6 +63,34 @@ impl WasiView for Preview2Host {
     }
 }
 
+// インスタンスを作るタイプは、関数呼び出しと違ってインスタンスを使い回さなければならない
+struct SetterWrap {
+    instance: Example,
+    setter: ResourceAny,
+}
+
+impl SetterWrap {
+    fn get<T>(&self, store: &mut Store<T>) -> Result<Pos2, Box<dyn Error>> {
+        let g = self.instance.component_wasm_plugin_hello_types();
+        let caller = g.setter();
+        let res = caller.call_get(store, self.setter)?;
+        Ok(res)
+    }
+
+    fn set<T>(&self, store: &mut Store<T>, p: Pos2) -> Result<(), Box<dyn Error>> {
+        let g = self.instance.component_wasm_plugin_hello_types();
+        let caller = g.setter();
+        caller.call_set(store, self.setter, p)?;
+        Ok(())
+    }
+
+    // 自動でドロップされない
+    fn drop<T>(self, store: &mut Store<T>) -> Result<(), Box<dyn Error>> {
+        self.setter.resource_drop(store)?;
+        Ok(())
+    }
+}
+
 struct WasmComponent<T> {
     store: Store<T>,
     component: Component,
@@ -89,6 +121,19 @@ impl<T> WasmComponent<T> {
         let e = Example::instantiate(&mut self.store, &self.component, &self.linker)?;
         let res = e.call_hello_world(&mut self.store)?;
         Ok(res)
+    }
+
+    fn setter(&mut self) -> Result<SetterWrap, Box<dyn Error>> {
+        let e = Example::instantiate(&mut self.store, &self.component, &self.linker)?;
+        let g = e.component_wasm_plugin_hello_types();
+        let caller = g.setter();
+        let setter = caller.call_new(&mut self.store)?;
+        let sw = SetterWrap {
+            instance: e,
+            setter,
+        };
+
+        Ok(sw)
     }
 }
 
@@ -122,6 +167,16 @@ fn run_on_wasi(engine: &Engine, byte: &[u8]) -> Result<(), Box<dyn Error>> {
         println!("add({i}+{i}) = {result}");
     }
 
+    let sw = c.setter()?;
+    let res = sw.get(&mut c.store)?;
+    println!("setter.get() = {:?}", res);
+    sw.set(&mut c.store, Pos2 { x: 1.0, y: 2.0 })?;
+    // Resourceのインスタンスが生きているときに別インスタンスを作ることに問題はない
+    let _ = c.call_hello_world()?;
+    let get = sw.get(&mut c.store)?;
+    println!("setter.get() = {:?}", get);
+    sw.drop(&mut c.store)?;
+
     Ok(())
 }
 
@@ -135,6 +190,15 @@ fn run_on_wasi_preview2(engine: &Engine, byte: &[u8]) -> Result<(), Box<dyn Erro
         let result = c.call_add(i, i)?;
         println!("add({i}+{i}) = {result}");
     }
+
+    let sw = c.setter()?;
+    let res = sw.get(&mut c.store)?;
+    println!("setter.get() = {:?}", res);
+    sw.set(&mut c.store, Pos2 { x: 1.0, y: 2.0 })?;
+    let _ = c.call_hello_world()?;
+    let get = sw.get(&mut c.store)?;
+    println!("setter.get() = {:?}", get);
+    sw.drop(&mut c.store)?;
 
     Ok(())
 }

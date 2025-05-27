@@ -2,7 +2,10 @@
 ## Build
 
 ```sh
-cargo component build --target wasm32-wasip2 --release
+# WASIなし
+cargo component build -p wasm-plugin-hello --target wasm32-unknown-unknown --release
+# WASI Preview2対応バイナリ
+cargo component build -p wasm-plugin-hello --target wasm32-wasip2 --release
 ```
 
 ## Run by wasmtime

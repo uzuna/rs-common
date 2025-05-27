@@ -1,0 +1,12 @@
+[package]
+name = "wasmtime-runner"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+clap = { version = "4.5.38", features = ["derive"] }
+wasmtime = "33.0.0"
+wasmtime-wasi = "33.0.0"

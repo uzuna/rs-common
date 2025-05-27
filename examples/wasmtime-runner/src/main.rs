@@ -111,15 +111,9 @@ impl<T> WasmComponent<T> {
         })
     }
 
-    fn call_add(&mut self, a: u32, b: u32) -> Result<u32, Box<dyn Error>> {
-        let e = Example::instantiate(&mut self.store, &self.component, &self.linker)?;
-        let res = e.call_add(&mut self.store, a, b)?;
-        Ok(res)
-    }
-
-    fn call_hello_world(&mut self) -> Result<String, Box<dyn Error>> {
-        let e = Example::instantiate(&mut self.store, &self.component, &self.linker)?;
-        let res = e.call_hello_world(&mut self.store)?;
+    fn instance(&mut self) -> Result<Example, Box<dyn Error>> {
+        // コンポーネントをインスタンス化
+        let res = Example::instantiate(&mut self.store, &self.component, &self.linker)?;
         Ok(res)
     }
 
@@ -158,36 +152,23 @@ impl WasmComponent<Preview2Host> {
 
 // WASIなし = storeなし
 fn run_on_wasi(engine: &Engine, byte: &[u8]) -> Result<(), Box<dyn Error>> {
-    let mut c = WasmComponent::new_unknown(engine, byte, ())?;
-    let res = c.call_hello_world()?;
-    println!("Hello from WASI Preview1: {}", res);
-
-    for i in 0..5 {
-        let result = c.call_add(i, i)?;
-        println!("add({i}+{i}) = {result}");
-    }
-
-    let sw = c.setter()?;
-    let res = sw.get(&mut c.store)?;
-    println!("setter.get() = {:?}", res);
-    sw.set(&mut c.store, Pos2 { x: 1.0, y: 2.0 })?;
-    // Resourceのインスタンスが生きているときに別インスタンスを作ることに問題はない
-    let _ = c.call_hello_world()?;
-    let get = sw.get(&mut c.store)?;
-    println!("setter.get() = {:?}", get);
-    sw.drop(&mut c.store)?;
-
-    Ok(())
+    let c = WasmComponent::new_unknown(engine, byte, ())?;
+    run_sequence(c)
 }
 
 // WASI Preview2の実装で実行する関数
 fn run_on_wasi_preview2(engine: &Engine, byte: &[u8]) -> Result<(), Box<dyn Error>> {
-    let mut c = WasmComponent::new_p2(engine, byte)?;
-    let res = c.call_hello_world()?;
-    println!("Hello from WASI Preview2: {}", res);
+    let c = WasmComponent::new_p2(engine, byte)?;
+    run_sequence(c)
+}
+
+fn run_sequence<T>(mut c: WasmComponent<T>) -> Result<(), Box<dyn Error>> {
+    let e = c.instance()?;
+    let res = e.call_hello_world(&mut c.store)?;
+    println!("Hello from WASI Preview1: {}", res);
 
     for i in 0..5 {
-        let result = c.call_add(i, i)?;
+        let result = e.call_add(&mut c.store, i, i)?;
         println!("add({i}+{i}) = {result}");
     }
 
@@ -195,7 +176,6 @@ fn run_on_wasi_preview2(engine: &Engine, byte: &[u8]) -> Result<(), Box<dyn Erro
     let res = sw.get(&mut c.store)?;
     println!("setter.get() = {:?}", res);
     sw.set(&mut c.store, Pos2 { x: 1.0, y: 2.0 })?;
-    let _ = c.call_hello_world()?;
     let get = sw.get(&mut c.store)?;
     println!("setter.get() = {:?}", get);
     sw.drop(&mut c.store)?;

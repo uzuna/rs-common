@@ -22,6 +22,9 @@ enum WasiSupport {
     Preview2,
 }
 
+// crate rootからの相対パスで指定
+wasmtime::component::bindgen!(in "../../crates/wasm-plugin-hello/wit/world.wit");
+
 /// WASIリンクに必要なトレイと実装構造体
 ///
 /// wasip2でコンパイルした場合、実行環境は[WASIp2 interface](https://docs.wasmtime.dev/api/wasmtime_wasi/p2/index.html)を実装している必要がある
@@ -63,16 +66,6 @@ struct WasmComponent<T> {
 }
 
 impl<T> WasmComponent<T> {
-    fn get_func(&mut self, name: &str) -> Result<wasmtime::component::Func, wasmtime::Error> {
-        let instance = self.linker.instantiate(&mut self.store, &self.component)?;
-        instance
-            .get_func(&mut self.store, name)
-            .ok_or(wasmtime::Error::msg(format!(
-                "Function `{}` not found in component",
-                name
-            )))
-    }
-
     // WASIなしで実行する場合のコンポーネントを生成
     fn new_unknown(engine: &Engine, byte: &[u8], data: T) -> Result<Self, Box<dyn Error>> {
         // WASIなしで実行する場合の設定
@@ -84,6 +77,18 @@ impl<T> WasmComponent<T> {
             component,
             linker,
         })
+    }
+
+    fn call_add(&mut self, a: u32, b: u32) -> Result<u32, Box<dyn Error>> {
+        let e = Example::instantiate(&mut self.store, &self.component, &self.linker)?;
+        let res = e.call_add(&mut self.store, a, b)?;
+        Ok(res)
+    }
+
+    fn call_hello_world(&mut self) -> Result<String, Box<dyn Error>> {
+        let e = Example::instantiate(&mut self.store, &self.component, &self.linker)?;
+        let res = e.call_hello_world(&mut self.store)?;
+        Ok(res)
     }
 }
 
@@ -109,11 +114,11 @@ impl WasmComponent<Preview2Host> {
 // WASIなし = storeなし
 fn run_on_wasi(engine: &Engine, byte: &[u8]) -> Result<(), Box<dyn Error>> {
     let mut c = WasmComponent::new_unknown(engine, byte, ())?;
-    let res = call_hello_world(&mut c)?;
+    let res = c.call_hello_world()?;
     println!("Hello from WASI Preview1: {}", res);
 
     for i in 0..5 {
-        let result = call_add_func(&mut c, i, i)?;
+        let result = c.call_add(i, i)?;
         println!("add({i}+{i}) = {result}");
     }
 
@@ -123,44 +128,15 @@ fn run_on_wasi(engine: &Engine, byte: &[u8]) -> Result<(), Box<dyn Error>> {
 // WASI Preview2の実装で実行する関数
 fn run_on_wasi_preview2(engine: &Engine, byte: &[u8]) -> Result<(), Box<dyn Error>> {
     let mut c = WasmComponent::new_p2(engine, byte)?;
-    let res = call_hello_world(&mut c)?;
+    let res = c.call_hello_world()?;
     println!("Hello from WASI Preview2: {}", res);
 
     for i in 0..5 {
-        let result = call_add_func(&mut c, i, i)?;
+        let result = c.call_add(i, i)?;
         println!("add({i}+{i}) = {result}");
     }
 
     Ok(())
-}
-
-// hello-world関数を呼び出す
-fn call_hello_world<T>(wc: &mut WasmComponent<T>) -> Result<String, Box<dyn Error>> {
-    let func = wc.get_func("hello-world")?;
-    let mut result = [wasmtime::component::Val::String("".into())];
-    func.call(&mut wc.store, &[], &mut result)?;
-    match &result[0] {
-        wasmtime::component::Val::String(s) => Ok(s.to_owned()),
-        _ => unreachable!("Expected a string result"),
-    }
-}
-
-// add関数を呼び出す
-fn call_add_func<T>(wc: &mut WasmComponent<T>, a: u32, b: u32) -> Result<u32, Box<dyn Error>> {
-    let func = wc.get_func("add")?;
-    let mut result = [wasmtime::component::Val::U32(0)];
-    func.call(
-        &mut wc.store,
-        &[
-            wasmtime::component::Val::U32(a),
-            wasmtime::component::Val::U32(b),
-        ],
-        &mut result,
-    )?;
-    match result[0] {
-        wasmtime::component::Val::U32(res) => Ok(res),
-        _ => unreachable!("Expected a u32 result"),
-    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {

@@ -60,6 +60,10 @@ impl Guest for Component {
     fn add(a: u32, b: u32) -> u32 {
         a + b
     }
+
+    fn sum(l: Vec<u32>) -> u32 {
+        l.iter().sum()
+    }
 }
 
 impl SetterTrait for Component {

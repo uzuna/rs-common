@@ -35,9 +35,19 @@ pub unsafe fn _export_add_cabi<T: Guest>(arg0: i32, arg1: i32) -> i32 {
     let result0 = T::add(arg0 as u32, arg1 as u32);
     _rt::as_i32(result0)
 }
+#[doc(hidden)]
+#[allow(non_snake_case)]
+pub unsafe fn _export_sum_cabi<T: Guest>(arg0: *mut u8, arg1: usize) -> i32 {
+    #[cfg(target_arch = "wasm32")]
+    _rt::run_ctors_once();
+    let len0 = arg1;
+    let result1 = T::sum(_rt::Vec::from_raw_parts(arg0.cast(), len0, len0));
+    _rt::as_i32(result1)
+}
 pub trait Guest {
     fn hello_world() -> _rt::String;
     fn add(a: u32, b: u32) -> u32;
+    fn sum(l: _rt::Vec<u32>) -> u32;
 }
 #[doc(hidden)]
 macro_rules! __export_world_example_cabi {
@@ -49,7 +59,9 @@ macro_rules! __export_world_example_cabi {
         mut u8,) { unsafe { $($path_to_types)*:: __post_return_hello_world::<$ty > (arg0)
         } } #[unsafe (export_name = "add")] unsafe extern "C" fn export_add(arg0 : i32,
         arg1 : i32,) -> i32 { unsafe { $($path_to_types)*:: _export_add_cabi::<$ty >
-        (arg0, arg1) } } };
+        (arg0, arg1) } } #[unsafe (export_name = "sum")] unsafe extern "C" fn
+        export_sum(arg0 : * mut u8, arg1 : usize,) -> i32 { unsafe { $($path_to_types)*::
+        _export_sum_cabi::<$ty > (arg0, arg1) } } };
     };
 }
 #[doc(hidden)]
@@ -408,6 +420,7 @@ mod _rt {
             self as i32
         }
     }
+    pub use alloc_crate::vec::Vec;
     use core::fmt;
     use core::marker;
     use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
@@ -539,16 +552,16 @@ pub(crate) use __export_example_impl as export;
 #[unsafe(link_section = "component-type:wit-bindgen:0.41.0:component:wasm-plugin-hello:example:encoded world")]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 388] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x86\x02\x01A\x02\x01\
-A\x06\x01@\0\0s\x04\0\x0bhello-world\x01\0\x01@\x02\x01ay\x01by\0y\x04\0\x03add\x01\
-\x01\x01B\x0b\x01r\x02\x01xv\x01yv\x04\0\x04pos2\x03\0\0\x04\0\x06setter\x03\x01\
-\x01i\x02\x01@\0\0\x03\x04\0\x12[static]setter.new\x01\x04\x01h\x02\x01@\x02\x04\
-self\x05\x01p\x01\x01\0\x04\0\x12[method]setter.set\x01\x06\x01@\x01\x04self\x05\
-\0\x01\x04\0\x12[method]setter.get\x01\x07\x04\0!component:wasm-plugin-hello/typ\
-es\x05\x02\x04\0#component:wasm-plugin-hello/example\x04\0\x0b\x0d\x01\0\x07exam\
-ple\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10\
-wit-bindgen-rust\x060.41.0";
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 407] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x99\x02\x01A\x02\x01\
+A\x09\x01@\0\0s\x04\0\x0bhello-world\x01\0\x01@\x02\x01ay\x01by\0y\x04\0\x03add\x01\
+\x01\x01py\x01@\x01\x01l\x02\0y\x04\0\x03sum\x01\x03\x01B\x0b\x01r\x02\x01xv\x01\
+yv\x04\0\x04pos2\x03\0\0\x04\0\x06setter\x03\x01\x01i\x02\x01@\0\0\x03\x04\0\x12\
+[static]setter.new\x01\x04\x01h\x02\x01@\x02\x04self\x05\x01p\x01\x01\0\x04\0\x12\
+[method]setter.set\x01\x06\x01@\x01\x04self\x05\0\x01\x04\0\x12[method]setter.ge\
+t\x01\x07\x04\0!component:wasm-plugin-hello/types\x05\x04\x04\0#component:wasm-p\
+lugin-hello/example\x04\0\x0b\x0d\x01\0\x07example\x03\0\0\0G\x09producers\x01\x0c\
+processed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

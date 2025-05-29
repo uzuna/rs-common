@@ -172,6 +172,9 @@ fn run_sequence<T>(mut c: WasmComponent<T>) -> Result<(), Box<dyn Error>> {
         println!("add({i}+{i}) = {result}");
     }
 
+    let s = e.call_sum(&mut c.store, &[1, 2, 3, 4, 5])?;
+    println!("sum([1, 2, 3, 4, 5]) = {}", s);
+
     let sw = c.setter()?;
     let res = sw.get(&mut c.store)?;
     println!("setter.get() = {:?}", res);

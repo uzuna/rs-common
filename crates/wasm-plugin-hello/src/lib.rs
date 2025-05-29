@@ -4,8 +4,9 @@ mod bindings;
 use std::cell::RefCell;
 
 use bindings::{
-    exports::component::wasm_plugin_hello::types::{
-        Guest as SetterTrait, GuestSetter, GuestSummer, Pos2, Setter, Summer,
+    exports::component::wasm_plugin_hello::{
+        filter::{self, Guest as FilterTrait, GuestFir},
+        types::{Guest as SetterTrait, GuestSetter, GuestSummer, Pos2, Setter, Summer},
     },
     Guest,
 };
@@ -110,6 +111,34 @@ impl GuestSummer for GuestSummerImpl {
     }
 }
 
+struct GuestFirImpl {
+    inner: RefCell<dsp::Fir>,
+}
+
+impl GuestFir for GuestFirImpl {
+    fn new(tap: Vec<f32>) -> filter::Fir {
+        let inner = dsp::Fir::new(tap);
+        filter::Fir::new(GuestFirImpl {
+            inner: RefCell::new(inner),
+        })
+    }
+
+    fn new_moving(n: u32) -> filter::Fir {
+        let inner = dsp::Fir::new_moving(n as usize); // Example: 3-tap moving average
+        filter::Fir::new(GuestFirImpl {
+            inner: RefCell::new(inner),
+        })
+    }
+
+    fn filter(&self, input: f32) -> f32 {
+        self.inner.borrow_mut().filter(input)
+    }
+
+    fn filter_vec(&self, input: Vec<f32>) -> Vec<f32> {
+        self.inner.borrow_mut().filter_vec(&input)
+    }
+}
+
 struct Component;
 
 impl Guest for Component {
@@ -142,6 +171,10 @@ impl Guest for Component {
 impl SetterTrait for Component {
     type Setter = GuestSetterImpl;
     type Summer = GuestSummerImpl;
+}
+
+impl FilterTrait for Component {
+    type Fir = GuestFirImpl;
 }
 
 bindings::export!(Component with_types_in bindings);

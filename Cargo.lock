@@ -5522,6 +5522,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "criterion",
+ "dsp",
  "wasmtime",
  "wit-bindgen-rt 0.42.1",
 ]

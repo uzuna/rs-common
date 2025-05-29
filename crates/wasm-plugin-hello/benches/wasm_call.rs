@@ -139,5 +139,56 @@ fn benchmark_calculate_add(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, benchmark_calculate_add);
+fn benchmark_filter(c: &mut Criterion) {
+    let wasm_binaly =
+        std::fs::read("../../target/wasm32-unknown-unknown/release/wasm_plugin_hello.wasm")
+            .expect("Failed to read wasm file");
+    // wasmtimeのエンジンを初期化
+    let engine = Engine::default();
+    let mut ctx = WasmComponent::new_unknown(&engine, &wasm_binaly, ())
+        .expect("Failed to create WasmComponent");
+    let instance = ctx.instance().expect("Failed to instantiate component");
+
+    let filter = instance.component_wasm_plugin_hello_filter().fir();
+    let resource = filter
+        .call_new_moving(&mut ctx.store, 8)
+        .expect("Failed to call new_moving function on fir resource");
+
+    let mut r_fir = dsp::Fir::new_moving(8);
+
+    let list = (0..1000)
+        .map(|i| (i as f32 * 0.01).sin())
+        .collect::<Vec<f32>>();
+
+    c.bench_function("Rust filter", |b| {
+        b.iter(|| {
+            for &x in &list {
+                r_fir.filter(x);
+            }
+        })
+    });
+
+    c.bench_function("Wasm filter", |b| {
+        b.iter(|| {
+            for &x in &list {
+                filter
+                    .call_filter(&mut ctx.store, resource, x)
+                    .expect("Failed to call filter function on fir");
+            }
+        })
+    });
+
+    // まとめて計算することで早くなるか?
+    c.bench_function("Rust filter_vec", |b| b.iter(|| r_fir.filter_vec(&list)));
+
+    c.bench_function("Wasm filter_vec", |b| {
+        b.iter(|| {
+            filter
+                .call_filter_vec(&mut ctx.store, resource, &list)
+                .expect("Failed to call filter_vec function on fir")
+        })
+    });
+}
+
+criterion_group!(benches, benchmark_calculate_add, benchmark_filter);
 criterion_main!(benches);

@@ -20,6 +20,7 @@ byteorder = "1.5"
 cfg-if = "1.0.0"
 clap = "4.5.38"
 criterion = "0.5.1"
+dsp = { path = "crates/dsp" }
 eframe = "0.31.1"
 egui = "0.31.1"
 fs-err = "3.1.0"

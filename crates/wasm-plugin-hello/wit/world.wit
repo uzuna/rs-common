@@ -21,10 +21,20 @@ interface types {
     }
 }
 
+interface filter {
+    resource fir {
+        new: static func(tap: list<f32>) -> fir;
+        new-moving: static func(n: u32) -> fir;
+        filter: func(input: f32) -> f32;
+        filter-vec: func(input: list<f32>) -> list<f32>;
+    }
+}
+
 
 /// An example world for the component to target.
 world example {
     export types;
+    export filter;
 
     export hello-world: func() -> string;
     export add: func(a: u32, b: u32) -> u32;

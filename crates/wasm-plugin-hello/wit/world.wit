@@ -1,0 +1,44 @@
+package component:wasm-plugin-hello;
+
+interface types {
+    record pos2 {
+        x: f32,
+        y: f32,
+    }
+
+    resource setter {
+        new: static func() -> setter;
+        set: func(p: pos2);
+        get: func() -> pos2;
+    }
+
+    resource summer {
+        new: static func() -> summer;
+        set-val: func(l: list<u32>);
+        set-key: func(k: string);
+        sum: func() -> u32;
+        get-key: func() -> string;
+    }
+}
+
+interface filter {
+    resource fir {
+        new: static func(tap: list<f32>) -> fir;
+        new-moving: static func(n: u32) -> fir;
+        filter: func(input: f32) -> f32;
+        filter-vec: func(input: list<f32>) -> list<f32>;
+    }
+}
+
+
+/// An example world for the component to target.
+world example {
+    export types;
+    export filter;
+
+    export hello-world: func() -> string;
+    export add: func(a: u32, b: u32) -> u32;
+    export sum: func(l: list<u32>) -> u32;
+    export loop-sum: func(n: u32) -> u32;
+    export generate-string: func(n: u32) -> string;
+}

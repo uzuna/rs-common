@@ -87,6 +87,21 @@ fn benchmark_calculate_add(c: &mut Criterion) {
         })
     });
 
+    let summer = instance.component_wasm_plugin_hello_types().summer();
+    let r = summer
+        .call_new(&mut ctx.store)
+        .expect("Failed to call new function on summer resource");
+    summer
+        .call_set_val(&mut ctx.store, r, &list)
+        .expect("Failed to call set function on summer");
+    c.bench_function(&format!("Wasm list_sum({len}) in Resource"), |b| {
+        b.iter(|| {
+            summer
+                .call_sum(&mut ctx.store, r)
+                .expect("Failed to call sum function on summer")
+        })
+    });
+
     c.bench_function(&format!("Rust loop_sum({len})"), |b| {
         b.iter(|| rust_loop_sum(len))
     });
@@ -109,6 +124,17 @@ fn benchmark_calculate_add(c: &mut Criterion) {
             instance
                 .call_generate_string(&mut ctx.store, len)
                 .expect("Failed to call generate_string function")
+        })
+    });
+
+    summer
+        .call_set_key(&mut ctx.store, r, "UTY3z2qNfWuWvV5VoFxwpZvymfAxZwyt")
+        .expect("Failed to call set_key function on summer");
+    c.bench_function(&format!("Wasm generate_string({len}) return only"), |b| {
+        b.iter(|| {
+            summer
+                .call_get_key(&mut ctx.store, r)
+                .expect("Failed to call get_key function on summer")
         })
     });
 }

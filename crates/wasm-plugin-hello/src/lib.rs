@@ -5,7 +5,7 @@ use std::cell::RefCell;
 
 use bindings::{
     exports::component::wasm_plugin_hello::types::{
-        Guest as SetterTrait, GuestSetter, Pos2, Setter,
+        Guest as SetterTrait, GuestSetter, GuestSummer, Pos2, Setter, Summer,
     },
     Guest,
 };
@@ -49,6 +49,67 @@ impl GuestSetter for GuestSetterImpl {
         self.inner.borrow().get()
     }
 }
+
+struct HostSummer {
+    k: String,
+    v: Vec<u32>,
+}
+
+impl HostSummer {
+    fn new() -> Self {
+        HostSummer {
+            k: String::new(),
+            v: Vec::new(),
+        }
+    }
+
+    fn set_val(&mut self, a: Vec<u32>) {
+        self.v = a;
+    }
+
+    fn set_key(&mut self, k: String) {
+        self.k = k;
+    }
+
+    fn sum(&self) -> u32 {
+        self.v.iter().sum()
+    }
+
+    fn get_key(&self) -> &str {
+        &self.k
+    }
+}
+
+struct GuestSummerImpl {
+    inner: RefCell<HostSummer>,
+}
+
+impl GuestSummer for GuestSummerImpl {
+    fn new() -> Summer {
+        let inner = HostSummer::new();
+        let s = GuestSummerImpl {
+            inner: RefCell::new(inner),
+        };
+        Summer::new(s)
+    }
+
+    fn set_val(&self, l: Vec<u32>) {
+        self.inner.borrow_mut().set_val(l);
+    }
+
+    fn set_key(&self, k: String) {
+        self.inner.borrow_mut().set_key(k);
+    }
+
+    fn sum(&self) -> u32 {
+        self.inner.borrow().sum()
+    }
+
+    fn get_key(&self) -> String {
+        self.inner.borrow().get_key().to_string()
+    }
+}
+
 struct Component;
 
 impl Guest for Component {
@@ -80,6 +141,7 @@ impl Guest for Component {
 
 impl SetterTrait for Component {
     type Setter = GuestSetterImpl;
+    type Summer = GuestSummerImpl;
 }
 
 bindings::export!(Component with_types_in bindings);

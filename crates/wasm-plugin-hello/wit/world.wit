@@ -11,6 +11,14 @@ interface types {
         set: func(p: pos2);
         get: func() -> pos2;
     }
+
+    resource summer {
+        new: static func() -> summer;
+        set-val: func(l: list<u32>);
+        set-key: func(k: string);
+        sum: func() -> u32;
+        get-key: func() -> string;
+    }
 }
 
 

@@ -266,6 +266,129 @@ pub mod exports {
                         }
                     }
                 }
+                #[derive(Debug)]
+                #[repr(transparent)]
+                pub struct Summer {
+                    handle: _rt::Resource<Summer>,
+                }
+                type _SummerRep<T> = Option<T>;
+                impl Summer {
+                    /// Creates a new resource from the specified representation.
+                    ///
+                    /// This function will create a new resource handle by moving `val` onto
+                    /// the heap and then passing that heap pointer to the component model to
+                    /// create a handle. The owned handle is then returned as `Summer`.
+                    pub fn new<T: GuestSummer>(val: T) -> Self {
+                        Self::type_guard::<T>();
+                        let val: _SummerRep<T> = Some(val);
+                        let ptr: *mut _SummerRep<T> = _rt::Box::into_raw(
+                            _rt::Box::new(val),
+                        );
+                        unsafe { Self::from_handle(T::_resource_new(ptr.cast())) }
+                    }
+                    /// Gets access to the underlying `T` which represents this resource.
+                    pub fn get<T: GuestSummer>(&self) -> &T {
+                        let ptr = unsafe { &*self.as_ptr::<T>() };
+                        ptr.as_ref().unwrap()
+                    }
+                    /// Gets mutable access to the underlying `T` which represents this
+                    /// resource.
+                    pub fn get_mut<T: GuestSummer>(&mut self) -> &mut T {
+                        let ptr = unsafe { &mut *self.as_ptr::<T>() };
+                        ptr.as_mut().unwrap()
+                    }
+                    /// Consumes this resource and returns the underlying `T`.
+                    pub fn into_inner<T: GuestSummer>(self) -> T {
+                        let ptr = unsafe { &mut *self.as_ptr::<T>() };
+                        ptr.take().unwrap()
+                    }
+                    #[doc(hidden)]
+                    pub unsafe fn from_handle(handle: u32) -> Self {
+                        Self {
+                            handle: unsafe { _rt::Resource::from_handle(handle) },
+                        }
+                    }
+                    #[doc(hidden)]
+                    pub fn take_handle(&self) -> u32 {
+                        _rt::Resource::take_handle(&self.handle)
+                    }
+                    #[doc(hidden)]
+                    pub fn handle(&self) -> u32 {
+                        _rt::Resource::handle(&self.handle)
+                    }
+                    #[doc(hidden)]
+                    fn type_guard<T: 'static>() {
+                        use core::any::TypeId;
+                        static mut LAST_TYPE: Option<TypeId> = None;
+                        unsafe {
+                            assert!(! cfg!(target_feature = "atomics"));
+                            let id = TypeId::of::<T>();
+                            match LAST_TYPE {
+                                Some(ty) => {
+                                    assert!(
+                                        ty == id, "cannot use two types with this resource type"
+                                    )
+                                }
+                                None => LAST_TYPE = Some(id),
+                            }
+                        }
+                    }
+                    #[doc(hidden)]
+                    pub unsafe fn dtor<T: 'static>(handle: *mut u8) {
+                        Self::type_guard::<T>();
+                        let _ = unsafe {
+                            _rt::Box::from_raw(handle as *mut _SummerRep<T>)
+                        };
+                    }
+                    fn as_ptr<T: GuestSummer>(&self) -> *mut _SummerRep<T> {
+                        Summer::type_guard::<T>();
+                        T::_resource_rep(self.handle()).cast()
+                    }
+                }
+                /// A borrowed version of [`Summer`] which represents a borrowed value
+                /// with the lifetime `'a`.
+                #[derive(Debug)]
+                #[repr(transparent)]
+                pub struct SummerBorrow<'a> {
+                    rep: *mut u8,
+                    _marker: core::marker::PhantomData<&'a Summer>,
+                }
+                impl<'a> SummerBorrow<'a> {
+                    #[doc(hidden)]
+                    pub unsafe fn lift(rep: usize) -> Self {
+                        Self {
+                            rep: rep as *mut u8,
+                            _marker: core::marker::PhantomData,
+                        }
+                    }
+                    /// Gets access to the underlying `T` in this resource.
+                    pub fn get<T: GuestSummer>(&self) -> &T {
+                        let ptr = unsafe { &mut *self.as_ptr::<T>() };
+                        ptr.as_ref().unwrap()
+                    }
+                    fn as_ptr<T: 'static>(&self) -> *mut _SummerRep<T> {
+                        Summer::type_guard::<T>();
+                        self.rep.cast()
+                    }
+                }
+                unsafe impl _rt::WasmResource for Summer {
+                    #[inline]
+                    unsafe fn drop(_handle: u32) {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        unreachable!();
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            #[link(
+                                wasm_import_module = "[export]component:wasm-plugin-hello/types"
+                            )]
+                            unsafe extern "C" {
+                                #[link_name = "[resource-drop]summer"]
+                                fn drop(_: u32);
+                            }
+                            unsafe { drop(_handle) };
+                        }
+                    }
+                }
                 #[doc(hidden)]
                 #[allow(non_snake_case)]
                 pub unsafe fn _export_static_setter_new_cabi<T: GuestSetter>() -> i32 {
@@ -301,8 +424,85 @@ pub mod exports {
                     *ptr1.add(4).cast::<f32>() = _rt::as_f32(y2);
                     ptr1
                 }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_static_summer_new_cabi<T: GuestSummer>() -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::new();
+                    (result0).take_handle() as i32
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_method_summer_set_val_cabi<T: GuestSummer>(
+                    arg0: *mut u8,
+                    arg1: *mut u8,
+                    arg2: usize,
+                ) {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let len0 = arg2;
+                    T::set_val(
+                        unsafe { SummerBorrow::lift(arg0 as u32 as usize) }.get(),
+                        _rt::Vec::from_raw_parts(arg1.cast(), len0, len0),
+                    );
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_method_summer_set_key_cabi<T: GuestSummer>(
+                    arg0: *mut u8,
+                    arg1: *mut u8,
+                    arg2: usize,
+                ) {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let len0 = arg2;
+                    let bytes0 = _rt::Vec::from_raw_parts(arg1.cast(), len0, len0);
+                    T::set_key(
+                        unsafe { SummerBorrow::lift(arg0 as u32 as usize) }.get(),
+                        _rt::string_lift(bytes0),
+                    );
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_method_summer_sum_cabi<T: GuestSummer>(
+                    arg0: *mut u8,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::sum(
+                        unsafe { SummerBorrow::lift(arg0 as u32 as usize) }.get(),
+                    );
+                    _rt::as_i32(result0)
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_method_summer_get_key_cabi<T: GuestSummer>(
+                    arg0: *mut u8,
+                ) -> *mut u8 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::get_key(
+                        unsafe { SummerBorrow::lift(arg0 as u32 as usize) }.get(),
+                    );
+                    let ptr1 = (&raw mut _RET_AREA.0).cast::<u8>();
+                    let vec2 = (result0.into_bytes()).into_boxed_slice();
+                    let ptr2 = vec2.as_ptr().cast::<u8>();
+                    let len2 = vec2.len();
+                    ::core::mem::forget(vec2);
+                    *ptr1.add(::core::mem::size_of::<*const u8>()).cast::<usize>() = len2;
+                    *ptr1.add(0).cast::<*mut u8>() = ptr2.cast_mut();
+                    ptr1
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn __post_return_method_summer_get_key<T: GuestSummer>(
+                    arg0: *mut u8,
+                ) {
+                    let l0 = *arg0.add(0).cast::<*mut u8>();
+                    let l1 = *arg0
+                        .add(::core::mem::size_of::<*const u8>())
+                        .cast::<usize>();
+                    _rt::cabi_dealloc(l0, l1, 1);
+                }
                 pub trait Guest {
                     type Setter: GuestSetter;
+                    type Summer: GuestSummer;
                 }
                 pub trait GuestSetter: 'static {
                     #[doc(hidden)]
@@ -353,6 +553,57 @@ pub mod exports {
                     fn set(&self, p: Pos2) -> ();
                     fn get(&self) -> Pos2;
                 }
+                pub trait GuestSummer: 'static {
+                    #[doc(hidden)]
+                    unsafe fn _resource_new(val: *mut u8) -> u32
+                    where
+                        Self: Sized,
+                    {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            let _ = val;
+                            unreachable!();
+                        }
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            #[link(
+                                wasm_import_module = "[export]component:wasm-plugin-hello/types"
+                            )]
+                            unsafe extern "C" {
+                                #[link_name = "[resource-new]summer"]
+                                fn new(_: *mut u8) -> u32;
+                            }
+                            unsafe { new(val) }
+                        }
+                    }
+                    #[doc(hidden)]
+                    fn _resource_rep(handle: u32) -> *mut u8
+                    where
+                        Self: Sized,
+                    {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            let _ = handle;
+                            unreachable!();
+                        }
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            #[link(
+                                wasm_import_module = "[export]component:wasm-plugin-hello/types"
+                            )]
+                            unsafe extern "C" {
+                                #[link_name = "[resource-rep]summer"]
+                                fn rep(_: u32) -> *mut u8;
+                            }
+                            unsafe { rep(handle) }
+                        }
+                    }
+                    fn new() -> Summer;
+                    fn set_val(&self, l: _rt::Vec<u32>) -> ();
+                    fn set_key(&self, k: _rt::String) -> ();
+                    fn sum(&self) -> u32;
+                    fn get_key(&self) -> _rt::String;
+                }
                 #[doc(hidden)]
                 macro_rules! __export_component_wasm_plugin_hello_types_cabi {
                     ($ty:ident with_types_in $($path_to_types:tt)*) => {
@@ -371,20 +622,63 @@ pub mod exports {
                         extern "C" fn export_method_setter_get(arg0 : * mut u8,) -> * mut
                         u8 { unsafe { $($path_to_types)*::
                         _export_method_setter_get_cabi::<<$ty as $($path_to_types)*::
-                        Guest >::Setter > (arg0) } } const _ : () = { #[doc(hidden)]
+                        Guest >::Setter > (arg0) } } #[unsafe (export_name =
+                        "component:wasm-plugin-hello/types#[static]summer.new")] unsafe
+                        extern "C" fn export_static_summer_new() -> i32 { unsafe {
+                        $($path_to_types)*:: _export_static_summer_new_cabi::<<$ty as
+                        $($path_to_types)*:: Guest >::Summer > () } } #[unsafe
+                        (export_name =
+                        "component:wasm-plugin-hello/types#[method]summer.set-val")]
+                        unsafe extern "C" fn export_method_summer_set_val(arg0 : * mut
+                        u8, arg1 : * mut u8, arg2 : usize,) { unsafe {
+                        $($path_to_types)*:: _export_method_summer_set_val_cabi::<<$ty as
+                        $($path_to_types)*:: Guest >::Summer > (arg0, arg1, arg2) } }
                         #[unsafe (export_name =
+                        "component:wasm-plugin-hello/types#[method]summer.set-key")]
+                        unsafe extern "C" fn export_method_summer_set_key(arg0 : * mut
+                        u8, arg1 : * mut u8, arg2 : usize,) { unsafe {
+                        $($path_to_types)*:: _export_method_summer_set_key_cabi::<<$ty as
+                        $($path_to_types)*:: Guest >::Summer > (arg0, arg1, arg2) } }
+                        #[unsafe (export_name =
+                        "component:wasm-plugin-hello/types#[method]summer.sum")] unsafe
+                        extern "C" fn export_method_summer_sum(arg0 : * mut u8,) -> i32 {
+                        unsafe { $($path_to_types)*::
+                        _export_method_summer_sum_cabi::<<$ty as $($path_to_types)*::
+                        Guest >::Summer > (arg0) } } #[unsafe (export_name =
+                        "component:wasm-plugin-hello/types#[method]summer.get-key")]
+                        unsafe extern "C" fn export_method_summer_get_key(arg0 : * mut
+                        u8,) -> * mut u8 { unsafe { $($path_to_types)*::
+                        _export_method_summer_get_key_cabi::<<$ty as $($path_to_types)*::
+                        Guest >::Summer > (arg0) } } #[unsafe (export_name =
+                        "cabi_post_component:wasm-plugin-hello/types#[method]summer.get-key")]
+                        unsafe extern "C" fn _post_return_method_summer_get_key(arg0 : *
+                        mut u8,) { unsafe { $($path_to_types)*::
+                        __post_return_method_summer_get_key::<<$ty as
+                        $($path_to_types)*:: Guest >::Summer > (arg0) } } const _ : () =
+                        { #[doc(hidden)] #[unsafe (export_name =
                         "component:wasm-plugin-hello/types#[dtor]setter")]
                         #[allow(non_snake_case)] unsafe extern "C" fn dtor(rep : * mut
                         u8) { unsafe { $($path_to_types)*:: Setter::dtor::< <$ty as
-                        $($path_to_types)*:: Guest >::Setter > (rep) } } }; };
+                        $($path_to_types)*:: Guest >::Setter > (rep) } } }; const _ : ()
+                        = { #[doc(hidden)] #[unsafe (export_name =
+                        "component:wasm-plugin-hello/types#[dtor]summer")]
+                        #[allow(non_snake_case)] unsafe extern "C" fn dtor(rep : * mut
+                        u8) { unsafe { $($path_to_types)*:: Summer::dtor::< <$ty as
+                        $($path_to_types)*:: Guest >::Summer > (rep) } } }; };
                     };
                 }
                 #[doc(hidden)]
                 pub(crate) use __export_component_wasm_plugin_hello_types_cabi;
-                #[repr(align(4))]
-                struct _RetArea([::core::mem::MaybeUninit<u8>; 8]);
+                #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
+                #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
+                struct _RetArea(
+                    [::core::mem::MaybeUninit<
+                        u8,
+                    >; 2 * ::core::mem::size_of::<*const u8>()],
+                );
                 static mut _RET_AREA: _RetArea = _RetArea(
-                    [::core::mem::MaybeUninit::uninit(); 8],
+                    [::core::mem::MaybeUninit::uninit(); 2
+                        * ::core::mem::size_of::<*const u8>()],
                 );
             }
         }
@@ -557,6 +851,13 @@ mod _rt {
             self as f32
         }
     }
+    pub unsafe fn string_lift(bytes: Vec<u8>) -> String {
+        if cfg!(debug_assertions) {
+            String::from_utf8(bytes).unwrap()
+        } else {
+            String::from_utf8_unchecked(bytes)
+        }
+    }
     pub use alloc_crate::alloc;
     extern crate alloc as alloc_crate;
 }
@@ -596,18 +897,22 @@ pub(crate) use __export_example_impl as export;
 #[unsafe(link_section = "component-type:wit-bindgen:0.41.0:component:wasm-plugin-hello:example:encoded world")]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 456] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xca\x02\x01A\x02\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 658] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x94\x04\x01A\x02\x01\
 A\x0d\x01@\0\0s\x04\0\x0bhello-world\x01\0\x01@\x02\x01ay\x01by\0y\x04\0\x03add\x01\
 \x01\x01py\x01@\x01\x01l\x02\0y\x04\0\x03sum\x01\x03\x01@\x01\x01ny\0y\x04\0\x08\
-loop-sum\x01\x04\x01@\x01\x01ny\0s\x04\0\x0fgenerate-string\x01\x05\x01B\x0b\x01\
-r\x02\x01xv\x01yv\x04\0\x04pos2\x03\0\0\x04\0\x06setter\x03\x01\x01i\x02\x01@\0\0\
-\x03\x04\0\x12[static]setter.new\x01\x04\x01h\x02\x01@\x02\x04self\x05\x01p\x01\x01\
-\0\x04\0\x12[method]setter.set\x01\x06\x01@\x01\x04self\x05\0\x01\x04\0\x12[meth\
-od]setter.get\x01\x07\x04\0!component:wasm-plugin-hello/types\x05\x06\x04\0#comp\
-onent:wasm-plugin-hello/example\x04\0\x0b\x0d\x01\0\x07example\x03\0\0\0G\x09pro\
-ducers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x06\
-0.41.0";
+loop-sum\x01\x04\x01@\x01\x01ny\0s\x04\0\x0fgenerate-string\x01\x05\x01B\x19\x01\
+r\x02\x01xv\x01yv\x04\0\x04pos2\x03\0\0\x04\0\x06setter\x03\x01\x04\0\x06summer\x03\
+\x01\x01i\x02\x01@\0\0\x04\x04\0\x12[static]setter.new\x01\x05\x01h\x02\x01@\x02\
+\x04self\x06\x01p\x01\x01\0\x04\0\x12[method]setter.set\x01\x07\x01@\x01\x04self\
+\x06\0\x01\x04\0\x12[method]setter.get\x01\x08\x01i\x03\x01@\0\0\x09\x04\0\x12[s\
+tatic]summer.new\x01\x0a\x01h\x03\x01py\x01@\x02\x04self\x0b\x01l\x0c\x01\0\x04\0\
+\x16[method]summer.set-val\x01\x0d\x01@\x02\x04self\x0b\x01ks\x01\0\x04\0\x16[me\
+thod]summer.set-key\x01\x0e\x01@\x01\x04self\x0b\0y\x04\0\x12[method]summer.sum\x01\
+\x0f\x01@\x01\x04self\x0b\0s\x04\0\x16[method]summer.get-key\x01\x10\x04\0!compo\
+nent:wasm-plugin-hello/types\x05\x06\x04\0#component:wasm-plugin-hello/example\x04\
+\0\x0b\x0d\x01\0\x07example\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dw\
+it-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

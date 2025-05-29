@@ -21,4 +21,6 @@ world example {
     export hello-world: func() -> string;
     export add: func(a: u32, b: u32) -> u32;
     export sum: func(l: list<u32>) -> u32;
+    export loop-sum: func(n: u32) -> u32;
+    export generate-string: func(n: u32) -> string;
 }

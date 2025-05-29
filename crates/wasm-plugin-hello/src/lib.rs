@@ -64,6 +64,18 @@ impl Guest for Component {
     fn sum(l: Vec<u32>) -> u32 {
         l.iter().sum()
     }
+
+    fn loop_sum(len: u32) -> u32 {
+        (0..len).sum()
+    }
+
+    fn generate_string(len: u32) -> String {
+        let mut s = String::with_capacity(len as usize);
+        for i in 0..len {
+            s.push_str(&i.to_string());
+        }
+        s
+    }
 }
 
 impl SetterTrait for Component {

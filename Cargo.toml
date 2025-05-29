@@ -15,10 +15,13 @@ rust-version = "1.85"
 [workspace.dependencies]
 anyhow = "1.0.98"
 axum = "0.8.4"
-byteorder = "1.5"
 bytemuck = "1.23.0"
+byteorder = "1.5"
 cfg-if = "1.0.0"
+clap = "4.5.38"
 criterion = "0.5.1"
+eframe = "0.31.1"
+egui = "0.31.1"
 fs-err = "3.1.0"
 fxhash = "0.2.1"
 image = { version = "0.25", default-features = false }
@@ -31,8 +34,8 @@ rand = "0.9.1"
 rawproc = { path = "crates/rawproc" }
 serde = "1.0.219"
 serde_yaml = "0.9.34"
-thiserror = "2.0.12"
 tempfile = "3.20.0"
+thiserror = "2.0.12"
 tokio = "1.45.0"
 tokio-util = "0.7.15"
 tower-http = "0.6.4"
@@ -43,12 +46,13 @@ v4l-serve = { path = "crates/v4l-serve" }
 wasm-bindgen = "0.2.100"
 wasm-bindgen-futures = "0.4.50"
 wasm-util = { path = "crates/wasm-util" }
-wgpu-shader = { path = "crates/wgpu-shader" }
-wgpu = "24.0.3"
+wasmtime = "33.0.0"
+wasmtime-wasi = "33.0.0"
 web-sys = "0.3"
+wgpu = "24.0.3"
+wgpu-shader = { path = "crates/wgpu-shader" }
 xegl = { path = "crates/xegl" }
-eframe = "0.31.1"
-egui = "0.31.1"
+
 
 [profile.release.package.wasm-preview]
 opt-level = 3

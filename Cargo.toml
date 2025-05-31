@@ -19,7 +19,7 @@ axum = "0.8.4"
 bytemuck = "1.23.0"
 byteorder = "1.5"
 cfg-if = "1.0.0"
-clap = "4.5.38"
+clap = "4.5.39"
 criterion = "0.5.1"
 dsp = { path = "crates/dsp" }
 eframe = "0.31.1"
@@ -38,7 +38,7 @@ serde = "1.0.219"
 serde_yaml = "0.9.34"
 tempfile = "3.20.0"
 thiserror = "2.0.12"
-tokio = "1.45.0"
+tokio = "1.45.1"
 tokio-util = "0.7.15"
 tower-http = "0.6.4"
 tracing = "0.1.41"
@@ -51,7 +51,7 @@ wasm-util = { path = "crates/wasm-util" }
 wasmtime = "33.0.0"
 wasmtime-wasi = "33.0.0"
 web-sys = "0.3"
-wgpu = "24.0.3"
+wgpu = "24.0.5"
 wgpu-shader = { path = "crates/wgpu-shader" }
 xegl = { path = "crates/xegl" }
 wit-bindgen-rt = { version = "0.42.1", features = ["bitflags"] }

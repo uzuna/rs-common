@@ -54,7 +54,7 @@ web-sys = "0.3"
 wgpu = "24.0.3"
 wgpu-shader = { path = "crates/wgpu-shader" }
 xegl = { path = "crates/xegl" }
-
+wit-bindgen-rt = { version = "0.42.1", features = ["bitflags"] }
 
 [profile.release.package.wasm-preview]
 opt-level = 3

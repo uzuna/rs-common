@@ -1,5 +1,5 @@
 [package]
-name = "wasmtime-runner"
+name = "wasm-plugin-hasdep"
 version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
@@ -7,9 +7,11 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-clap = { workspace = true, features = ["derive"] }
-wasmtime.workspace = true
-wasmtime-wasi.workspace = true
+wit-bindgen-rt.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+name = "hasdep"
 
 [package.metadata.component.target.dependencies]
-"local:hello" = { path = "../../wasm-comp/hello" }
+"local:calc" = { path = "../calc/wit" } 

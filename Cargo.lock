@@ -5517,6 +5517,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-plugin-calc"
+version = "0.1.0"
+dependencies = [
+ "wit-bindgen-rt 0.42.1",
+]
+
+[[package]]
+name = "wasm-plugin-hasdep"
+version = "0.1.0"
+dependencies = [
+ "wit-bindgen-rt 0.42.1",
+]
+
+[[package]]
 name = "wasm-plugin-hello"
 version = "0.1.0"
 dependencies = [

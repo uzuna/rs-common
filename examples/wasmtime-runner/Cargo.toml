@@ -15,6 +15,3 @@ serde_json = "1.0.140"
 serde_yaml.workspace = true
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true
-
-[package.metadata.component.target.dependencies]
-"local:calc" = { path = "../../wasm-comp/calc" }

@@ -7,3 +7,5 @@ pairs:
     file: hello-wasip2.wasm
   - plugin: [hasdep]
     file: composed.wasm
+  - plugin: [hasdep]
+    file: hasdep.wasm

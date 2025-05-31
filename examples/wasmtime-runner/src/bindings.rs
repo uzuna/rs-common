@@ -39,5 +39,5 @@ pub mod hello {
 }
 
 pub mod hasdep {
-    wasmtime::component::bindgen!(in "wit/world.wit");
+    wasmtime::component::bindgen!(in "wit-front/world.wit");
 }

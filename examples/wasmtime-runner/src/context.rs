@@ -4,7 +4,7 @@ use wasmtime_wasi::{
     ResourceTable,
 };
 
-use crate::bingings::{
+use crate::bindings::{
     hasdep,
     hello::{Example, Pos2, SetterWrap},
 };

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use wasmtime::*;
 
-pub mod bingings;
+pub mod bindings;
 pub mod context;
 
 #[derive(Debug, Clone, clap::Parser)]

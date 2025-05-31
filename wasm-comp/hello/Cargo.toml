@@ -25,4 +25,3 @@ wasmtime.workspace = true
 [[bench]]
 name = "wasm_call"
 harness = false
-

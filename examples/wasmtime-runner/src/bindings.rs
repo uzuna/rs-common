@@ -41,3 +41,7 @@ pub mod hello {
 pub mod hasdep {
     wasmtime::component::bindgen!(in "wit-front/world.wit");
 }
+
+pub mod calc {
+    wasmtime::component::bindgen!(in "../../wasm-comp/calc/wit/world.wit");
+}

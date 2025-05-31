@@ -7,5 +7,7 @@ pairs:
     file: hello-wasip2.wasm
   - plugin: [hasdep]
     file: composed.wasm
+  # コンポジットしていないデータ。リンク出来ずにエラーになる。
+  # add_to_linkerを自動で実装してくれたら嬉しいのだけど
   - plugin: [hasdep]
     file: hasdep.wasm

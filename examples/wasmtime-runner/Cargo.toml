@@ -9,8 +9,12 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
+fxhash.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1.0.140"
+serde_yaml.workspace = true
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true
 
 [package.metadata.component.target.dependencies]
-"local:hello" = { path = "../../wasm-comp/hello" }
+"local:calc" = { path = "../../wasm-comp/calc" }

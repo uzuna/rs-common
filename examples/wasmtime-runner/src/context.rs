@@ -4,7 +4,10 @@ use wasmtime_wasi::{
     ResourceTable,
 };
 
-use crate::bingings::{Example, Pos2, SetterWrap};
+use crate::bingings::{
+    hasdep,
+    hello::{Example, Pos2, SetterWrap},
+};
 
 /// WASIリンクに必要なトレイと実装構造体
 ///
@@ -60,7 +63,7 @@ impl<T> WasmComponent<T> {
         })
     }
 
-    pub fn instance(&mut self) -> anyhow::Result<Example> {
+    pub fn hello_instance(&mut self) -> anyhow::Result<Example> {
         // コンポーネントをインスタンス化
         let res = Example::instantiate(&mut self.store, &self.component, &self.linker)?;
         Ok(res)
@@ -73,6 +76,12 @@ impl<T> WasmComponent<T> {
         let setter = caller.call_new(&mut self.store)?;
         let sw = SetterWrap::new(e, setter);
         Ok(sw)
+    }
+
+    pub fn hasdep_instance(&mut self) -> anyhow::Result<hasdep::Hasdep> {
+        // hasdepコンポーネントをインスタンス化
+        let res = hasdep::Hasdep::instantiate(&mut self.store, &self.component, &self.linker)?;
+        Ok(res)
     }
 }
 
@@ -95,8 +104,8 @@ impl WasmComponent<Preview2Host> {
     }
 }
 
-pub fn run_sequence_hello<T>(mut c: WasmComponent<T>) -> anyhow::Result<()> {
-    let e = c.instance()?;
+pub fn run_sequence_hello<T>(c: &mut WasmComponent<T>) -> anyhow::Result<()> {
+    let e = c.hello_instance()?;
     let res = e.call_hello_world(&mut c.store)?;
     println!("Hello from WASI Preview1: {}", res);
 
@@ -115,6 +124,17 @@ pub fn run_sequence_hello<T>(mut c: WasmComponent<T>) -> anyhow::Result<()> {
     let get = sw.get(&mut c.store)?;
     println!("setter.get() = {:?}", get);
     sw.drop(&mut c.store)?;
+
+    Ok(())
+}
+
+pub fn run_hasdep<T>(c: &mut WasmComponent<T>) -> anyhow::Result<()> {
+    let e = c.hasdep_instance()?;
+
+    for i in 0..5 {
+        let result = e.call_add(&mut c.store, i, i)?;
+        println!("add({i}+{i}) = {result}");
+    }
 
     Ok(())
 }

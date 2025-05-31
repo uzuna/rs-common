@@ -13,7 +13,7 @@ pub trait Guest {
     fn add(a: u32, b: u32) -> u32;
 }
 #[doc(hidden)]
-macro_rules! __export_world_example_cabi {
+macro_rules! __export_world_hasdep_cabi {
     ($ty:ident with_types_in $($path_to_types:tt)*) => {
         const _ : () = { #[unsafe (export_name = "add")] unsafe extern "C" fn
         export_add(arg0 : i32, arg1 : i32,) -> i32 { unsafe { $($path_to_types)*::
@@ -21,7 +21,7 @@ macro_rules! __export_world_example_cabi {
     };
 }
 #[doc(hidden)]
-pub(crate) use __export_world_example_cabi;
+pub(crate) use __export_world_hasdep_cabi;
 #[rustfmt::skip]
 #[allow(dead_code, clippy::all)]
 pub mod local {
@@ -137,26 +137,26 @@ mod _rt {
 /// ```
 #[allow(unused_macros)]
 #[doc(hidden)]
-macro_rules! __export_example_impl {
+macro_rules! __export_hasdep_impl {
     ($ty:ident) => {
         self::export!($ty with_types_in self);
     };
     ($ty:ident with_types_in $($path_to_types_root:tt)*) => {
-        $($path_to_types_root)*:: __export_world_example_cabi!($ty with_types_in
+        $($path_to_types_root)*:: __export_world_hasdep_cabi!($ty with_types_in
         $($path_to_types_root)*);
     };
 }
 #[doc(inline)]
-pub(crate) use __export_example_impl as export;
+pub(crate) use __export_hasdep_impl as export;
 #[cfg(target_arch = "wasm32")]
-#[unsafe(link_section = "component-type:wit-bindgen:0.41.0:local:hasdep@0.1.0:example:encoded world")]
+#[unsafe(link_section = "component-type:wit-bindgen:0.41.0:local:hasdep@0.1.0:hasdep:encoded world")]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 228] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07g\x01A\x02\x01A\x04\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 226] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07f\x01A\x02\x01A\x04\x01\
 B\x02\x01@\x02\x01xy\x01yy\0y\x04\0\x03add\x01\0\x03\0\x14local:calc/add@0.1.0\x05\
-\0\x01@\x02\x01ay\x01by\0y\x04\0\x03add\x01\x01\x04\0\x1alocal:hasdep/example@0.\
-1.0\x04\0\x0b\x0d\x01\0\x07example\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\
+\0\x01@\x02\x01ay\x01by\0y\x04\0\x03add\x01\x01\x04\0\x19local:hasdep/hasdep@0.1\
+.0\x04\0\x0b\x0c\x01\0\x06hasdep\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\
 \x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]

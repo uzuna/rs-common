@@ -1,0 +1,5 @@
+package local:hasdep@0.1.0;
+
+world hasdep {
+    export add: func(a: u32, b: u32) -> u32;
+}

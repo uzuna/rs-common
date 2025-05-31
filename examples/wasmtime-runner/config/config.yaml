@@ -1,7 +1,9 @@
 dir: plugins
 pairs:
-  - plugin: [hello]
+  - plugin: [hello, hasdep]
     file: hello.wasm
-  - plugin: [hello]
+  - plugin: [hello, hasdep]
     wasi: preview2
     file: hello-wasip2.wasm
+  - plugin: [hasdep]
+    file: composed.wasm

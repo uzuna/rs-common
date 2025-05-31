@@ -17,7 +17,7 @@ struct Opt {
 /// WASIサポートの種類を表す列挙型
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum WasiSupport {
+pub enum WasiSupport {
     #[default]
     None,
     Preview2,
@@ -62,37 +62,34 @@ pub struct PluginConfig {
     pub pairs: Vec<PluginPair>,
 }
 
-// WASIなし = storeなし
-fn run_on_wasi(engine: &Engine, byte: &[u8]) -> anyhow::Result<()> {
-    let mut c = WasmComponent::new_unknown(engine, byte, ())?;
-    run_sequence_hello(&mut c)?;
-    // inferfaceがたまたま同じでも動作する
-    run_hasdep(&mut c)
-}
-
-// WASI Preview2の実装で実行する関数
-fn run_on_wasi_preview2(engine: &Engine, byte: &[u8]) -> anyhow::Result<()> {
-    let mut c = WasmComponent::new_p2(engine, byte)?;
-    run_sequence_hello(&mut c)?;
-    // inferfaceがたまたま同じでも動作する
-    run_hasdep(&mut c)
+fn run_inner<T>(c: &mut WasmComponent<T>, p: Plugin) -> anyhow::Result<()> {
+    match p {
+        Plugin::Hello => run_sequence_hello(c),
+        Plugin::Hasdep => run_hasdep(c),
+    }
 }
 
 fn run(engine: &Engine, pair: &PluginPair) -> anyhow::Result<()> {
-    let wasm_binary = std::fs::read(&pair.file)
+    let buffer = std::fs::read(&pair.file)
         .with_context(|| format!("Failed to read wasm file: {}", pair.file.display()))?;
 
     match pair.wasi {
         WasiSupport::None => {
             println!("Running without WASI support for plugin {:?}", pair.plugin);
-            run_on_wasi(engine, &wasm_binary)?;
+            let mut c = WasmComponent::new_unknown(engine, buffer.as_slice(), ())?;
+            for p in &pair.plugin {
+                run_inner(&mut c, *p)?;
+            }
         }
         WasiSupport::Preview2 => {
             println!(
                 "Running with WASI Preview2 support for plugin {:?}",
                 pair.plugin
             );
-            run_on_wasi_preview2(engine, &wasm_binary)?;
+            let mut c = WasmComponent::new_p2(engine, buffer.as_slice())?;
+            for p in &pair.plugin {
+                run_inner(&mut c, *p)?;
+            }
         }
     }
     Ok(())

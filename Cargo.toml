@@ -3,6 +3,7 @@ members = [
     "crates/*",
     "jetson/*",
     "examples/*",
+    "wasm-comp/*",
 ]
 resolver = "2"
 

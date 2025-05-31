@@ -118,8 +118,8 @@ static mut _RET_AREA: _RetArea =
 #[rustfmt::skip]
 #[allow(dead_code, clippy::all)]
 pub mod exports {
-    pub mod component {
-        pub mod wasm_plugin_hello {
+    pub mod local {
+        pub mod hello {
             #[allow(dead_code, async_fn_in_trait, unused_imports, clippy::all)]
             pub mod types {
                 #[used]
@@ -256,7 +256,7 @@ pub mod exports {
                         #[cfg(target_arch = "wasm32")]
                         {
                             #[link(
-                                wasm_import_module = "[export]component:wasm-plugin-hello/types"
+                                wasm_import_module = "[export]local:hello/types@0.1.0"
                             )]
                             unsafe extern "C" {
                                 #[link_name = "[resource-drop]setter"]
@@ -379,7 +379,7 @@ pub mod exports {
                         #[cfg(target_arch = "wasm32")]
                         {
                             #[link(
-                                wasm_import_module = "[export]component:wasm-plugin-hello/types"
+                                wasm_import_module = "[export]local:hello/types@0.1.0"
                             )]
                             unsafe extern "C" {
                                 #[link_name = "[resource-drop]summer"]
@@ -518,7 +518,7 @@ pub mod exports {
                         #[cfg(target_arch = "wasm32")]
                         {
                             #[link(
-                                wasm_import_module = "[export]component:wasm-plugin-hello/types"
+                                wasm_import_module = "[export]local:hello/types@0.1.0"
                             )]
                             unsafe extern "C" {
                                 #[link_name = "[resource-new]setter"]
@@ -540,7 +540,7 @@ pub mod exports {
                         #[cfg(target_arch = "wasm32")]
                         {
                             #[link(
-                                wasm_import_module = "[export]component:wasm-plugin-hello/types"
+                                wasm_import_module = "[export]local:hello/types@0.1.0"
                             )]
                             unsafe extern "C" {
                                 #[link_name = "[resource-rep]setter"]
@@ -567,7 +567,7 @@ pub mod exports {
                         #[cfg(target_arch = "wasm32")]
                         {
                             #[link(
-                                wasm_import_module = "[export]component:wasm-plugin-hello/types"
+                                wasm_import_module = "[export]local:hello/types@0.1.0"
                             )]
                             unsafe extern "C" {
                                 #[link_name = "[resource-new]summer"]
@@ -589,7 +589,7 @@ pub mod exports {
                         #[cfg(target_arch = "wasm32")]
                         {
                             #[link(
-                                wasm_import_module = "[export]component:wasm-plugin-hello/types"
+                                wasm_import_module = "[export]local:hello/types@0.1.0"
                             )]
                             unsafe extern "C" {
                                 #[link_name = "[resource-rep]summer"]
@@ -605,70 +605,65 @@ pub mod exports {
                     fn get_key(&self) -> _rt::String;
                 }
                 #[doc(hidden)]
-                macro_rules! __export_component_wasm_plugin_hello_types_cabi {
+                macro_rules! __export_local_hello_types_0_1_0_cabi {
                     ($ty:ident with_types_in $($path_to_types:tt)*) => {
                         const _ : () = { #[unsafe (export_name =
-                        "component:wasm-plugin-hello/types#[static]setter.new")] unsafe
-                        extern "C" fn export_static_setter_new() -> i32 { unsafe {
+                        "local:hello/types@0.1.0#[static]setter.new")] unsafe extern "C"
+                        fn export_static_setter_new() -> i32 { unsafe {
                         $($path_to_types)*:: _export_static_setter_new_cabi::<<$ty as
                         $($path_to_types)*:: Guest >::Setter > () } } #[unsafe
-                        (export_name =
-                        "component:wasm-plugin-hello/types#[method]setter.set")] unsafe
-                        extern "C" fn export_method_setter_set(arg0 : * mut u8, arg1 :
-                        f32, arg2 : f32,) { unsafe { $($path_to_types)*::
+                        (export_name = "local:hello/types@0.1.0#[method]setter.set")]
+                        unsafe extern "C" fn export_method_setter_set(arg0 : * mut u8,
+                        arg1 : f32, arg2 : f32,) { unsafe { $($path_to_types)*::
                         _export_method_setter_set_cabi::<<$ty as $($path_to_types)*::
                         Guest >::Setter > (arg0, arg1, arg2) } } #[unsafe (export_name =
-                        "component:wasm-plugin-hello/types#[method]setter.get")] unsafe
-                        extern "C" fn export_method_setter_get(arg0 : * mut u8,) -> * mut
-                        u8 { unsafe { $($path_to_types)*::
+                        "local:hello/types@0.1.0#[method]setter.get")] unsafe extern "C"
+                        fn export_method_setter_get(arg0 : * mut u8,) -> * mut u8 {
+                        unsafe { $($path_to_types)*::
                         _export_method_setter_get_cabi::<<$ty as $($path_to_types)*::
                         Guest >::Setter > (arg0) } } #[unsafe (export_name =
-                        "component:wasm-plugin-hello/types#[static]summer.new")] unsafe
-                        extern "C" fn export_static_summer_new() -> i32 { unsafe {
+                        "local:hello/types@0.1.0#[static]summer.new")] unsafe extern "C"
+                        fn export_static_summer_new() -> i32 { unsafe {
                         $($path_to_types)*:: _export_static_summer_new_cabi::<<$ty as
                         $($path_to_types)*:: Guest >::Summer > () } } #[unsafe
-                        (export_name =
-                        "component:wasm-plugin-hello/types#[method]summer.set-val")]
+                        (export_name = "local:hello/types@0.1.0#[method]summer.set-val")]
                         unsafe extern "C" fn export_method_summer_set_val(arg0 : * mut
                         u8, arg1 : * mut u8, arg2 : usize,) { unsafe {
                         $($path_to_types)*:: _export_method_summer_set_val_cabi::<<$ty as
                         $($path_to_types)*:: Guest >::Summer > (arg0, arg1, arg2) } }
                         #[unsafe (export_name =
-                        "component:wasm-plugin-hello/types#[method]summer.set-key")]
-                        unsafe extern "C" fn export_method_summer_set_key(arg0 : * mut
-                        u8, arg1 : * mut u8, arg2 : usize,) { unsafe {
-                        $($path_to_types)*:: _export_method_summer_set_key_cabi::<<$ty as
-                        $($path_to_types)*:: Guest >::Summer > (arg0, arg1, arg2) } }
-                        #[unsafe (export_name =
-                        "component:wasm-plugin-hello/types#[method]summer.sum")] unsafe
-                        extern "C" fn export_method_summer_sum(arg0 : * mut u8,) -> i32 {
-                        unsafe { $($path_to_types)*::
-                        _export_method_summer_sum_cabi::<<$ty as $($path_to_types)*::
-                        Guest >::Summer > (arg0) } } #[unsafe (export_name =
-                        "component:wasm-plugin-hello/types#[method]summer.get-key")]
+                        "local:hello/types@0.1.0#[method]summer.set-key")] unsafe extern
+                        "C" fn export_method_summer_set_key(arg0 : * mut u8, arg1 : * mut
+                        u8, arg2 : usize,) { unsafe { $($path_to_types)*::
+                        _export_method_summer_set_key_cabi::<<$ty as $($path_to_types)*::
+                        Guest >::Summer > (arg0, arg1, arg2) } } #[unsafe (export_name =
+                        "local:hello/types@0.1.0#[method]summer.sum")] unsafe extern "C"
+                        fn export_method_summer_sum(arg0 : * mut u8,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_method_summer_sum_cabi::<<$ty as
+                        $($path_to_types)*:: Guest >::Summer > (arg0) } } #[unsafe
+                        (export_name = "local:hello/types@0.1.0#[method]summer.get-key")]
                         unsafe extern "C" fn export_method_summer_get_key(arg0 : * mut
                         u8,) -> * mut u8 { unsafe { $($path_to_types)*::
                         _export_method_summer_get_key_cabi::<<$ty as $($path_to_types)*::
                         Guest >::Summer > (arg0) } } #[unsafe (export_name =
-                        "cabi_post_component:wasm-plugin-hello/types#[method]summer.get-key")]
+                        "cabi_post_local:hello/types@0.1.0#[method]summer.get-key")]
                         unsafe extern "C" fn _post_return_method_summer_get_key(arg0 : *
                         mut u8,) { unsafe { $($path_to_types)*::
                         __post_return_method_summer_get_key::<<$ty as
                         $($path_to_types)*:: Guest >::Summer > (arg0) } } const _ : () =
                         { #[doc(hidden)] #[unsafe (export_name =
-                        "component:wasm-plugin-hello/types#[dtor]setter")]
-                        #[allow(non_snake_case)] unsafe extern "C" fn dtor(rep : * mut
-                        u8) { unsafe { $($path_to_types)*:: Setter::dtor::< <$ty as
-                        $($path_to_types)*:: Guest >::Setter > (rep) } } }; const _ : ()
-                        = { #[doc(hidden)] #[unsafe (export_name =
-                        "component:wasm-plugin-hello/types#[dtor]summer")]
+                        "local:hello/types@0.1.0#[dtor]setter")] #[allow(non_snake_case)]
+                        unsafe extern "C" fn dtor(rep : * mut u8) { unsafe {
+                        $($path_to_types)*:: Setter::dtor::< <$ty as $($path_to_types)*::
+                        Guest >::Setter > (rep) } } }; const _ : () = { #[doc(hidden)]
+                        #[unsafe (export_name = "local:hello/types@0.1.0#[dtor]summer")]
                         #[allow(non_snake_case)] unsafe extern "C" fn dtor(rep : * mut
                         u8) { unsafe { $($path_to_types)*:: Summer::dtor::< <$ty as
                         $($path_to_types)*:: Guest >::Summer > (rep) } } }; };
                     };
                 }
                 #[doc(hidden)]
-                pub(crate) use __export_component_wasm_plugin_hello_types_cabi;
+                pub(crate) use __export_local_hello_types_0_1_0_cabi;
                 #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
                 #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
                 struct _RetArea(
@@ -798,7 +793,7 @@ pub mod exports {
                         #[cfg(target_arch = "wasm32")]
                         {
                             #[link(
-                                wasm_import_module = "[export]component:wasm-plugin-hello/filter"
+                                wasm_import_module = "[export]local:hello/filter@0.1.0"
                             )]
                             unsafe extern "C" {
                                 #[link_name = "[resource-drop]fir"]
@@ -895,7 +890,7 @@ pub mod exports {
                         #[cfg(target_arch = "wasm32")]
                         {
                             #[link(
-                                wasm_import_module = "[export]component:wasm-plugin-hello/filter"
+                                wasm_import_module = "[export]local:hello/filter@0.1.0"
                             )]
                             unsafe extern "C" {
                                 #[link_name = "[resource-new]fir"]
@@ -917,7 +912,7 @@ pub mod exports {
                         #[cfg(target_arch = "wasm32")]
                         {
                             #[link(
-                                wasm_import_module = "[export]component:wasm-plugin-hello/filter"
+                                wasm_import_module = "[export]local:hello/filter@0.1.0"
                             )]
                             unsafe extern "C" {
                                 #[link_name = "[resource-rep]fir"]
@@ -932,44 +927,42 @@ pub mod exports {
                     fn filter_vec(&self, input: _rt::Vec<f32>) -> _rt::Vec<f32>;
                 }
                 #[doc(hidden)]
-                macro_rules! __export_component_wasm_plugin_hello_filter_cabi {
+                macro_rules! __export_local_hello_filter_0_1_0_cabi {
                     ($ty:ident with_types_in $($path_to_types:tt)*) => {
                         const _ : () = { #[unsafe (export_name =
-                        "component:wasm-plugin-hello/filter#[static]fir.new")] unsafe
-                        extern "C" fn export_static_fir_new(arg0 : * mut u8, arg1 :
-                        usize,) -> i32 { unsafe { $($path_to_types)*::
-                        _export_static_fir_new_cabi::<<$ty as $($path_to_types)*:: Guest
-                        >::Fir > (arg0, arg1) } } #[unsafe (export_name =
-                        "component:wasm-plugin-hello/filter#[static]fir.new-moving")]
-                        unsafe extern "C" fn export_static_fir_new_moving(arg0 : i32,) ->
-                        i32 { unsafe { $($path_to_types)*::
-                        _export_static_fir_new_moving_cabi::<<$ty as $($path_to_types)*::
-                        Guest >::Fir > (arg0) } } #[unsafe (export_name =
-                        "component:wasm-plugin-hello/filter#[method]fir.filter")] unsafe
-                        extern "C" fn export_method_fir_filter(arg0 : * mut u8, arg1 :
-                        f32,) -> f32 { unsafe { $($path_to_types)*::
+                        "local:hello/filter@0.1.0#[static]fir.new")] unsafe extern "C" fn
+                        export_static_fir_new(arg0 : * mut u8, arg1 : usize,) -> i32 {
+                        unsafe { $($path_to_types)*:: _export_static_fir_new_cabi::<<$ty
+                        as $($path_to_types)*:: Guest >::Fir > (arg0, arg1) } } #[unsafe
+                        (export_name =
+                        "local:hello/filter@0.1.0#[static]fir.new-moving")] unsafe extern
+                        "C" fn export_static_fir_new_moving(arg0 : i32,) -> i32 { unsafe
+                        { $($path_to_types)*:: _export_static_fir_new_moving_cabi::<<$ty
+                        as $($path_to_types)*:: Guest >::Fir > (arg0) } } #[unsafe
+                        (export_name = "local:hello/filter@0.1.0#[method]fir.filter")]
+                        unsafe extern "C" fn export_method_fir_filter(arg0 : * mut u8,
+                        arg1 : f32,) -> f32 { unsafe { $($path_to_types)*::
                         _export_method_fir_filter_cabi::<<$ty as $($path_to_types)*::
                         Guest >::Fir > (arg0, arg1) } } #[unsafe (export_name =
-                        "component:wasm-plugin-hello/filter#[method]fir.filter-vec")]
-                        unsafe extern "C" fn export_method_fir_filter_vec(arg0 : * mut
-                        u8, arg1 : * mut u8, arg2 : usize,) -> * mut u8 { unsafe {
-                        $($path_to_types)*:: _export_method_fir_filter_vec_cabi::<<$ty as
-                        $($path_to_types)*:: Guest >::Fir > (arg0, arg1, arg2) } }
-                        #[unsafe (export_name =
-                        "cabi_post_component:wasm-plugin-hello/filter#[method]fir.filter-vec")]
+                        "local:hello/filter@0.1.0#[method]fir.filter-vec")] unsafe extern
+                        "C" fn export_method_fir_filter_vec(arg0 : * mut u8, arg1 : * mut
+                        u8, arg2 : usize,) -> * mut u8 { unsafe { $($path_to_types)*::
+                        _export_method_fir_filter_vec_cabi::<<$ty as $($path_to_types)*::
+                        Guest >::Fir > (arg0, arg1, arg2) } } #[unsafe (export_name =
+                        "cabi_post_local:hello/filter@0.1.0#[method]fir.filter-vec")]
                         unsafe extern "C" fn _post_return_method_fir_filter_vec(arg0 : *
                         mut u8,) { unsafe { $($path_to_types)*::
                         __post_return_method_fir_filter_vec::<<$ty as
                         $($path_to_types)*:: Guest >::Fir > (arg0) } } const _ : () = {
                         #[doc(hidden)] #[unsafe (export_name =
-                        "component:wasm-plugin-hello/filter#[dtor]fir")]
-                        #[allow(non_snake_case)] unsafe extern "C" fn dtor(rep : * mut
-                        u8) { unsafe { $($path_to_types)*:: Fir::dtor::< <$ty as
-                        $($path_to_types)*:: Guest >::Fir > (rep) } } }; };
+                        "local:hello/filter@0.1.0#[dtor]fir")] #[allow(non_snake_case)]
+                        unsafe extern "C" fn dtor(rep : * mut u8) { unsafe {
+                        $($path_to_types)*:: Fir::dtor::< <$ty as $($path_to_types)*::
+                        Guest >::Fir > (rep) } } }; };
                     };
                 }
                 #[doc(hidden)]
-                pub(crate) use __export_component_wasm_plugin_hello_filter_cabi;
+                pub(crate) use __export_local_hello_filter_0_1_0_cabi;
                 #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
                 #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
                 struct _RetArea(
@@ -1187,22 +1180,21 @@ macro_rules! __export_example_impl {
     ($ty:ident with_types_in $($path_to_types_root:tt)*) => {
         $($path_to_types_root)*:: __export_world_example_cabi!($ty with_types_in
         $($path_to_types_root)*); $($path_to_types_root)*::
-        exports::component::wasm_plugin_hello::types::__export_component_wasm_plugin_hello_types_cabi!($ty
-        with_types_in $($path_to_types_root)*::
-        exports::component::wasm_plugin_hello::types); $($path_to_types_root)*::
-        exports::component::wasm_plugin_hello::filter::__export_component_wasm_plugin_hello_filter_cabi!($ty
-        with_types_in $($path_to_types_root)*::
-        exports::component::wasm_plugin_hello::filter);
+        exports::local::hello::types::__export_local_hello_types_0_1_0_cabi!($ty
+        with_types_in $($path_to_types_root)*:: exports::local::hello::types);
+        $($path_to_types_root)*::
+        exports::local::hello::filter::__export_local_hello_filter_0_1_0_cabi!($ty
+        with_types_in $($path_to_types_root)*:: exports::local::hello::filter);
     };
 }
 #[doc(inline)]
 pub(crate) use __export_example_impl as export;
 #[cfg(target_arch = "wasm32")]
-#[unsafe(link_section = "component-type:wit-bindgen:0.41.0:component:wasm-plugin-hello:example:encoded world")]
+#[unsafe(link_section = "component-type:wit-bindgen:0.41.0:local:hello@0.1.0:example:encoded world")]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 868] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xe6\x05\x01A\x02\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 838] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xc8\x05\x01A\x02\x01\
 A\x0f\x01@\0\0s\x04\0\x0bhello-world\x01\0\x01@\x02\x01ay\x01by\0y\x04\0\x03add\x01\
 \x01\x01py\x01@\x01\x01l\x02\0y\x04\0\x03sum\x01\x03\x01@\x01\x01ny\0y\x04\0\x08\
 loop-sum\x01\x04\x01@\x01\x01ny\0s\x04\0\x0fgenerate-string\x01\x05\x01B\x19\x01\
@@ -1213,15 +1205,14 @@ r\x02\x01xv\x01yv\x04\0\x04pos2\x03\0\0\x04\0\x06setter\x03\x01\x04\0\x06summer\
 tatic]summer.new\x01\x0a\x01h\x03\x01py\x01@\x02\x04self\x0b\x01l\x0c\x01\0\x04\0\
 \x16[method]summer.set-val\x01\x0d\x01@\x02\x04self\x0b\x01ks\x01\0\x04\0\x16[me\
 thod]summer.set-key\x01\x0e\x01@\x01\x04self\x0b\0y\x04\0\x12[method]summer.sum\x01\
-\x0f\x01@\x01\x04self\x0b\0s\x04\0\x16[method]summer.get-key\x01\x10\x04\0!compo\
-nent:wasm-plugin-hello/types\x05\x06\x01B\x0c\x04\0\x03fir\x03\x01\x01pv\x01i\0\x01\
-@\x01\x03tap\x01\0\x02\x04\0\x0f[static]fir.new\x01\x03\x01@\x01\x01ny\0\x02\x04\
-\0\x16[static]fir.new-moving\x01\x04\x01h\0\x01@\x02\x04self\x05\x05inputv\0v\x04\
-\0\x12[method]fir.filter\x01\x06\x01@\x02\x04self\x05\x05input\x01\0\x01\x04\0\x16\
-[method]fir.filter-vec\x01\x07\x04\0\"component:wasm-plugin-hello/filter\x05\x07\
-\x04\0#component:wasm-plugin-hello/example\x04\0\x0b\x0d\x01\0\x07example\x03\0\0\
-\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bind\
-gen-rust\x060.41.0";
+\x0f\x01@\x01\x04self\x0b\0s\x04\0\x16[method]summer.get-key\x01\x10\x04\0\x17lo\
+cal:hello/types@0.1.0\x05\x06\x01B\x0c\x04\0\x03fir\x03\x01\x01pv\x01i\0\x01@\x01\
+\x03tap\x01\0\x02\x04\0\x0f[static]fir.new\x01\x03\x01@\x01\x01ny\0\x02\x04\0\x16\
+[static]fir.new-moving\x01\x04\x01h\0\x01@\x02\x04self\x05\x05inputv\0v\x04\0\x12\
+[method]fir.filter\x01\x06\x01@\x02\x04self\x05\x05input\x01\0\x01\x04\0\x16[met\
+hod]fir.filter-vec\x01\x07\x04\0\x18local:hello/filter@0.1.0\x05\x07\x04\0\x19lo\
+cal:hello/example@0.1.0\x04\0\x0b\x0d\x01\0\x07example\x03\0\0\0G\x09producers\x01\
+\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

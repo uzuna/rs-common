@@ -1,5 +1,5 @@
 use clap::Parser;
-use exports::component::wasm_plugin_hello::types::Pos2;
+use exports::local::hello::types::Pos2;
 use std::{error::Error, path::PathBuf};
 use wasmtime::{
     component::{Component, ResourceAny},
@@ -27,7 +27,7 @@ enum WasiSupport {
 }
 
 // crate rootからの相対パスで指定
-wasmtime::component::bindgen!(in "../../crates/wasm-plugin-hello/wit/world.wit");
+wasmtime::component::bindgen!(in "../../wasm-comp/hello/wit/world.wit");
 
 /// WASIリンクに必要なトレイと実装構造体
 ///
@@ -71,14 +71,14 @@ struct SetterWrap {
 
 impl SetterWrap {
     fn get<T>(&self, store: &mut Store<T>) -> Result<Pos2, Box<dyn Error>> {
-        let g = self.instance.component_wasm_plugin_hello_types();
+        let g = self.instance.local_hello_types();
         let caller = g.setter();
         let res = caller.call_get(store, self.setter)?;
         Ok(res)
     }
 
     fn set<T>(&self, store: &mut Store<T>, p: Pos2) -> Result<(), Box<dyn Error>> {
-        let g = self.instance.component_wasm_plugin_hello_types();
+        let g = self.instance.local_hello_types();
         let caller = g.setter();
         caller.call_set(store, self.setter, p)?;
         Ok(())
@@ -119,7 +119,7 @@ impl<T> WasmComponent<T> {
 
     fn setter(&mut self) -> Result<SetterWrap, Box<dyn Error>> {
         let e = Example::instantiate(&mut self.store, &self.component, &self.linker)?;
-        let g = e.component_wasm_plugin_hello_types();
+        let g = e.local_hello_types();
         let caller = g.setter();
         let setter = caller.call_new(&mut self.store)?;
         let sw = SetterWrap {

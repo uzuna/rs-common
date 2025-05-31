@@ -87,7 +87,7 @@ fn benchmark_calculate_add(c: &mut Criterion) {
         })
     });
 
-    let summer = instance.component_wasm_plugin_hello_types().summer();
+    let summer = instance.local_hello_types().summer();
     let r = summer
         .call_new(&mut ctx.store)
         .expect("Failed to call new function on summer resource");
@@ -149,7 +149,7 @@ fn benchmark_filter(c: &mut Criterion) {
         .expect("Failed to create WasmComponent");
     let instance = ctx.instance().expect("Failed to instantiate component");
 
-    let filter = instance.component_wasm_plugin_hello_filter().fir();
+    let filter = instance.local_hello_filter().fir();
     let resource = filter
         .call_new_moving(&mut ctx.store, 8)
         .expect("Failed to call new_moving function on fir resource");

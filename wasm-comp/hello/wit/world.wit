@@ -1,4 +1,4 @@
-package component:wasm-plugin-hello;
+package local:hello@0.1.0;
 
 interface types {
     record pos2 {

@@ -1,0 +1,17 @@
+[package]
+name = "wasm-plugin-hasdep"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+wit-bindgen-rt.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+name = "hasdep"
+
+[package.metadata.component.target.dependencies]
+"local:calc" = { path = "../calc/wit" } 

@@ -1,0 +1,13 @@
+dir: plugins
+pairs:
+  - plugin: [hello, hasdep]
+    file: hello.wasm
+  - plugin: [hello, hasdep]
+    wasi: preview2
+    file: hello-wasip2.wasm
+  - plugin: [hasdep]
+    file: composed.wasm
+  # コンポジットしていないデータ。リンク出来ずにエラーになる。
+  # add_to_linkerを自動で実装してくれたら嬉しいのだけど
+  - plugin: [hasdep]
+    file: hasdep.wasm

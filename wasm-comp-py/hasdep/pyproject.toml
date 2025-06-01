@@ -1,0 +1,7 @@
+[project]
+name = "hasdep"
+version = "0.1.0"
+description = "build wasm binary by python"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []

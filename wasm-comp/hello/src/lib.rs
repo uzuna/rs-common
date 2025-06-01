@@ -4,7 +4,7 @@ mod bindings;
 use std::cell::RefCell;
 
 use bindings::{
-    exports::component::wasm_plugin_hello::{
+    exports::local::hello::{
         filter::{self, Guest as FilterTrait, GuestFir},
         types::{Guest as SetterTrait, GuestSetter, GuestSummer, Pos2, Setter, Summer},
     },

@@ -1,12 +1,9 @@
-use wasmtime::{component::Component, Engine, Store};
+//! WASM実行環境の構成を行う
+
+use wasmtime::{Engine, Store};
 use wasmtime_wasi::{
     p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView},
     ResourceTable,
-};
-
-use crate::bindings::{
-    hasdep,
-    hello::{Example, Pos2, SetterWrap},
 };
 
 /// WASIリンクに必要なトレイと実装構造体
@@ -43,98 +40,40 @@ impl WasiView for Preview2Host {
     }
 }
 
-pub struct WasmComponent<T> {
-    store: Store<T>,
-    component: Component,
-    linker: wasmtime::component::Linker<T>,
+pub struct ExecStore<T> {
+    // StoreはWasmインスタンスとホスト定義の状態のコレクション
+    // すべてのインsタンスとアイテムはstoreニアタッチされてそれを参照する。実態はここに有り。
+    // プログラム内の短命なオブジェクトとして使う意図で設計されており、GCもないため明示的な削除まで開放されない
+    // A内に無制限の数のインスタンスを作成することは想定していないので、実行したいメインインスタンスと同じ有効期限になるような使い方を推奨している
+    // StoreはComponentのインスタンスごとに作る
+    pub store: Store<T>,
+    // Componentをインスタンス化するための型
+    // コンポーネントの相互リンクやホスト機能のために使用される
+    // 値はインポート名によって定義されて、名前解決を使用してインスタンス化される。
+    // ここからLinkerInstanceを取得してfunc_wrapなどを通してホスト関数を定義する
+    // 別のguest関数定義方法はよくわからない...
+    // linker: wasmtime::component::Linker<T>,
+    pub linker: wasmtime::component::Linker<T>,
 }
 
-impl<T> WasmComponent<T> {
+impl<T> ExecStore<T> {
     // WASIなしで実行する場合のコンポーネントを生成
-    pub fn new_unknown(engine: &Engine, byte: &[u8], data: T) -> anyhow::Result<Self> {
-        // WASIなしで実行する場合の設定
+    pub fn new_core(engine: &Engine, data: T) -> Self {
         let store = Store::new(engine, data);
-        let component = Component::new(engine, byte)?;
         let linker = wasmtime::component::Linker::new(engine);
-        Ok(Self {
-            store,
-            component,
-            linker,
-        })
-    }
-
-    pub fn hello_instance(&mut self) -> anyhow::Result<Example> {
-        // コンポーネントをインスタンス化
-        let res = Example::instantiate(&mut self.store, &self.component, &self.linker)?;
-        Ok(res)
-    }
-
-    pub fn setter(&mut self) -> anyhow::Result<SetterWrap> {
-        let e = Example::instantiate(&mut self.store, &self.component, &self.linker)?;
-        let g = e.local_hello_types();
-        let caller = g.setter();
-        let setter = caller.call_new(&mut self.store)?;
-        let sw = SetterWrap::new(e, setter);
-        Ok(sw)
-    }
-
-    pub fn hasdep_instance(&mut self) -> anyhow::Result<hasdep::Hasdep> {
-        // hasdepコンポーネントをインスタンス化
-        let res = hasdep::Hasdep::instantiate(&mut self.store, &self.component, &self.linker)?;
-        Ok(res)
+        Self { store, linker }
     }
 }
 
-impl WasmComponent<Preview2Host> {
-    pub fn new_p2(engine: &Engine, byte: &[u8]) -> anyhow::Result<Self> {
-        // WASI Preview2のインターフェースを追加
+impl ExecStore<Preview2Host> {
+    // WASI Preview2のインターフェースを持つ実行コンテキスト
+    pub fn new_p2(engine: &Engine) -> anyhow::Result<Self> {
         let store = Store::new(engine, Preview2Host::default());
-        let component = Component::new(engine, byte)?;
         let mut linker = wasmtime::component::Linker::new(engine);
         // 重複読み出しを許可
         linker.allow_shadowing(true);
         // WASIp2向けのインターフェースをリンカーに追加
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
-
-        Ok(Self {
-            store,
-            component,
-            linker,
-        })
+        Ok(Self { store, linker })
     }
-}
-
-pub fn run_sequence_hello<T>(c: &mut WasmComponent<T>) -> anyhow::Result<()> {
-    let e = c.hello_instance()?;
-    let res = e.call_hello_world(&mut c.store)?;
-    println!("Hello from WASI Preview1: {}", res);
-
-    for i in 0..5 {
-        let result = e.call_add(&mut c.store, i, i)?;
-        println!("add({i}+{i}) = {result}");
-    }
-
-    let s = e.call_sum(&mut c.store, &[1, 2, 3, 4, 5])?;
-    println!("sum([1, 2, 3, 4, 5]) = {}", s);
-
-    let sw = c.setter()?;
-    let res = sw.get(&mut c.store)?;
-    println!("setter.get() = {:?}", res);
-    sw.set(&mut c.store, Pos2 { x: 1.0, y: 2.0 })?;
-    let get = sw.get(&mut c.store)?;
-    println!("setter.get() = {:?}", get);
-    sw.drop(&mut c.store)?;
-
-    Ok(())
-}
-
-pub fn run_hasdep<T>(c: &mut WasmComponent<T>) -> anyhow::Result<()> {
-    let e = c.hasdep_instance()?;
-
-    for i in 0..5 {
-        let result = e.call_add(&mut c.store, i, i)?;
-        println!("add({i}+{i}) = {result}");
-    }
-
-    Ok(())
 }

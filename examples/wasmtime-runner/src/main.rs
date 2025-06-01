@@ -1,9 +1,9 @@
 use anyhow::Context;
 use clap::Parser;
-use context::{run_hasdep, run_sequence_hello, WasmComponent};
+use context::ExecStore;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use wasmtime::*;
+use wasmtime::{component::Component, *};
 
 pub mod bindings;
 pub mod context;
@@ -62,23 +62,35 @@ pub struct PluginConfig {
     pub pairs: Vec<PluginPair>,
 }
 
-fn run_inner<T>(c: &mut WasmComponent<T>, p: Plugin) -> anyhow::Result<()> {
+fn run_inner<T>(es: ExecStore<T>, p: &Plugin, component: &Component) -> anyhow::Result<()> {
     match p {
-        Plugin::Hello => run_sequence_hello(c),
-        Plugin::Hasdep => run_hasdep(c),
+        Plugin::Hello => {
+            let mut inst = bindings::hello::HelloInst::new_with_binary(es, component)?;
+            bindings::hello::demo(&mut inst)
+        }
+        Plugin::Hasdep => {
+            let mut inst = bindings::hasdep::HasdepInst::new_with_binary(es, component)?;
+            bindings::hasdep::demo(&mut inst)
+        }
     }
 }
 
 fn run(engine: &Engine, pair: &PluginPair) -> anyhow::Result<()> {
     let buffer = std::fs::read(&pair.file)
         .with_context(|| format!("Failed to read wasm file: {}", pair.file.display()))?;
+    let comp = wasmtime::component::Component::new(engine, &buffer).with_context(|| {
+        format!(
+            "Failed to create component from file: {}",
+            pair.file.display()
+        )
+    })?;
 
     match pair.wasi {
         WasiSupport::None => {
             println!("Running without WASI support for plugin {:?}", pair.plugin);
-            let mut c = WasmComponent::new_unknown(engine, buffer.as_slice(), ())?;
             for p in &pair.plugin {
-                run_inner(&mut c, *p)?;
+                let es = context::ExecStore::new_core(engine, ());
+                run_inner(es, p, &comp)?;
             }
         }
         WasiSupport::Preview2 => {
@@ -86,9 +98,9 @@ fn run(engine: &Engine, pair: &PluginPair) -> anyhow::Result<()> {
                 "Running with WASI Preview2 support for plugin {:?}",
                 pair.plugin
             );
-            let mut c = WasmComponent::new_p2(engine, buffer.as_slice())?;
             for p in &pair.plugin {
-                run_inner(&mut c, *p)?;
+                let es = context::ExecStore::new_p2(engine)?;
+                run_inner(es, p, &comp)?;
             }
         }
     }

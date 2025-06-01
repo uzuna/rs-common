@@ -1,32 +1,152 @@
+use std::path::Path;
+
+use anyhow::Context;
 use criterion::{criterion_group, criterion_main, Criterion};
-use wasmtime::{component::Component, Engine, Store};
+use wasmtime::{
+    component::{Component, ResourceAny},
+    Engine, Store,
+};
 
 wasmtime::component::bindgen!(in "wit/world.wit");
 
-struct WasmComponent<T> {
+const EXAMPLE_WASM: &str = "../../target/wasm32-unknown-unknown/release/hello.wasm";
+
+// refer: examples/wasmtime-runner/src/bindings.rs
+struct ExecStore<T> {
     store: Store<T>,
-    component: Component,
     linker: wasmtime::component::Linker<T>,
 }
 
-impl<T> WasmComponent<T> {
+impl<T> ExecStore<T> {
     // WASIなしで実行する場合のコンポーネントを生成
-    fn new_unknown(engine: &Engine, byte: &[u8], data: T) -> anyhow::Result<Self> {
-        // WASIなしで実行する場合の設定
+    fn new_core(engine: &Engine, data: T) -> Self {
         let store = Store::new(engine, data);
-        let component = Component::new(engine, byte)?;
         let linker = wasmtime::component::Linker::new(engine);
-        Ok(Self {
-            store,
-            component,
-            linker,
-        })
+        Self { store, linker }
+    }
+}
+
+fn load_wasm_component(engine: &Engine) -> anyhow::Result<Component> {
+    load_from_file(engine, EXAMPLE_WASM)
+}
+
+fn load_from_file(engine: &Engine, file: impl AsRef<Path>) -> anyhow::Result<Component> {
+    let buffer = std::fs::read(&file)
+        .with_context(|| format!("Failed to read wasm file: {}", file.as_ref().display()))?;
+    Component::new(engine, &buffer).with_context(|| {
+        format!(
+            "Failed to create component from file: {}",
+            file.as_ref().display()
+        )
+    })
+}
+
+struct HelloInst<T> {
+    instance: Example,
+    store: Store<T>,
+    summer: ResourceAny,
+}
+
+impl<T> HelloInst<T> {
+    fn new_with_binary(es: ExecStore<T>, component: &Component) -> anyhow::Result<Self> {
+        let ExecStore { mut store, linker } = es;
+        let e = Example::instantiate(&mut store, component, &linker)?;
+        let g = e.local_hello_types();
+        let summer = g.summer();
+        let summer = summer.call_new(&mut store)?;
+        Ok(Self::new(e, store, summer))
     }
 
-    fn instance(&mut self) -> anyhow::Result<Example> {
-        // コンポーネントをインスタンス化
-        let res = Example::instantiate(&mut self.store, &self.component, &self.linker)?;
-        Ok(res)
+    fn new(instance: Example, store: Store<T>, summer: ResourceAny) -> Self {
+        Self {
+            instance,
+            store,
+            summer,
+        }
+    }
+
+    fn call_add(&mut self, a: u32, b: u32) -> anyhow::Result<u32> {
+        self.instance.call_add(&mut self.store, a, b)
+    }
+
+    fn call_sum(&mut self, v: &[u32]) -> anyhow::Result<u32> {
+        self.instance.call_sum(&mut self.store, v)
+    }
+
+    fn call_loop_sum(&mut self, len: u32) -> anyhow::Result<u32> {
+        self.instance.call_loop_sum(&mut self.store, len)
+    }
+
+    fn call_generate_string(&mut self, len: u32) -> anyhow::Result<String> {
+        self.instance.call_generate_string(&mut self.store, len)
+    }
+
+    fn summer_set_key(&mut self, key: &str) -> anyhow::Result<()> {
+        let g = self.instance.local_hello_types();
+        let summer = g.summer();
+        summer.call_set_key(&mut self.store, self.summer, key)?;
+        Ok(())
+    }
+
+    fn summer_get_key(&mut self) -> anyhow::Result<String> {
+        let g = self.instance.local_hello_types();
+        let summer = g.summer();
+        let key = summer.call_get_key(&mut self.store, self.summer)?;
+        Ok(key)
+    }
+
+    fn summer_set_val(&mut self, val: &[u32]) -> anyhow::Result<()> {
+        let g = self.instance.local_hello_types();
+        let summer = g.summer();
+        summer.call_set_val(&mut self.store, self.summer, val)?;
+        Ok(())
+    }
+
+    fn summer_sum(&mut self) -> anyhow::Result<u32> {
+        let g = self.instance.local_hello_types();
+        let summer = g.summer();
+        let sum = summer.call_sum(&mut self.store, self.summer)?;
+        Ok(sum)
+    }
+}
+
+struct HelloInstFir<T> {
+    // Wit定義に従ってComponentを呼ぶための型
+    instance: Example,
+    // wasmインスタンスデータ保持構造体
+    store: Store<T>,
+    // WASMインスタンス内のFIRリソースクラス型定義情報
+    fir: ResourceAny,
+}
+
+impl<T> HelloInstFir<T> {
+    fn new_with_binary(es: ExecStore<T>, component: &Component) -> anyhow::Result<Self> {
+        let ExecStore { mut store, linker } = es;
+        let e = Example::instantiate(&mut store, component, &linker)?;
+        let g = e.local_hello_filter();
+        let fir = g.fir();
+        let fir = fir.call_new_moving(&mut store, 8)?;
+        Ok(Self::new(e, store, fir))
+    }
+
+    fn new(instance: Example, store: Store<T>, fir: ResourceAny) -> Self {
+        Self {
+            instance,
+            store,
+            fir,
+        }
+    }
+
+    fn call_filter(&mut self, x: f32) -> anyhow::Result<f32> {
+        let g = self.instance.local_hello_filter();
+        let fir = g.fir();
+        fir.call_filter(&mut self.store, self.fir, x)
+    }
+
+    fn call_filter_vec(&mut self, list: &[f32]) -> anyhow::Result<Vec<f32>> {
+        let g = self.instance.local_hello_filter();
+        let fir = g.fir();
+        fir.call_filter_vec(&mut self.store, self.fir, list)
     }
 }
 
@@ -53,24 +173,16 @@ fn rust_generate_string(len: usize) -> String {
     s
 }
 
-fn benchmark_calculate_add(c: &mut Criterion) {
-    let wasm_binaly =
-        std::fs::read("../../target/wasm32-unknown-unknown/release/wasm_plugin_hello.wasm")
-            .expect("Failed to read wasm file");
-    // wasmtimeのエンジンを初期化
+fn benchmark_calculate_add_inner(c: &mut Criterion) -> anyhow::Result<()> {
     let engine = Engine::default();
-    let mut ctx = WasmComponent::new_unknown(&engine, &wasm_binaly, ())
-        .expect("Failed to create WasmComponent");
-    let instance = ctx.instance().expect("Failed to instantiate component");
+    let comp = load_wasm_component(&engine)?;
+    let es = ExecStore::new_core(&engine, ());
+    let mut inst = HelloInst::new_with_binary(es, &comp)?;
 
     c.bench_function("Rust add", |b| b.iter(|| rust_calculate_add(1, 2)));
 
     c.bench_function("Wasm add", |b| {
-        b.iter(|| {
-            instance
-                .call_add(&mut ctx.store, 1, 2)
-                .expect("Failed to call add function")
-        })
+        b.iter(|| inst.call_add(1, 2).expect("Failed to call add function"))
     });
 
     let len: u32 = 1000;
@@ -80,24 +192,13 @@ fn benchmark_calculate_add(c: &mut Criterion) {
         b.iter(|| rust_list_sum(&list))
     });
     c.bench_function(&format!("Wasm list_sum({len})"), |b| {
-        b.iter(|| {
-            instance
-                .call_sum(&mut ctx.store, &list)
-                .expect("Failed to call sum function")
-        })
+        b.iter(|| inst.call_sum(&list).expect("Failed to call sum function"))
     });
 
-    let summer = instance.local_hello_types().summer();
-    let r = summer
-        .call_new(&mut ctx.store)
-        .expect("Failed to call new function on summer resource");
-    summer
-        .call_set_val(&mut ctx.store, r, &list)
-        .expect("Failed to call set function on summer");
+    inst.summer_set_val(&list)?;
     c.bench_function(&format!("Wasm list_sum({len}) in Resource"), |b| {
         b.iter(|| {
-            summer
-                .call_sum(&mut ctx.store, r)
+            inst.summer_sum()
                 .expect("Failed to call sum function on summer")
         })
     });
@@ -107,8 +208,7 @@ fn benchmark_calculate_add(c: &mut Criterion) {
     });
     c.bench_function(&format!("Wasm loop_sum({len})"), |b| {
         b.iter(|| {
-            instance
-                .call_loop_sum(&mut ctx.store, len)
+            inst.call_loop_sum(len)
                 .expect("Failed to call loop_sum function")
         })
     });
@@ -121,38 +221,26 @@ fn benchmark_calculate_add(c: &mut Criterion) {
     });
     c.bench_function(&format!("Wasm generate_string({len})"), |b| {
         b.iter(|| {
-            instance
-                .call_generate_string(&mut ctx.store, len)
+            inst.call_generate_string(len)
                 .expect("Failed to call generate_string function")
         })
     });
 
-    summer
-        .call_set_key(&mut ctx.store, r, "UTY3z2qNfWuWvV5VoFxwpZvymfAxZwyt")
-        .expect("Failed to call set_key function on summer");
+    inst.summer_set_key("UTY3z2qNfWuWvV5VoFxwpZvymfAxZwyt")?;
     c.bench_function(&format!("Wasm generate_string({len}) return only"), |b| {
         b.iter(|| {
-            summer
-                .call_get_key(&mut ctx.store, r)
+            inst.summer_get_key()
                 .expect("Failed to call get_key function on summer")
         })
     });
+    Ok(())
 }
 
-fn benchmark_filter(c: &mut Criterion) {
-    let wasm_binaly =
-        std::fs::read("../../target/wasm32-unknown-unknown/release/wasm_plugin_hello.wasm")
-            .expect("Failed to read wasm file");
-    // wasmtimeのエンジンを初期化
+fn benchmark_filter_inner(c: &mut Criterion) -> anyhow::Result<()> {
     let engine = Engine::default();
-    let mut ctx = WasmComponent::new_unknown(&engine, &wasm_binaly, ())
-        .expect("Failed to create WasmComponent");
-    let instance = ctx.instance().expect("Failed to instantiate component");
-
-    let filter = instance.local_hello_filter().fir();
-    let resource = filter
-        .call_new_moving(&mut ctx.store, 8)
-        .expect("Failed to call new_moving function on fir resource");
+    let comp = load_wasm_component(&engine)?;
+    let es = ExecStore::new_core(&engine, ());
+    let mut inst = HelloInstFir::new_with_binary(es, &comp)?;
 
     let mut r_fir = dsp::Fir::new_moving(8);
 
@@ -171,8 +259,7 @@ fn benchmark_filter(c: &mut Criterion) {
     c.bench_function("Wasm filter", |b| {
         b.iter(|| {
             for &x in &list {
-                filter
-                    .call_filter(&mut ctx.store, resource, x)
+                inst.call_filter(x)
                     .expect("Failed to call filter function on fir");
             }
         })
@@ -183,11 +270,19 @@ fn benchmark_filter(c: &mut Criterion) {
 
     c.bench_function("Wasm filter_vec", |b| {
         b.iter(|| {
-            filter
-                .call_filter_vec(&mut ctx.store, resource, &list)
+            inst.call_filter_vec(&list)
                 .expect("Failed to call filter_vec function on fir")
         })
     });
+    Ok(())
+}
+
+fn benchmark_calculate_add(c: &mut Criterion) {
+    benchmark_calculate_add_inner(c).unwrap_or_else(|e| eprintln!("Benchmark failed: {}", e));
+}
+
+fn benchmark_filter(c: &mut Criterion) {
+    benchmark_filter_inner(c).unwrap_or_else(|e| eprintln!("Benchmark failed: {}", e));
 }
 
 criterion_group!(benches, benchmark_calculate_add, benchmark_filter);

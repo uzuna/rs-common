@@ -1,0 +1,17 @@
+[package]
+name = "plotter-with-plugin"
+version = "0.1.0"
+description = "A Plotter example with a plugin"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+eframe = { workspace = true, default-features = false, features = ["default_fonts", "wayland", "x11",  "wgpu", "persistence"] }
+egui = { workspace = true, features = ["serde"] }
+egui_plot.workspace = true
+serde.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }

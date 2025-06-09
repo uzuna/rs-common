@@ -1,0 +1,19 @@
+[package]
+name = "wasm-dsp"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+wit-bindgen-rt.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[package.metadata.component]
+package = "local:dsp"
+
+[package.metadata.component.target]
+path = "../../wits/dsp/wit"

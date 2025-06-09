@@ -1,0 +1,24 @@
+package local:dsp@0.1.0;
+
+interface types {
+    type duration = u64; // 時間の長さを表す型
+    type value = s16; // 信号の値を表す型
+    record single {
+        data: value, // 1chの信号データ
+        elapsed: duration, // 信号の実時間長さ
+    }
+}
+
+// 1chの信号データを処理するインターフェース
+interface single-channel {
+    use types.{single, value};
+    resource processor {
+        constructor();
+        process: func(input: single) -> value;
+    }
+}
+
+world dsp {
+    export single-channel;
+    export types;
+}

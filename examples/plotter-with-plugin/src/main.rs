@@ -34,6 +34,20 @@ impl HeaderState {
     }
 }
 
+struct DragaValueState {
+    step: f64,
+    value: f64,
+}
+
+impl Default for DragaValueState {
+    fn default() -> Self {
+        Self {
+            step: 0.01,
+            value: 0.5,
+        }
+    }
+}
+
 struct App {
     header: HeaderState,
     sp: SignalProcess,
@@ -42,6 +56,7 @@ struct App {
     selected_plugin: usize,
     param_key: String,
     param_value: String,
+    drag_value: DragaValueState,
     set_queue: Vec<(String, String, String)>,
 }
 
@@ -58,6 +73,7 @@ impl App {
             selected_plugin: 0,
             param_key: String::new(),
             param_value: String::new(),
+            drag_value: DragaValueState::default(),
             set_queue: Vec::new(),
         }
     }
@@ -162,23 +178,41 @@ impl eframe::App for App {
                             self.param_key.clone(),
                             self.param_value.clone(),
                         );
-                        info!(
-                            "Setting parameter {}={} for plugin {}",
-                            param_key, param_value, plugin_name
-                        );
                         self.set_queue
                             .push((plugin_name.clone(), param_key, param_value));
                     }
                 });
                 if ui.button("Set Parameter").clicked() {
                     let plugin_name = self.sp.plugins().keys().nth(self.selected_plugin).unwrap();
-                    info!("Setting parameter for plugin {}", plugin_name);
                     self.set_queue.push((
                         plugin_name.clone(),
                         self.param_key.clone(),
                         self.param_value.clone(),
                     ));
                 }
+
+                ui.separator();
+
+                // Draggable valueUIを使った設定
+                ui.label("Number Slider");
+                ui.horizontal(|ui| {
+                    ui.label("Step:");
+                    ui.add(egui::DragValue::new(&mut self.drag_value.step).speed(0.01));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Value:");
+                    let res = ui.add(
+                        egui::DragValue::new(&mut self.drag_value.value)
+                            .speed(self.drag_value.step),
+                    );
+                    if res.changed() {
+                        let plugin_name =
+                            self.sp.plugins().keys().nth(self.selected_plugin).unwrap();
+                        let key = self.param_key.clone();
+                        let value = self.drag_value.value.to_string();
+                        self.set_queue.push((plugin_name.clone(), key, value));
+                    }
+                });
             });
         egui::CentralPanel::default().show(ctx, |ui| {
             // ここにプラグインのUIを追加することができます
@@ -186,12 +220,9 @@ impl eframe::App for App {
         });
 
         // プラグインのパラメータを設定する
-        // uiせっていのとちゅ
         for (target, key, value) in self.set_queue.drain(..) {
             if let Err(e) = self.sp.set_param(&target, &key, &value) {
                 self.error = Some(format!("Failed to set parameter: {}", e));
-            } else {
-                info!("Set parameter {}={} for plugin {}", key, value, target);
             }
         }
         ctx.request_repaint(); // 定期的に再描画を要求

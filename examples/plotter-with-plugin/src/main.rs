@@ -2,9 +2,12 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 use tracing_subscriber::prelude::*;
 
+use crate::plot::SignalProcess;
+
 pub const APP_NAME: &str = env!("CARGO_PKG_NAME");
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub mod plot;
 pub mod plugin;
 pub mod wrun;
 
@@ -32,12 +35,14 @@ impl HeaderState {
 
 struct App {
     header: HeaderState,
+    sp: SignalProcess,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let header = HeaderState::load(cc);
-        Self { header }
+        let sp = SignalProcess::new(15.0, 0.0, std::time::Duration::from_secs(10));
+        Self { header, sp }
     }
 }
 
@@ -48,6 +53,7 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.sp.update(std::time::Duration::from_millis(16));
         egui::TopBottomPanel::top("header")
             .frame(egui::Frame::new().inner_margin(4))
             .resizable(false)
@@ -76,13 +82,10 @@ impl eframe::App for App {
                 })
             });
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("This is a plotter with plugin example.");
-                ui.label("You can add plugins to extend functionality.");
-            });
-
             // ここにプラグインのUIを追加することができます
+            self.sp.plot(ui);
         });
+        ctx.request_repaint(); // 定期的に再描画を要求
     }
 }
 

@@ -1,5 +1,5 @@
 [package]
-name = "plotter-with-plugin"
+name = "pwp"
 version = "0.1.0"
 description = "A Plotter example with a plugin"
 edition.workspace = true

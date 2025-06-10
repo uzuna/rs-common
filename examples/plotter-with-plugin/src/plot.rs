@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, VecDeque},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use egui::Ui;
@@ -75,6 +75,16 @@ impl AsRecord for RecordRef<'_, f64> {
     }
 }
 
+impl AsRecord for RecordRef<'_, Duration> {
+    fn timestamp(&self) -> std::time::Duration {
+        self.timestamp
+    }
+
+    fn as_f64(&self) -> f64 {
+        self.value.as_secs_f64() * 1000.0 // ミリ秒に変換
+    }
+}
+
 // Sin波形生成
 struct SinGenerator {
     frequency: f64,
@@ -111,11 +121,22 @@ struct RecordStore {
     ts: VecDeque<std::time::Duration>,
     records: VecDeque<f64>,
     plugin_records: BTreeMap<String, VecDeque<f64>>,
+    durs: VecDeque<std::time::Duration>,
     // データ保持数制限
     len: usize,
 }
 
 impl RecordStore {
+    fn new(len: usize) -> Self {
+        RecordStore {
+            ts: VecDeque::with_capacity(len),
+            records: VecDeque::with_capacity(len),
+            plugin_records: BTreeMap::new(),
+            durs: VecDeque::with_capacity(len),
+            len,
+        }
+    }
+
     fn set_plugin(&mut self, plugin: &mut SingleInst<()>) -> anyhow::Result<()> {
         let mut record = VecDeque::with_capacity(self.len);
         let name = plugin.name()?;
@@ -139,6 +160,25 @@ impl RecordStore {
             records.push_back(value);
         }
     }
+
+    fn push_elapsed(&mut self, elapsed: std::time::Duration) {
+        if self.durs.len() >= self.len {
+            self.durs.pop_front();
+        }
+        self.durs.push_back(elapsed);
+    }
+
+    // plot用の一次配列を作成する
+    fn record_ref<'a, T>(&'a self, data: &'a VecDeque<T>) -> Vec<RecordRef<'a, T>> {
+        self.ts
+            .iter()
+            .zip(data)
+            .map(|(ts, val)| RecordRef {
+                timestamp: *ts,
+                value: val,
+            })
+            .collect()
+    }
 }
 
 pub struct SignalProcess {
@@ -153,12 +193,7 @@ impl SignalProcess {
     pub fn new(frequency: f64, amp: f64, dur: Duration) -> Self {
         let len = (dur.as_secs_f64() * frequency) as usize; // 1分間のデータ数
         let generator = SinGenerator::new(frequency, amp);
-        let records = RecordStore {
-            ts: VecDeque::with_capacity(len),
-            records: VecDeque::with_capacity(len),
-            len,
-            plugin_records: BTreeMap::new(),
-        };
+        let records = RecordStore::new(len);
         Self {
             generator,
             records,
@@ -184,6 +219,7 @@ impl SignalProcess {
     }
 
     pub fn update(&mut self, tick: std::time::Duration) -> anyhow::Result<()> {
+        let start = Instant::now();
         self.timestamp += tick;
         let timestamp = self.timestamp;
         let value = self.generator.generate(timestamp);
@@ -199,34 +235,19 @@ impl SignalProcess {
             let res = plugin.process(single)?;
             self.records.push_plugin_record(name, res as f64);
         }
+        self.records.push_elapsed(start.elapsed());
         Ok(())
     }
 
     pub fn plot(&self, ui: &mut Ui) {
-        let data: Vec<_> = self
-            .records
-            .ts
-            .iter()
-            .zip(&self.records.records)
-            .map(|(ts, val)| RecordRef {
-                timestamp: *ts,
-                value: val,
-            })
-            .collect();
+        let data = self.records.record_ref(&self.records.records);
         let xr = self.xrange();
         plot_lines(ui, "Sine Wave", xr, &data);
         for (name, records) in &self.records.plugin_records {
-            let data: Vec<_> = self
-                .records
-                .ts
-                .iter()
-                .zip(records)
-                .map(|(ts, val)| RecordRef {
-                    timestamp: *ts,
-                    value: val,
-                })
-                .collect();
+            let data = self.records.record_ref(records);
             plot_lines(ui, name, xr, &data);
         }
+        let elapsed_data: Vec<_> = self.records.record_ref(&self.records.durs);
+        plot_lines(ui, "Process Time", xr, &elapsed_data);
     }
 }

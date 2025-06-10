@@ -7,14 +7,27 @@ interface types {
         data: value, // 1chの信号データ
         elapsed: duration, // 信号の実時間長さ
     }
+
+    record parameter {
+        name: string, // パラメータの名前
+        value: string, // パラメータの値
+    }
 }
 
 // 1chの信号データを処理するインターフェース
 interface single-channel {
-    use types.{single, value};
+    use types.{single, value, parameter};
+    type error = string; // エラーを表す型
     resource processor {
-        constructor();
+        constructor(init: list<parameter>);
+        // 設定可能なパラメータリスト
+        parameters: static func() -> list<parameter>;
+        // 処理
         process: func(input: single) -> value;
+        // 現在地の取得
+        get: func(name: string) -> result<parameter, error>;
+        // パラメータの設定
+        set: func(param: parameter) -> result<parameter, error>;
     }
 }
 
@@ -22,5 +35,6 @@ world dsp {
     export single-channel;
     export types;
 
+    // プラグインの識別名
     export plugin-name: func() -> string;
 }

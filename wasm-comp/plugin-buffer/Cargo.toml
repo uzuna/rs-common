@@ -1,6 +1,7 @@
 [package]
-name = "wasm-dsp"
+name = "plugin-buffer"
 version = "0.1.0"
+description = "バッファリングを伴う処理"
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true

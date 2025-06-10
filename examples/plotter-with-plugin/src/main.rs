@@ -1,3 +1,4 @@
+use egui::ComboBox;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 use tracing_subscriber::prelude::*;
@@ -38,6 +39,10 @@ struct App {
     sp: SignalProcess,
     pl: PluginLoader,
     error: Option<String>,
+    selected_plugin: usize,
+    param_key: String,
+    param_value: String,
+    set_queue: Vec<(String, String, String)>,
 }
 
 impl App {
@@ -50,6 +55,10 @@ impl App {
             sp,
             pl,
             error: None,
+            selected_plugin: 0,
+            param_key: String::new(),
+            param_value: String::new(),
+            set_queue: Vec::new(),
         }
     }
 }
@@ -119,12 +128,72 @@ impl eframe::App for App {
 
                 if let Some(error) = &self.error {
                     ui.label(error);
+
+                    ui.separator();
+                }
+                // parameterの設定UI
+                ui.label("Plugin Parameters");
+                // comboboxでプラグインを選択
+                let plugins = self.sp.plugins().iter().enumerate().collect::<Vec<_>>();
+                ComboBox::new("plugin_selector", "")
+                    .selected_text(
+                        plugins
+                            .iter()
+                            .find(|(a, _)| a == &self.selected_plugin)
+                            .map_or("<Select Plugin>", |(_, name)| name.0),
+                    )
+                    .show_ui(ui, |ui| {
+                        for (i, plugin) in &plugins {
+                            ui.selectable_value(&mut self.selected_plugin, *i, plugin.0);
+                        }
+                    });
+                // key-valueペアの設定
+                ui.horizontal(|ui| {
+                    ui.label("Key:");
+                    ui.text_edit_singleline(&mut self.param_key);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Value:");
+                    ui.text_edit_singleline(&mut self.param_value);
+                    let res = ui.add(egui::TextEdit::singleline(&mut self.param_value));
+                    if res.lost_focus() && ui.input(|i| i.key_down(egui::Key::Enter)) {
+                        let (plugin_name, param_key, param_value) = (
+                            self.sp.plugins().keys().nth(self.selected_plugin).unwrap(),
+                            self.param_key.clone(),
+                            self.param_value.clone(),
+                        );
+                        info!(
+                            "Setting parameter {}={} for plugin {}",
+                            param_key, param_value, plugin_name
+                        );
+                        self.set_queue
+                            .push((plugin_name.clone(), param_key, param_value));
+                    }
+                });
+                if ui.button("Set Parameter").clicked() {
+                    let plugin_name = self.sp.plugins().keys().nth(self.selected_plugin).unwrap();
+                    info!("Setting parameter for plugin {}", plugin_name);
+                    self.set_queue.push((
+                        plugin_name.clone(),
+                        self.param_key.clone(),
+                        self.param_value.clone(),
+                    ));
                 }
             });
         egui::CentralPanel::default().show(ctx, |ui| {
             // ここにプラグインのUIを追加することができます
             self.sp.plot(ui);
         });
+
+        // プラグインのパラメータを設定する
+        // uiせっていのとちゅ
+        for (target, key, value) in self.set_queue.drain(..) {
+            if let Err(e) = self.sp.set_param(&target, &key, &value) {
+                self.error = Some(format!("Failed to set parameter: {}", e));
+            } else {
+                info!("Set parameter {}={} for plugin {}", key, value, target);
+            }
+        }
         ctx.request_repaint(); // 定期的に再描画を要求
     }
 }

@@ -2,6 +2,7 @@
 wasmtime::component::bindgen!(in "../../wits/dsp/wit/dsp.wit");
 
 use crate::wrun::ExecStore;
+use exports::local::dsp::single_channel::Parameter;
 pub use exports::local::dsp::single_channel::Single;
 use wasmtime::{
     component::{Component, ResourceAny},
@@ -20,7 +21,7 @@ impl<T> SingleInst<T> {
         let e = Dsp::instantiate(&mut store, component, &linker)?;
         let g = e.local_dsp_single_channel();
         let r = g.processor();
-        let r = r.call_constructor(&mut store)?;
+        let r = r.call_constructor(&mut store, &[])?;
         Ok(Self::new(e, r, store))
     }
 
@@ -41,6 +42,30 @@ impl<T> SingleInst<T> {
 
     pub fn single(elapsed: u64, data: i16) -> Single {
         Single { elapsed, data }
+    }
+
+    pub fn set_parameter(&mut self, key: &str, value: &str) -> anyhow::Result<()> {
+        let res = self.instance.local_dsp_single_channel();
+        let caller = res.processor();
+        let param = Parameter {
+            name: key.to_string(),
+            value: value.to_string(),
+        };
+        let c = caller.call_set(&mut self.store, self.r, &param)?;
+        match c {
+            Ok(_next) => Ok(()),
+            Err(e) => Err(anyhow::anyhow!("Failed to set parameter: {}", e)),
+        }
+    }
+
+    pub fn get_parameter(&mut self, name: &str) -> anyhow::Result<String> {
+        let res = self.instance.local_dsp_single_channel();
+        let caller = res.processor();
+        let res = caller.call_get(&mut self.store, self.r, name)?;
+        match res {
+            Ok(param) => Ok(param.value),
+            Err(e) => Err(anyhow::anyhow!("Failed to set parameter: {}", e)),
+        }
     }
 }
 

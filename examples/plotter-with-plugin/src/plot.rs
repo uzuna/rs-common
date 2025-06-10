@@ -203,9 +203,22 @@ impl SignalProcess {
         }
     }
 
+    pub fn plugins(&self) -> &BTreeMap<String, SingleInst<()>> {
+        &self.plugins
+    }
+
     pub fn add_plugin(&mut self, mut plugin: SingleInst<()>) {
         self.records.set_plugin(&mut plugin).unwrap();
         self.plugins.insert(plugin.name().unwrap(), plugin);
+    }
+
+    pub fn set_param(&mut self, target: &str, key: &str, value: &str) -> anyhow::Result<()> {
+        if let Some(plugin) = self.plugins.get_mut(target) {
+            plugin.set_parameter(key, value)?;
+        } else {
+            return Err(anyhow::anyhow!("Plugin {} not found", target));
+        }
+        Ok(())
     }
 
     fn xrange(&self) -> XRange {

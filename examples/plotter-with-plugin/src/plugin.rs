@@ -28,6 +28,10 @@ impl<T> SingleInst<T> {
         Self { instance, r, store }
     }
 
+    pub fn name(&mut self) -> anyhow::Result<String> {
+        self.instance.call_plugin_name(&mut self.store)
+    }
+
     pub fn process(&mut self, input: Single) -> anyhow::Result<i16> {
         let res = self.instance.local_dsp_single_channel();
         let caller = res.processor();
@@ -37,5 +41,25 @@ impl<T> SingleInst<T> {
 
     pub fn single(elapsed: u64, data: i16) -> Single {
         Single { elapsed, data }
+    }
+}
+
+pub struct PluginLoader {
+    engine: wasmtime::Engine,
+}
+
+impl PluginLoader {
+    pub fn load_plugin(&self, buffer: &[u8]) -> anyhow::Result<SingleInst<()>> {
+        // プラグインのコンポーネントを読み込む
+        let component = wasmtime::component::Component::from_binary(&self.engine, buffer)?;
+        let es = ExecStore::new_core(&self.engine, ());
+        SingleInst::new_with_binary(es, &component)
+    }
+}
+
+impl Default for PluginLoader {
+    fn default() -> Self {
+        let engine = wasmtime::Engine::default();
+        Self { engine }
     }
 }

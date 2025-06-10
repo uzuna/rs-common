@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 use tracing_subscriber::prelude::*;
 
-use crate::plot::SignalProcess;
+use crate::{plot::SignalProcess, plugin::PluginLoader};
 
 pub const APP_NAME: &str = env!("CARGO_PKG_NAME");
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -36,13 +36,21 @@ impl HeaderState {
 struct App {
     header: HeaderState,
     sp: SignalProcess,
+    pl: PluginLoader,
+    error: Option<String>,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let header = HeaderState::load(cc);
-        let sp = SignalProcess::new(15.0, 0.0, std::time::Duration::from_secs(10));
-        Self { header, sp }
+        let sp = SignalProcess::new(15.0, 128.0, std::time::Duration::from_secs(10));
+        let pl = plugin::PluginLoader::default();
+        Self {
+            header,
+            sp,
+            pl,
+            error: None,
+        }
     }
 }
 
@@ -53,7 +61,9 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.sp.update(std::time::Duration::from_millis(16));
+        self.sp
+            .update(std::time::Duration::from_millis(16))
+            .expect("Failed to update signal process");
         egui::TopBottomPanel::top("header")
             .frame(egui::Frame::new().inner_margin(4))
             .resizable(false)
@@ -77,9 +87,39 @@ impl eframe::App for App {
                     ui.vertical_centered(|ui| {
                         ui.heading("PlotControl");
                     });
+                });
 
+                ui.separator();
+
+                if ui.button("Open Plugin File..").clicked() {
+                    if let Some(path) = rfd::FileDialog::new().pick_file() {
+                        match path.extension() {
+                            Some(ext) if ext == "wasm" => {}
+                            _ => {
+                                ui.label("Not a WASM file");
+                                return;
+                            }
+                        }
+                        let buffer = std::fs::read(&path).expect("Failed to read plugin file");
+                        match self.pl.load_plugin(&buffer) {
+                            Ok(mut plugin) => {
+                                info!(
+                                    "Plugin loaded: {}",
+                                    plugin.name().expect("Failed to get plugin name")
+                                );
+                                self.sp.add_plugin(plugin);
+                            }
+                            Err(e) => {
+                                self.error = Some(format!("Failed to load file: {}", e));
+                            }
+                        }
+                    }
                     ui.separator();
-                })
+                }
+
+                if let Some(error) = &self.error {
+                    ui.label(error);
+                }
             });
         egui::CentralPanel::default().show(ctx, |ui| {
             // ここにプラグインのUIを追加することができます

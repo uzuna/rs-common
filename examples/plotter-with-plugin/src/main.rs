@@ -63,7 +63,12 @@ struct App {
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let header = HeaderState::load(cc);
-        let sp = SignalProcess::new(15.0, 128.0, std::time::Duration::from_secs(10));
+        let gens = vec![
+            plot::SinGenerator::new(2.0, 128.0),
+            plot::SinGenerator::new(15.0, 64.0),
+            plot::SinGenerator::new(45.0, 32.0),
+        ];
+        let sp = SignalProcess::new(gens, std::time::Duration::from_secs(10));
         let pl = plugin::PluginLoader::default();
         Self {
             header,

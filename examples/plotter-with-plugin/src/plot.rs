@@ -87,14 +87,14 @@ impl AsRecord for RecordRef<'_, Duration> {
 }
 
 // Sin波形生成
-struct SinGenerator {
+pub struct SinGenerator {
     frequency: f64,
     phase: f64,
     amplitude: f64,
 }
 
 impl SinGenerator {
-    fn new(frequency: f64, amplitude: f64) -> Self {
+    pub fn new(frequency: f64, amplitude: f64) -> Self {
         Self {
             frequency,
             amplitude,
@@ -104,7 +104,7 @@ impl SinGenerator {
 
     fn generate(&self, timestamp: std::time::Duration) -> f64 {
         let seconds = timestamp.as_secs_f64();
-        (self.frequency * seconds + self.phase).sin() * self.amplitude
+        (core::f64::consts::PI * self.frequency * seconds + self.phase).sin() * self.amplitude
     }
 }
 
@@ -195,7 +195,7 @@ impl Display for Ident {
 }
 
 pub struct SignalProcess {
-    generator: SinGenerator,
+    gens: Vec<SinGenerator>,
     records: RecordStore,
     duration: Duration,
     timestamp: Duration,
@@ -203,17 +203,21 @@ pub struct SignalProcess {
 }
 
 impl SignalProcess {
-    pub fn new(frequency: f64, amp: f64, dur: Duration) -> Self {
-        let len = (dur.as_secs_f64() * frequency) as usize; // 1分間のデータ数
-        let generator = SinGenerator::new(frequency, amp);
+    const SAMPLE_RATE: f64 = 60.0; // サンプルレート
+    pub fn new(gens: Vec<SinGenerator>, dur: Duration) -> Self {
+        let len = (dur.as_secs_f64() * Self::SAMPLE_RATE) as usize; // 1分間のデータ数
         let records = RecordStore::new(len);
         Self {
-            generator,
+            gens,
             records,
             duration: dur,
             timestamp: Duration::ZERO,
             plugins: BTreeMap::new(),
         }
+    }
+
+    fn gen(&self, timestamp: Duration) -> f64 {
+        self.gens.iter().map(|g| g.generate(timestamp)).sum()
     }
 
     pub fn plugins(&self) -> &BTreeMap<String, SingleInst<()>> {
@@ -249,7 +253,7 @@ impl SignalProcess {
         let start = Instant::now();
         self.timestamp += tick;
         let timestamp = self.timestamp;
-        let value = self.generator.generate(timestamp);
+        let value = self.gen(timestamp);
         if self.records.ts.len() >= self.records.len {
             self.records.ts.pop_front();
             self.records.records.pop_front();

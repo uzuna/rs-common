@@ -3759,6 +3759,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin-filter"
+version = "0.1.0"
+dependencies = [
+ "wit-bindgen-rt 0.42.1",
+]
+
+[[package]]
 name = "png"
 version = "0.17.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"

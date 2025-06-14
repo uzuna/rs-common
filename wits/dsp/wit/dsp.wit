@@ -37,4 +37,5 @@ world dsp {
 
     // プラグインの識別名
     export plugin-name: func() -> string;
+    export plugin-version: func() -> string;
 }

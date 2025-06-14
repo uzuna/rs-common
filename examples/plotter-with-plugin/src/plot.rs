@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    fmt::Display,
     time::{Duration, Instant},
 };
 
@@ -139,7 +140,7 @@ impl RecordStore {
 
     fn set_plugin(&mut self, plugin: &mut SingleInst<()>) -> anyhow::Result<()> {
         let mut record = VecDeque::with_capacity(self.len);
-        let name = plugin.name()?;
+        let name = plugin.ident()?.to_string();
         for (v, ts) in self.records.iter().zip(&self.ts) {
             let single = SingleInst::<()>::single(ts.as_nanos() as u64, *v as i16);
             let res = plugin.process(single)?;
@@ -181,6 +182,18 @@ impl RecordStore {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Ident {
+    pub name: String,
+    pub version: String,
+}
+
+impl Display for Ident {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}@{}", self.name, self.version)
+    }
+}
+
 pub struct SignalProcess {
     generator: SinGenerator,
     records: RecordStore,
@@ -209,7 +222,8 @@ impl SignalProcess {
 
     pub fn add_plugin(&mut self, mut plugin: SingleInst<()>) {
         self.records.set_plugin(&mut plugin).unwrap();
-        self.plugins.insert(plugin.name().unwrap(), plugin);
+        self.plugins
+            .insert(plugin.ident().unwrap().to_string(), plugin);
     }
 
     pub fn set_param(&mut self, target: &str, key: &str, value: &str) -> anyhow::Result<()> {

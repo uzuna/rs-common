@@ -177,6 +177,10 @@ impl Guest for Component {
     fn plugin_name() -> String {
         "delay".to_string()
     }
+
+    fn plugin_version() -> String {
+        "0.1.0".to_string()
+    }
 }
 
 bindings::export!(Component with_types_in bindings);

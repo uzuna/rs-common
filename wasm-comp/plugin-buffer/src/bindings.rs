@@ -27,9 +27,36 @@ pub unsafe fn __post_return_plugin_name<T: Guest>(arg0: *mut u8) {
         .cast::<usize>();
     _rt::cabi_dealloc(l0, l1, 1);
 }
+#[doc(hidden)]
+#[allow(non_snake_case)]
+pub unsafe fn _export_plugin_version_cabi<T: Guest>() -> *mut u8 {
+    #[cfg(target_arch = "wasm32")]
+    _rt::run_ctors_once();
+    let result0 = T::plugin_version();
+    let ptr1 = (&raw mut _RET_AREA.0).cast::<u8>();
+    let vec2 = (result0.into_bytes()).into_boxed_slice();
+    let ptr2 = vec2.as_ptr().cast::<u8>();
+    let len2 = vec2.len();
+    ::core::mem::forget(vec2);
+    *ptr1
+        .add(::core::mem::size_of::<*const u8>())
+        .cast::<usize>() = len2;
+    *ptr1.add(0).cast::<*mut u8>() = ptr2.cast_mut();
+    ptr1
+}
+#[doc(hidden)]
+#[allow(non_snake_case)]
+pub unsafe fn __post_return_plugin_version<T: Guest>(arg0: *mut u8) {
+    let l0 = *arg0.add(0).cast::<*mut u8>();
+    let l1 = *arg0
+        .add(::core::mem::size_of::<*const u8>())
+        .cast::<usize>();
+    _rt::cabi_dealloc(l0, l1, 1);
+}
 pub trait Guest {
     /// プラグインの識別名
     fn plugin_name() -> _rt::String;
+    fn plugin_version() -> _rt::String;
 }
 #[doc(hidden)]
 macro_rules! __export_world_dsp_cabi {
@@ -39,7 +66,12 @@ macro_rules! __export_world_dsp_cabi {
         _export_plugin_name_cabi::<$ty > () } } #[unsafe (export_name =
         "cabi_post_plugin-name")] unsafe extern "C" fn _post_return_plugin_name(arg0 : *
         mut u8,) { unsafe { $($path_to_types)*:: __post_return_plugin_name::<$ty > (arg0)
-        } } };
+        } } #[unsafe (export_name = "plugin-version")] unsafe extern "C" fn
+        export_plugin_version() -> * mut u8 { unsafe { $($path_to_types)*::
+        _export_plugin_version_cabi::<$ty > () } } #[unsafe (export_name =
+        "cabi_post_plugin-version")] unsafe extern "C" fn
+        _post_return_plugin_version(arg0 : * mut u8,) { unsafe { $($path_to_types)*::
+        __post_return_plugin_version::<$ty > (arg0) } } };
     };
 }
 #[doc(hidden)]
@@ -917,23 +949,23 @@ pub(crate) use __export_dsp_impl as export;
 #[unsafe(link_section = "component-type:wit-bindgen:0.41.0:local:dsp@0.1.0:dsp:encoded world")]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 671] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xa5\x04\x01A\x02\x01\
-A\x09\x01@\0\0s\x04\0\x0bplugin-name\x01\0\x01B\x08\x01w\x04\0\x08duration\x03\0\
-\0\x01|\x04\0\x05value\x03\0\x02\x01r\x02\x04data\x03\x07elapsed\x01\x04\0\x06si\
-ngle\x03\0\x04\x01r\x02\x04names\x05values\x04\0\x09parameter\x03\0\x06\x04\0\x15\
-local:dsp/types@0.1.0\x05\x01\x02\x03\0\0\x06single\x02\x03\0\0\x05value\x02\x03\
-\0\0\x09parameter\x01B\x17\x02\x03\x02\x01\x02\x04\0\x06single\x03\0\0\x02\x03\x02\
-\x01\x03\x04\0\x05value\x03\0\x02\x02\x03\x02\x01\x04\x04\0\x09parameter\x03\0\x04\
-\x01s\x04\0\x05error\x03\0\x06\x04\0\x09processor\x03\x01\x01p\x05\x01i\x08\x01@\
-\x01\x04init\x09\0\x0a\x04\0\x16[constructor]processor\x01\x0b\x01@\0\0\x09\x04\0\
-\x1c[static]processor.parameters\x01\x0c\x01h\x08\x01@\x02\x04self\x0d\x05input\x01\
-\0\x03\x04\0\x19[method]processor.process\x01\x0e\x01j\x01\x05\x01\x07\x01@\x02\x04\
-self\x0d\x04names\0\x0f\x04\0\x15[method]processor.get\x01\x10\x01@\x02\x04self\x0d\
-\x05param\x05\0\x0f\x04\0\x15[method]processor.set\x01\x11\x04\0\x1elocal:dsp/si\
-ngle-channel@0.1.0\x05\x05\x04\0\x13local:dsp/dsp@0.1.0\x04\0\x0b\x09\x01\0\x03d\
-sp\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10\
-wit-bindgen-rust\x060.41.0";
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 690] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xb8\x04\x01A\x02\x01\
+A\x0a\x01@\0\0s\x04\0\x0bplugin-name\x01\0\x04\0\x0eplugin-version\x01\0\x01B\x08\
+\x01w\x04\0\x08duration\x03\0\0\x01|\x04\0\x05value\x03\0\x02\x01r\x02\x04data\x03\
+\x07elapsed\x01\x04\0\x06single\x03\0\x04\x01r\x02\x04names\x05values\x04\0\x09p\
+arameter\x03\0\x06\x04\0\x15local:dsp/types@0.1.0\x05\x01\x02\x03\0\0\x06single\x02\
+\x03\0\0\x05value\x02\x03\0\0\x09parameter\x01B\x17\x02\x03\x02\x01\x02\x04\0\x06\
+single\x03\0\0\x02\x03\x02\x01\x03\x04\0\x05value\x03\0\x02\x02\x03\x02\x01\x04\x04\
+\0\x09parameter\x03\0\x04\x01s\x04\0\x05error\x03\0\x06\x04\0\x09processor\x03\x01\
+\x01p\x05\x01i\x08\x01@\x01\x04init\x09\0\x0a\x04\0\x16[constructor]processor\x01\
+\x0b\x01@\0\0\x09\x04\0\x1c[static]processor.parameters\x01\x0c\x01h\x08\x01@\x02\
+\x04self\x0d\x05input\x01\0\x03\x04\0\x19[method]processor.process\x01\x0e\x01j\x01\
+\x05\x01\x07\x01@\x02\x04self\x0d\x04names\0\x0f\x04\0\x15[method]processor.get\x01\
+\x10\x01@\x02\x04self\x0d\x05param\x05\0\x0f\x04\0\x15[method]processor.set\x01\x11\
+\x04\0\x1elocal:dsp/single-channel@0.1.0\x05\x05\x04\0\x13local:dsp/dsp@0.1.0\x04\
+\0\x0b\x09\x01\0\x03dsp\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-c\
+omponent\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

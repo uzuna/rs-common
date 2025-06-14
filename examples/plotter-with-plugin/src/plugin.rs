@@ -1,7 +1,7 @@
 // crate rootからの相対パスで指定
 wasmtime::component::bindgen!(in "../../wits/dsp/wit/dsp.wit");
 
-use crate::wrun::ExecStore;
+use crate::{plot::Ident, wrun::ExecStore};
 use exports::local::dsp::single_channel::Parameter;
 pub use exports::local::dsp::single_channel::Single;
 use wasmtime::{
@@ -29,8 +29,19 @@ impl<T> SingleInst<T> {
         Self { instance, r, store }
     }
 
-    pub fn name(&mut self) -> anyhow::Result<String> {
+    pub fn ident(&mut self) -> anyhow::Result<Ident> {
+        Ok(Ident {
+            name: self.name()?,
+            version: self.version()?,
+        })
+    }
+
+    fn name(&mut self) -> anyhow::Result<String> {
         self.instance.call_plugin_name(&mut self.store)
+    }
+
+    fn version(&mut self) -> anyhow::Result<String> {
+        self.instance.call_plugin_version(&mut self.store)
     }
 
     pub fn process(&mut self, input: Single) -> anyhow::Result<i16> {

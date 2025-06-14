@@ -128,10 +128,7 @@ impl eframe::App for App {
                         let buffer = std::fs::read(&path).expect("Failed to read plugin file");
                         match self.pl.load_plugin(&buffer) {
                             Ok(mut plugin) => {
-                                info!(
-                                    "Plugin loaded: {}",
-                                    plugin.name().expect("Failed to get plugin name")
-                                );
+                                info!("Plugin loaded: {}", plugin.ident().unwrap());
                                 self.sp.add_plugin(plugin);
                             }
                             Err(e) => {

@@ -9,7 +9,7 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
-clap = { version = "4.5.39", features = ["derive"] }
+clap = { version = "4.5.50", features = ["derive"] }
 tokio = { workspace = true, features = ["macros"] }
 tokio-util.workspace = true
 tower-http = { workspace = true,  features = ["fs", "trace"]  }

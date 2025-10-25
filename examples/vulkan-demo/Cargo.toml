@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-bytemuck = { version = "1.23", features = ["derive"] }
+bytemuck = { version = "1.24", features = ["derive"] }
 cfg-if = "1"
 encase = { version = "0.10.0", features = ["glam"] }
 env_logger = "0.10"

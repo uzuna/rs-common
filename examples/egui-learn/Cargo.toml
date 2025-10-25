@@ -16,6 +16,6 @@ encase = "0.10.0"
 fxhash.workspace = true
 gltf = "1.4.1"
 rand.workspace = true
-rfd = "0.15.3"
+rfd = "0.15.4"
 wgpu.workspace = true
 wgpu-shader.workspace = true

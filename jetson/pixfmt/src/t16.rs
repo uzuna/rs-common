@@ -730,8 +730,8 @@ mod tests {
         // Use RawSlice
         let eight = unsafe {
             #[allow(clippy::unsound_collection_transmute)]
-            let mut buf = std::mem::transmute::<Vec<u16>, Vec<u8>>(vec![8_u16; 16]);
-            buf.set_len(16 * 2);
+            let mut buf = std::mem::transmute::<Vec<u16>, Vec<u8>>(vec![8_u16; 32]);
+            buf.set_len(32);
             buf
         };
         let eight_slice = RawSlice::from_slice(eight.as_slice(), CsiPixelFormat::Raw12);

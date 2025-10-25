@@ -11,7 +11,7 @@ anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 fxhash.workspace = true
 serde = { workspace = true, features = ["derive"] }
-serde_json = "1.0.140"
+serde_json = "1.0.145"
 serde_yaml.workspace = true
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true

@@ -12,6 +12,7 @@
 *   **電源断保護**: 3つのファイルスロットを使用したローリングアップデート戦略により、書き込み中の電源断によるデータ破損を防ぎます。常に最新の健全なデータを読み込みます。
 *   **整合性チェック**: CRC32によるデータ整合性の検証を行います。
 *   **柔軟な保護レベル**: データの重要度やサイズに応じて、保護レベル（オーバーヘッドと保護性能のトレードオフ）を選択可能です。
+*   **抽象化されたストレージ**: `StorageBackend` トレイトを実装することで、ファイルシステム以外のバックエンド（KVS、mmapなど）にも対応可能です。
 
 ## 使用方法
 
@@ -32,7 +33,7 @@ struct DeviceConfig {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 保存先ディレクトリとファイル名のベースを指定
     // 例: ./data/device_config.0, ./data/device_config.1, ...
-    let vault = ReliableVault::new("./data", "device_config");
+    let vault = ReliableVault::new_with_fs("./data", "device_config");
 
     let config = DeviceConfig {
         id: 12345,

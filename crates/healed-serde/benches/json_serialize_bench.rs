@@ -1,6 +1,14 @@
+//! `serde_json` を使用したシリアライズ/デシリアライズのパフォーマンスベンチマーク。
+//!
+//! このベンチマークは、`healed-serde` 自体の機能ではなく、
+//! 比較対象として一般的なJSONシリアライズの性能を測定するために用意されています。
+//! データセットのサイズ（small, medium, large）ごとに、
+//! シリアライズ、デシリアライズ、およびその両方の処理時間を計測します。
+
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use serde::{Deserialize, Serialize};
 
+/// ベンチマーク用のJSONレコード。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct JsonBenchRecord {
     id: u64,
@@ -10,12 +18,14 @@ struct JsonBenchRecord {
     payload: String,
 }
 
+/// ベンチマーク用のJSONデータセット。複数のレコードを含む。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct JsonBenchDataset {
     version: u32,
     records: Vec<JsonBenchRecord>,
 }
 
+/// 指定されたレコード数とペイロードサイズでテスト用のデータセットを構築する。
 fn build_dataset(record_count: usize, payload_len: usize) -> JsonBenchDataset {
     let mut records = Vec::with_capacity(record_count);
     for i in 0..record_count {
@@ -34,6 +44,12 @@ fn build_dataset(record_count: usize, payload_len: usize) -> JsonBenchDataset {
     }
 }
 
+/// `serde_json` を使用したシリアライズ/デシリアライズのパフォーマンスを測定するベンチマーク。
+///
+/// 以下の3つのシナリオを、データサイズを変えながら（small, medium, large）テストする:
+/// - `to_vec`: オブジェクトからJSONバイト列へのシリアライズ。
+/// - `from_slice`: JSONバイト列からオブジェクトへのデシリアライズ。
+/// - `roundtrip`: シリアライズとデシリアライズの両方。
 fn benchmark_json_serialize(c: &mut Criterion) {
     let mut group = c.benchmark_group("json_serialize");
     let cases = [

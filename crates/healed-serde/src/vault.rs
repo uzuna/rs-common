@@ -10,6 +10,27 @@ use std::path::PathBuf;
 /// 3つのスロットを用いたローリングアップデートによる永続化ストレージ。
 ///
 /// 書き込み時は最も古いスロットを上書きし、読み込み時は破損していない最新のスロットを選択します。
+///
+/// # Examples
+///
+/// ```no_run
+/// use healed_serde::vault::ReliableVault;
+/// use healed_serde::ProtectionLevel;
+/// use serde::{Serialize, Deserialize};
+///
+/// #[derive(Serialize, Deserialize, PartialEq, Debug)]
+/// struct Config {
+///     version: u32,
+///     name: String,
+/// }
+///
+/// let vault = ReliableVault::new("./data", "config");
+///
+/// let config = Config { version: 1, name: "device-001".to_string() };
+/// vault.save(&config, ProtectionLevel::Medium).unwrap();
+///
+/// let loaded: Config = vault.load().unwrap();
+/// ```
 pub struct ReliableVault<T> {
     dir: PathBuf,
     filename_base: String,

@@ -2433,6 +2433,7 @@ dependencies = [
  "crc",
  "secded",
  "serde",
+ "tempfile",
  "thiserror 2.0.17",
 ]
 

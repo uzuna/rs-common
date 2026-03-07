@@ -2,6 +2,7 @@ pub mod ecc;
 pub mod error;
 pub mod frame;
 pub mod metadata;
+pub mod vault;
 
 use serde::{Deserialize, Serialize};
 

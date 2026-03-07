@@ -108,6 +108,7 @@ impl MetaDataHeader {
 mod tests {
     use super::*;
 
+    /// MetaDataのエンコード/デコード往復が無損失で成立することを検証。
     #[test]
     fn test_metadata_encode_decode_roundtrip() {
         let original_meta = MetaData::new(123456789, ProtectionLevel::Medium, 1024);
@@ -117,6 +118,7 @@ mod tests {
         assert_eq!(original_meta, decoded_meta);
     }
 
+    /// ヘッダー全ビットの1ビット反転に対して訂正復元できることを検証。
     #[test]
     fn test_metadata_decode_with_1bit_error_correction() {
         let original_meta = MetaData::new(987654321, ProtectionLevel::High, 4096);
@@ -139,6 +141,7 @@ mod tests {
         }
     }
 
+    /// 2ビット破損の組み合わせに対して復元不能ケースを検出できることを検証。
     #[test]
     fn test_metadata_decode_with_2bit_error_fails() {
         let original_meta = MetaData::new(1, ProtectionLevel::Low, 128);

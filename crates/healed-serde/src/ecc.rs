@@ -52,7 +52,7 @@ pub fn encode(data: &[u8], level: ProtectionLevel) -> Result<Vec<EncodedBlock>, 
         }
         ProtectionLevel::Medium => {
             // 32bit (4 bytes) chunks
-            if data.len() % 4 != 0 {
+            if !data.len().is_multiple_of(4) {
                 return Err(EccError::InvalidLength);
             }
             let secded = SecDed64::new(57);
@@ -69,7 +69,7 @@ pub fn encode(data: &[u8], level: ProtectionLevel) -> Result<Vec<EncodedBlock>, 
         }
         ProtectionLevel::Low => {
             // 64bit (8 bytes) chunks
-            if data.len() % 8 != 0 {
+            if !data.len().is_multiple_of(8) {
                 return Err(EccError::InvalidLength);
             }
             let secded = SecDed128::new(120);
@@ -168,6 +168,7 @@ pub fn decode(blocks: &[EncodedBlock]) -> Result<Vec<u8>, EccError> {
 mod tests {
     use super::*;
 
+    /// High保護レベルでエンコード/デコードの往復が成立することを検証。
     #[test]
     fn test_roundtrip_high() {
         let data = b"hello world";
@@ -177,6 +178,7 @@ mod tests {
         assert_eq!(data, decoded.as_slice());
     }
 
+    /// Medium保護レベルでエンコード/デコードの往復が成立することを検証。
     #[test]
     fn test_roundtrip_medium() {
         let data = b"hello world!"; // 12 bytes, multiple of 4
@@ -186,6 +188,7 @@ mod tests {
         assert_eq!(data, decoded.as_slice());
     }
 
+    /// Low保護レベルでエンコード/デコードの往復が成立することを検証。
     #[test]
     fn test_roundtrip_low() {
         let data = b"16 bytes data..."; // 16 bytes, multiple of 8
@@ -195,6 +198,7 @@ mod tests {
         assert_eq!(data, decoded.as_slice());
     }
 
+    /// High保護レベルで1ビット破損が訂正復元されることを検証。
     #[test]
     fn test_1bit_flip_correction_high() {
         let data = b"A";
@@ -210,6 +214,7 @@ mod tests {
         assert_eq!(data, decoded.as_slice(), "Data should be corrected");
     }
 
+    /// High保護レベルで2ビット破損が Uncorrectable になることを検証。
     #[test]
     fn test_2bit_flip_uncorrectable_high() {
         let data = b"B";
@@ -225,6 +230,7 @@ mod tests {
         assert!(matches!(result, Err(EccError::Uncorrectable)));
     }
 
+    /// Medium/Low保護レベルで不正な入力長に InvalidLength が返ることを検証。
     #[test]
     fn test_invalid_length_error() {
         let data = b"12345"; // 5 bytes

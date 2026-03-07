@@ -257,6 +257,7 @@ impl StorageFrame {
 mod tests {
     use super::*;
 
+    /// StorageFrameのシリアライズ/復元が無損失で往復できることを検証。
     #[test]
     fn test_frame_roundtrip() {
         let payload = b"hello, robust world!".to_vec();
@@ -267,6 +268,7 @@ mod tests {
         assert_eq!(frame, recovered_frame);
     }
 
+    /// Primaryヘッダーが壊れてもSecondaryヘッダーから復元できることを検証。
     #[test]
     fn test_recover_with_primary_header_corruption() {
         let payload = b"some important data".to_vec();
@@ -280,6 +282,7 @@ mod tests {
         assert_eq!(frame, recovered_frame);
     }
 
+    /// ペイロード領域の1ビット破損がECC復元後に元データへ戻ることを検証。
     #[test]
     fn test_recover_with_payload_corruption() {
         let payload: Vec<u8> = (0..128).collect();
@@ -295,6 +298,7 @@ mod tests {
         assert_eq!(frame, recovered_frame);
     }
 
+    /// フッターCRC改ざん時に CrcMismatch が返ることを検証。
     #[test]
     fn test_crc_mismatch_detection() {
         let payload = b"data that must be integral".to_vec();
@@ -311,6 +315,7 @@ mod tests {
         assert!(matches!(result, Err(Error::CrcMismatch)));
     }
 
+    /// Primary/Secondary両ヘッダー破損時に UnrecoverableHeader となることを検証。
     #[test]
     fn test_unrecoverable_header_error() {
         let payload = b"test".to_vec();
@@ -327,6 +332,7 @@ mod tests {
         assert!(matches!(result, Err(Error::UnrecoverableHeader)));
     }
 
+    /// 保護レベルごとのパディングサイズ規則が正しいことを検証。
     #[test]
     fn test_padding_logic() {
         // Medium (4-byte alignment)

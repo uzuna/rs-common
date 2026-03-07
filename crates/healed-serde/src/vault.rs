@@ -114,17 +114,17 @@ impl MemoryBackend {
         .into()
     }
 
-    fn slot_ref<'a>(
-        slots: &'a [Option<Vec<u8>>],
+    fn slot_ref(
+        slots: &[Option<Vec<u8>>],
         index: usize,
-    ) -> Result<&'a Option<Vec<u8>>, Error> {
+    ) -> Result<&Option<Vec<u8>>, Error> {
         slots.get(index).ok_or_else(|| Self::invalid_index(index))
     }
 
-    fn slot_mut<'a>(
-        slots: &'a mut [Option<Vec<u8>>],
+    fn slot_mut(
+        slots: &mut [Option<Vec<u8>>],
         index: usize,
-    ) -> Result<&'a mut Option<Vec<u8>>, Error> {
+    ) -> Result<&mut Option<Vec<u8>>, Error> {
         slots
             .get_mut(index)
             .ok_or_else(|| Self::invalid_index(index))

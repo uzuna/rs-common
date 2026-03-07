@@ -1,5 +1,4 @@
 /// 型制約に関するトレイト
-
 /// パイプライン毎に設定可能な型を制約を表現する
 pub trait PipelineConstraint {
     /// カメラの型は[crate::types::uniform::Camera]で固定

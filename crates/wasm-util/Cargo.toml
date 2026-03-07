@@ -14,7 +14,7 @@ image = ["web-sys/HtmlImageElement", "dep:futures-util"]
 
 [dependencies]
 console_error_panic_hook = { version = "0.1.7", optional = true}
-futures-util = { version = "0.3.31", optional = true }
+futures-util = { version = "0.3.32", optional = true }
 wasm-bindgen.workspace = true
 
 [dependencies.web-sys]
@@ -27,5 +27,5 @@ features = [
 ]
 
 [dev-dependencies]
-wasm-bindgen-test = "0.3.54"
-futures = "0.3.31"
+wasm-bindgen-test = "0.3.64"
+futures = "0.3.32"

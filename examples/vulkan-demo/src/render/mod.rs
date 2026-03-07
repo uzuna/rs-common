@@ -428,10 +428,6 @@ pub mod unif {
             }
         }
 
-        fn color(&mut self, color: glam::Vec4) {
-            self.color = color;
-        }
-
         fn update(&mut self, queue: &wgpu::Queue, matrix: Mat4) {
             let buffer = colored::unif::DrawInfo {
                 matrix,
@@ -537,14 +533,14 @@ pub mod unif {
 
         fn update(
             &mut self,
-            state: &impl WgpuContext,
+            _state: &impl WgpuContext,
             graph: &graph::ModelGraph<N>,
             ts: &super::Timestamp,
         ) {
             if self.latest + self.interval < ts.elapsed {
                 // 100msごとに履歴を保存
                 self.latest = ts.elapsed;
-                if let Some(b) = graph.get_node(&self.node) {
+                if let Some(_b) = graph.get_node(&self.node) {
                     // もし履歴がいっぱいなら古いものを削除
                     if self.v.len() == self.limit_len {
                         self.v.pop_front();

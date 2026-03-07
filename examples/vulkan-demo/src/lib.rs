@@ -6,7 +6,7 @@ use winit::{
     event_loop::EventLoopBuilder,
     keyboard::{KeyCode, PhysicalKey},
     platform::x11::EventLoopBuilderExtX11,
-    window::WindowBuilder,
+    window::Window,
 };
 
 pub mod camera;
@@ -18,6 +18,7 @@ pub mod state;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
+#[allow(deprecated)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
 pub async fn run(app_env: env::AppEnv, timeout: Option<Duration>) {
     cfg_if::cfg_if! {
@@ -32,7 +33,9 @@ pub async fn run(app_env: env::AppEnv, timeout: Option<Duration>) {
         .with_any_thread(true)
         .build()
         .unwrap();
-    let window = WindowBuilder::new().build(&event_loop).unwrap();
+    let window = event_loop
+        .create_window(Window::default_attributes())
+        .unwrap();
 
     #[cfg(target_arch = "wasm32")]
     {

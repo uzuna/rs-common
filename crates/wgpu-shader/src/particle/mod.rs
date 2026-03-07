@@ -3,6 +3,7 @@ use crate::{
     WgpuContext,
 };
 
+#[allow(dead_code)]
 #[rustfmt::skip]
 pub mod shader;
 
@@ -111,6 +112,7 @@ impl Pipeline {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(self.bg_color),
                         store: wgpu::StoreOp::Store,

@@ -7,9 +7,9 @@ use crate::{
     prelude::Blend,
 };
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::approx_constant)]
 mod vertex_color;
-#[allow(dead_code)]
+#[allow(dead_code, clippy::approx_constant)]
 mod vertex_normal;
 
 /// カメラのバインドグループ
@@ -56,10 +56,7 @@ impl PlColor {
         let fe = s::fs_main_entry(fs_target);
         let fs = s::fragment_state(&shader, &fe);
 
-        let depth_enabled = match blend {
-            Blend::Alpha => false,
-            _ => true,
-        };
+        let depth_enabled = !matches!(blend, Blend::Alpha);
 
         let pipeline = crate::common::create_render_pipeline(
             device,
@@ -168,10 +165,7 @@ impl PlNormal {
         let fe = s::fs_main_entry(fs_target);
         let fs = s::fragment_state(&shader, &fe);
 
-        let depth_enabled = match blend {
-            Blend::Alpha => false,
-            _ => true,
-        };
+        let depth_enabled = !matches!(blend, Blend::Alpha);
 
         let pipeline = crate::common::create_render_pipeline(
             device,

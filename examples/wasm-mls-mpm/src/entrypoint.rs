@@ -1,13 +1,13 @@
 use mls_mpm::ElasticConfig;
 use nalgebra::Vector2;
-use rand::Rng;
+use rand::RngExt;
 use wasm_util::util::get_performance;
 use wgpu_shader::{particle, prelude::*, uniform::UniformBuffer, vertex::VertexBufferSimple};
 use winit::{
     event::*,
     event_loop::EventLoop,
     keyboard::{KeyCode, PhysicalKey},
-    window::WindowBuilder,
+    window::Window,
 };
 
 use wasm_bindgen::prelude::*;
@@ -43,12 +43,13 @@ impl RunConfig {
 }
 
 #[wasm_bindgen]
+#[allow(deprecated)]
 pub async fn run(c: RunConfig) -> Result<(), JsError> {
     std::panic::set_hook(Box::new(console_error_panic_hook::hook));
     console_log::init_with_level(log::Level::Info).expect("Couldn't initialize logger");
 
     let event_loop = EventLoop::new()?;
-    let window = WindowBuilder::new().build(&event_loop)?;
+    let window = event_loop.create_window(Window::default_attributes())?;
     let (width, height) = (450, 400);
     {
         // Winit prevents sizing with CSS, so we have to set
@@ -80,16 +81,16 @@ pub async fn run(c: RunConfig) -> Result<(), JsError> {
     let pos_range = -0.5..0.5;
     let vel_range = -4.0..4.0;
     let mut verts = {
-        let mut rng = rand::rngs::OsRng;
+        let mut rng = rand::rng();
         let particles = sim.get_particles_mut();
         for p in particles.iter_mut() {
             p.pos = Vector2::new(
-                rng.gen_range(pos_range.clone()),
-                rng.gen_range(pos_range.clone()),
+                rng.random_range(pos_range.clone()),
+                rng.random_range(pos_range.clone()),
             );
             p.vel = Vector2::new(
-                rng.gen_range(vel_range.clone()),
-                rng.gen_range(vel_range.clone()),
+                rng.random_range(vel_range.clone()),
+                rng.random_range(vel_range.clone()),
             );
         }
         let mut verts = vec![particle::shader::VertexInput::default(); particles.len()];

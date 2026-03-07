@@ -49,7 +49,7 @@ impl Context {
         ui.label("Drag to rotate!");
     }
 
-    fn paint_canvas(&mut self, ui: &mut egui::Ui, color: Option<glam::Vec4>) {
+    fn paint_canvas(&mut self, ui: &mut egui::Ui, _color: Option<glam::Vec4>) {
         let (rect, response) =
             ui.allocate_exact_size(egui::Vec2::splat(300.0), egui::Sense::drag());
 

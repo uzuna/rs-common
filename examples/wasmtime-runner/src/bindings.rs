@@ -11,7 +11,7 @@ pub mod hello {
     use crate::context::ExecStore;
 
     /// Hello worldのインスタンス構造体
-    pub struct HelloInst<T> {
+    pub struct HelloInst<T: 'static> {
         /// Componentに定義された関数とメソットでアクセスするための型
         instance: Example,
         /// インsタンスの状態やhostリソースへのアクセスなどすべてのデータを保持するストア
@@ -21,7 +21,7 @@ pub mod hello {
         setter: ResourceAny,
     }
 
-    impl<T> HelloInst<T> {
+    impl<T: 'static> HelloInst<T> {
         /// 実行環境ストアとwasmバイナリのバイト列からHelloInstを生成する
         pub fn new_with_binary(es: ExecStore<T>, component: &Component) -> anyhow::Result<Self> {
             let ExecStore { mut store, linker } = es;
@@ -76,7 +76,7 @@ pub mod hello {
         }
     }
 
-    impl<T> Drop for HelloInst<T> {
+    impl<T: 'static> Drop for HelloInst<T> {
         fn drop(&mut self) {
             // リソース型は明示的に破棄するインスタンスのリソースを解放する
             match self.setter.resource_drop(&mut self.store) {
@@ -89,7 +89,7 @@ pub mod hello {
     }
 
     /// インスタンスの動作確認
-    pub fn demo<T>(inst: &mut HelloInst<T>) -> anyhow::Result<()> {
+    pub fn demo<T: 'static>(inst: &mut HelloInst<T>) -> anyhow::Result<()> {
         let res = inst.hello_world()?;
         println!("Hello from WASI Preview1: {}", res);
 
@@ -118,14 +118,14 @@ pub mod hasdep {
 
     wasmtime::component::bindgen!(in "wit-front/world.wit");
 
-    pub struct HasdepInst<T> {
+    pub struct HasdepInst<T: 'static> {
         /// Componentに定義された関数とメソットでアクセスするための型
         instance: Hasdep,
         /// インスタンスの状態やhostリソースへのアクセスなどすべてのデータを保持するストア
         store: wasmtime::Store<T>,
     }
 
-    impl<T> HasdepInst<T> {
+    impl<T: 'static> HasdepInst<T> {
         /// 実行環境ストアとwasmバイナリのバイト列からHasdepInstを生成する
         pub fn new_with_binary(es: ExecStore<T>, component: &Component) -> anyhow::Result<Self> {
             let ExecStore { mut store, linker } = es;
@@ -146,7 +146,7 @@ pub mod hasdep {
     }
 
     /// インスタンスの動作確認
-    pub fn demo<T>(inst: &mut HasdepInst<T>) -> anyhow::Result<()> {
+    pub fn demo<T: 'static>(inst: &mut HasdepInst<T>) -> anyhow::Result<()> {
         for i in 0..5 {
             let result = inst.add(i, i)?;
             println!("add({i}+{i}) = {result}");

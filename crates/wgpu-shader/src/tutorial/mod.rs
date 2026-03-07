@@ -9,8 +9,10 @@ use crate::{
     vertex::{InstanceBuffer, VertexBuffer},
 };
 
+#[allow(dead_code)]
 #[rustfmt::skip]
 pub mod light;
+#[allow(dead_code)]
 #[rustfmt::skip]
 pub mod shader;
 
@@ -61,7 +63,7 @@ impl TextureInst {
         Self { tex, view, sampler }
     }
 
-    pub fn desc(&self) -> shader::bind_groups::BindGroupLayout0 {
+    pub fn desc(&self) -> shader::bind_groups::BindGroupLayout0<'_> {
         shader::bind_groups::BindGroupLayout0 {
             t_diffuse: &self.view,
             s_diffuse: &self.sampler,

@@ -1,29 +1,3 @@
-#[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
-pub struct Camera {
-    pub view_pos: glam::Vec4,
-    pub view_proj: glam::Mat4,
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
-pub struct Model {
-    pub matrix: glam::Mat4,
-    pub normal: glam::Mat4,
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
-pub struct Material {
-    pub color: glam::Vec4,
-    pub metallic: f32,
-    pub roughness: f32,
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct VertexInput {
-    pub position: glam::Vec3,
-    pub normal: glam::Vec3,
-}
-pub const PI: f32 = 3.1415927f32;
 pub mod bind_groups {
     #[derive(Debug)]
     pub struct BindGroup0(wgpu::BindGroup);
@@ -225,36 +199,13 @@ pub fn set_bind_groups<P: bind_groups::SetBindGroup>(
     bind_group1.set(pass);
     bind_group2.set(pass);
 }
-impl VertexInput {
-    pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
-        wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Float32x3,
-            offset: std::mem::offset_of!(VertexInput, position) as u64,
-            shader_location: 0,
-        },
-        wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Float32x3,
-            offset: std::mem::offset_of!(VertexInput, normal) as u64,
-            shader_location: 1,
-        },
-    ];
-    pub const fn vertex_buffer_layout(
-        step_mode: wgpu::VertexStepMode,
-    ) -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<VertexInput>() as u64,
-            step_mode,
-            attributes: &VertexInput::VERTEX_ATTRIBUTES,
-        }
-    }
-}
 pub const ENTRY_VS_MAIN: &str = "vs_main";
 pub const ENTRY_FS_MAIN: &str = "fs_main";
 #[derive(Debug)]
 pub struct VertexEntry<const N: usize> {
     pub entry_point: &'static str,
     pub buffers: [wgpu::VertexBufferLayout<'static>; N],
-    pub constants: std::collections::HashMap<String, f64>,
+    pub constants: Vec<(&'static str, f64)>,
 }
 pub fn vertex_state<'a, const N: usize>(
     module: &'a wgpu::ShaderModule,
@@ -281,7 +232,7 @@ pub fn vs_main_entry(vertex_input: wgpu::VertexStepMode) -> VertexEntry<1> {
 pub struct FragmentEntry<const N: usize> {
     pub entry_point: &'static str,
     pub targets: [Option<wgpu::ColorTargetState>; N],
-    pub constants: std::collections::HashMap<String, f64>,
+    pub constants: Vec<(&'static str, f64)>,
 }
 pub fn fragment_state<'a, const N: usize>(
     module: &'a wgpu::ShaderModule,
@@ -326,4 +277,53 @@ pub fn create_pipeline_layout(device: &wgpu::Device) -> wgpu::PipelineLayout {
                 push_constant_ranges: &[],
             },
         )
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
+pub struct Camera {
+    pub view_pos: glam::Vec4,
+    pub view_proj: glam::Mat4,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
+pub struct Material {
+    pub color: glam::Vec4,
+    pub metallic: f32,
+    pub roughness: f32,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
+pub struct Model {
+    pub matrix: glam::Mat4,
+    pub normal: glam::Mat4,
+}
+pub const PI: f32 = 3.1415927f32;
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct VertexInput {
+    pub position: glam::Vec3,
+    pub normal: glam::Vec3,
+}
+impl VertexInput {
+    pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: std::mem::offset_of!(VertexInput, position) as u64,
+            shader_location: 0,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: std::mem::offset_of!(VertexInput, normal) as u64,
+            shader_location: 1,
+        },
+    ];
+    pub const fn vertex_buffer_layout(
+        step_mode: wgpu::VertexStepMode,
+    ) -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<VertexInput>() as u64,
+            step_mode,
+            attributes: &VertexInput::VERTEX_ATTRIBUTES,
+        }
+    }
 }

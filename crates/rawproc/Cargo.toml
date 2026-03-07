@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 image.workspace = true
-ndarray = "0.16.1"
+ndarray = "0.17.2"
 num-traits = "0.2.19"
 
 [dev-dependencies]

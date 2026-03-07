@@ -38,6 +38,10 @@ where
         self.vertex_len
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.vertex_len == 0
+    }
+
     /// レンダリングオブジェクト向けのバインディングインスタンス
     pub fn bind_buffer(&self, slot: u32, topology: Topology) -> VbBinding {
         VbBinding::new(self.buf.clone(), slot, topology, self.vertex_len)
@@ -93,6 +97,10 @@ where
     pub fn len(&self) -> u32 {
         self.index_len
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.index_len == 0
+    }
 }
 
 /// インスタンスバッファ
@@ -137,6 +145,10 @@ where
     pub fn len(&self) -> u32 {
         self.instance_len
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.instance_len == 0
+    }
 }
 
 /// ノードグラフのオブジェクトが頂点への参照を持つための構造体
@@ -172,6 +184,10 @@ impl VbBinding {
 
     pub fn len(&self) -> u32 {
         self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 }
 

@@ -1,10 +1,7 @@
 //! WASM実行環境の構成を行う
 
 use wasmtime::{Engine, Store};
-use wasmtime_wasi::{
-    p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView},
-    ResourceTable,
-};
+use wasmtime_wasi::{p2, ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 /// WASIリンクに必要なトレイと実装構造体
 ///
@@ -26,21 +23,17 @@ impl Default for Preview2Host {
     }
 }
 
-/// [WasiView]は[IoView]トレイトを前提としている
-impl IoView for Preview2Host {
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.resource_table
-    }
-}
-
 /// [wasmtime_wasi::p2::add_to_linker_sync]を実行するためには[WasiView]トレイトの実装が必要
 impl WasiView for Preview2Host {
-    fn ctx(&mut self) -> &mut WasiCtx {
-        &mut self.wasi_ctx
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi_ctx,
+            table: &mut self.resource_table,
+        }
     }
 }
 
-pub struct ExecStore<T> {
+pub struct ExecStore<T: 'static> {
     // StoreはWasmインスタンスとホスト定義の状態のコレクション
     // すべてのインsタンスとアイテムはstoreニアタッチされてそれを参照する。実態はここに有り。
     // プログラム内の短命なオブジェクトとして使う意図で設計されており、GCもないため明示的な削除まで開放されない
@@ -73,7 +66,7 @@ impl ExecStore<Preview2Host> {
         // 重複読み出しを許可
         linker.allow_shadowing(true);
         // WASIp2向けのインターフェースをリンカーに追加
-        wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
+        p2::add_to_linker_sync(&mut linker)?;
         Ok(Self { store, linker })
     }
 }

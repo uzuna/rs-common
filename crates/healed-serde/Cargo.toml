@@ -1,0 +1,9 @@
+[package]
+name = "healed-serde"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+secded = "1.1.0"
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }

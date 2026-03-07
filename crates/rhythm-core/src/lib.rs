@@ -59,11 +59,16 @@ impl<T> TempoValue for T where
 }
 
 /// ネットワーク共有用の最小メッセージ。
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RhythmMessage<P = u16, T = u16> {
+    /// 位相値。
     pub phase: P,
+    /// BPM 値。
     pub bpm: T,
+    /// メッセージ生成時のタイムスタンプ（ミリ秒）。
     pub timestamp_ms: u64,
+    /// 累積ビート数（位相ラップした回数）。
+    pub beat_count: u64,
 }
 
 /// 位相生成と外部同期（引き込み）を担当するコア。
@@ -73,9 +78,15 @@ where
     P: PhaseValue,
     T: TempoValue,
 {
+    /// 最新の位相
     pub phase: P,
+    /// これまでの積算周期カウント数。
+    pub beat_count: u64,
+    /// 外部シグナルがないときの基準テンポ。
     pub base_bpm: T,
+    /// 現在テンポ（同期で変化しうる）。
     pub current_bpm: T,
+    /// BPM 補正の強さを表す係数。大きいほど外部シグナルに引き込まれやすい。
     pub k: T,
 }
 
@@ -90,6 +101,7 @@ where
     pub fn new(phase: P, base_bpm: T, k: T) -> Self {
         Self {
             phase,
+            beat_count: 0,
             base_bpm,
             current_bpm: base_bpm,
             k,
@@ -103,8 +115,9 @@ where
 
     /// 現在BPMに従って位相を進める（ラップアラウンド込み）。
     pub fn update(&mut self, dt: Duration) {
-        let step = self.phase_step_from(self.current_bpm, dt);
+        let (step, wraps) = self.phase_step_and_wraps(self.current_bpm, dt);
         self.phase = self.phase.wrapping_add(&step);
+        self.beat_count = self.beat_count.saturating_add(wraps);
     }
 
     /// 外部位相との差から蔵本モデル風に BPM を補正する。
@@ -140,10 +153,13 @@ where
 
     /// 現在状態を送信用メッセージに変換する。
     pub fn to_message(&self, timestamp: Duration) -> RhythmMessage<P, T> {
+        let timestamp_ms = duration_to_millis_u64(timestamp);
+
         RhythmMessage {
             phase: self.phase,
             bpm: self.current_bpm,
-            timestamp_ms: duration_to_millis_u64(timestamp),
+            timestamp_ms,
+            beat_count: self.beat_count,
         }
     }
 
@@ -158,12 +174,75 @@ where
         message.phase.wrapping_add(&step_phase)
     }
 
-    /// BPM と経過時間から位相ステップを整数演算で算出する。
-    fn phase_step_from(&self, bpm: T, dt: Duration) -> P {
+    /// 外部ビート入力由来の2メッセージから現在状態を推定し、強制的に同期する。
+    pub fn force_sync_from_beat_messages(
+        &mut self,
+        older: RhythmMessage<P, T>,
+        newer: RhythmMessage<P, T>,
+        now: Duration,
+    ) -> bool {
+        let Some((estimated_phase, estimated_bpm)) =
+            Self::estimate_bpm_phase_from_beat_messages(older, newer, now)
+        else {
+            return false;
+        };
+
+        let elapsed_from_newer_ms = duration_to_millis_u64(now).saturating_sub(newer.timestamp_ms);
+        let additional_beats = ((estimated_bpm.as_() as u128 * elapsed_from_newer_ms as u128)
+            / MS_PER_MINUTE as u128)
+            .min(u64::MAX as u128) as u64;
+
+        self.phase = estimated_phase;
+        self.beat_count = newer.beat_count.saturating_add(additional_beats);
+        self.base_bpm = estimated_bpm;
+        self.current_bpm = estimated_bpm;
+        true
+    }
+
+    /// 2点のビート観測メッセージ（1 beat 間隔）から、現在時刻の BPM と位相を推定する。
+    pub fn estimate_bpm_phase_from_beat_messages(
+        older: RhythmMessage<P, T>,
+        newer: RhythmMessage<P, T>,
+        now: Duration,
+    ) -> Option<(P, T)> {
+        let observation_ms = newer.timestamp_ms.saturating_sub(older.timestamp_ms);
+        if observation_ms == 0 {
+            return None;
+        }
+
+        let modulus = phase_modulus::<P>() as u128;
+        let bpm_raw = (MS_PER_MINUTE as u128 + observation_ms as u128 / 2) / observation_ms as u128;
+        let bpm_u64 = bpm_raw.min(T::max_value().as_() as u128) as u64;
+        let estimated_bpm: T = cast_from_u64(bpm_u64);
+
+        let elapsed_from_newer_ms =
+            duration_to_millis_u64(now).saturating_sub(newer.timestamp_ms) as u128;
+        let phase_step =
+            (bpm_u64 as u128 * modulus * elapsed_from_newer_ms / MS_PER_MINUTE as u128) % modulus;
+        let step_phase: P = cast_from_u64(phase_step as u64);
+        let estimated_phase = newer.phase.wrapping_add(&step_phase);
+
+        Some((estimated_phase, estimated_bpm))
+    }
+
+    /// BPM と経過時間から位相ステップとラップ回数を算出する。
+    fn phase_step_and_wraps(&self, bpm: T, dt: Duration) -> (P, u64) {
         let dt_ms = dt.as_millis();
         let modulus = phase_modulus::<P>() as u128;
-        let step = (bpm.as_() as u128 * modulus * dt_ms / MS_PER_MINUTE as u128) % modulus;
-        cast_from_u64(step as u64)
+        let total_advance = bpm.as_() as u128 * modulus * dt_ms / MS_PER_MINUTE as u128;
+
+        let step = total_advance % modulus;
+        let wraps_from_advance = total_advance / modulus;
+        let wraps_from_carry = if self.phase.as_() as u128 + step >= modulus {
+            1_u128
+        } else {
+            0_u128
+        };
+        let wraps = wraps_from_advance
+            .saturating_add(wraps_from_carry)
+            .min(u64::MAX as u128) as u64;
+
+        (cast_from_u64(step as u64), wraps)
     }
 }
 
@@ -228,6 +307,29 @@ mod tests {
         rhythm.update(Duration::from_millis(60_000));
 
         assert_eq!(rhythm.phase, u16::MAX - 5);
+        assert_eq!(rhythm.beat_count, 120);
+    }
+
+    #[test]
+    // 位相の境界をまたぐ更新で beatcount が増えることを確認。
+    fn update_increments_beatcount_on_wrap() {
+        let mut rhythm = RhythmGenerator::<u16, u16>::with_bpm(120, 8);
+        rhythm.phase = u16::MAX - 10;
+
+        rhythm.update(Duration::from_millis(100));
+
+        assert_eq!(rhythm.beat_count, 1);
+    }
+
+    #[test]
+    // メッセージへはジェネレーター保持の beatcount が出力されることを確認。
+    fn message_exports_generator_beatcount() {
+        let mut rhythm = RhythmGenerator::<u16, u16>::with_bpm(120, 8);
+        rhythm.update(Duration::from_millis(1_500));
+        let msg = rhythm.to_message(Duration::from_millis(10_000));
+
+        assert_eq!(msg.beat_count, rhythm.beat_count);
+        assert_eq!(msg.beat_count, 3);
     }
 
     #[test]
@@ -252,6 +354,94 @@ mod tests {
             "phase distance did not shrink"
         );
         assert!(bpm_error <= 2, "follower bpm did not converge near 125");
+    }
+
+    #[test]
+    // 2メッセージの時間差から推定した値で強制同期できることを確認。
+    fn force_sync_from_two_messages_estimates_bpm_and_phase() {
+        let msg0 = RhythmMessage {
+            phase: 4_000,
+            bpm: 130,
+            timestamp_ms: 1_000,
+            beat_count: 100,
+        };
+        let msg1 = RhythmMessage {
+            phase: 4_000,
+            bpm: 130,
+            timestamp_ms: 1_500,
+            beat_count: 101,
+        };
+        let now = Duration::from_millis(1_750);
+
+        let mut follower = RhythmGenerator::<u16, u16>::new(20_000, 90, 16);
+        let synced = follower.force_sync_from_beat_messages(msg0, msg1, now);
+
+        assert!(synced);
+        assert_eq!(follower.current_bpm, 120);
+        assert_eq!(follower.base_bpm, follower.current_bpm);
+        assert_eq!(follower.phase, 36_768);
+        assert_eq!(follower.beat_count, 101);
+    }
+
+    #[test]
+    // 観測時刻差が0なら推定不能として同期を拒否することを確認。
+    fn force_sync_rejects_invalid_message_pair() {
+        let mut follower = RhythmGenerator::<u16, u16>::new(10_000, 100, 16);
+        let before = follower;
+
+        let msg0 = RhythmMessage {
+            phase: 1_000,
+            bpm: 120,
+            timestamp_ms: 2_000,
+            beat_count: 10,
+        };
+        let msg1 = RhythmMessage {
+            phase: 2_000,
+            bpm: 120,
+            timestamp_ms: 2_000,
+            beat_count: 10,
+        };
+
+        let synced =
+            follower.force_sync_from_beat_messages(msg0, msg1, Duration::from_millis(2_050));
+        assert!(!synced);
+        assert_eq!(follower, before);
+    }
+
+    #[test]
+    fn estimate_from_messages_prefers_observed_40bpm_over_local_120bpm() {
+        // 1,500ms で1beat進むサンプル（40bpm相当）。
+        let older = RhythmMessage {
+            phase: 1_000,
+            bpm: 120,
+            timestamp_ms: 1_000,
+            beat_count: 20,
+        };
+        let newer = RhythmMessage {
+            phase: 33_768,
+            bpm: 120,
+            timestamp_ms: 2_500,
+            beat_count: 21,
+        };
+
+        let now = Duration::from_millis(3_000);
+        let (estimated_phase, estimated_bpm) =
+            RhythmGenerator::<u16, u16>::estimate_bpm_phase_from_beat_messages(older, newer, now)
+                .expect("valid pair should be estimable");
+
+        assert_eq!(estimated_bpm, 40);
+        assert_eq!(estimated_phase, 55_613);
+
+        let mut local = RhythmGenerator::<u16, u16>::new(10_000, 120, 16);
+        assert!(local.force_sync_from_beat_messages(older, newer, now));
+        assert_eq!(local.base_bpm, 40);
+        assert_eq!(local.current_bpm, 40);
+        assert_eq!(local.phase, estimated_phase);
+        assert_eq!(local.beat_count, 21);
+
+        // 40bpm では 1,500ms がちょうど1周期なので、位相は同じ値に戻る。
+        local.update(Duration::from_millis(1_500));
+        assert_eq!(local.phase, estimated_phase);
     }
 
     #[test]

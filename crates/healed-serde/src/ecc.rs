@@ -1,17 +1,7 @@
+use crate::ProtectionLevel;
 use secded::{secded7264, SecDed128, SecDed64, SecDedCodec};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-
-/// データ保護レベル。オーバーヘッドと保護性能のトレードオフを調整します。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ProtectionLevel {
-    /// 8bitデータごとにECCを付与します (高密度保護)。
-    High,
-    /// 32bitデータごとにECCを付与します (バランス)。
-    Medium,
-    /// 64bitデータごとにECCを付与します (低オーバーヘッド)。
-    Low,
-}
 
 /// ECCでエンコードされたデータブロック。
 /// ProtectionLevelに応じて内部のデータサイズが変わります。

@@ -1,11 +1,14 @@
 pub mod ecc;
 pub mod error;
+pub mod frame;
 pub mod metadata;
+
+use serde::{Deserialize, Serialize};
 
 /// データ保護レベル。
 ///
 /// オーバーヘッドと保護性能のトレードオフを調整します。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum ProtectionLevel {
     /// 8bitデータ + ECC (高密度保護)

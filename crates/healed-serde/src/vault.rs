@@ -162,6 +162,33 @@ mod tests {
         message: String,
     }
 
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+    struct JsonCaseData {
+        id: u64,
+        name: String,
+        tags: Vec<String>,
+        values: Vec<u64>,
+        payload: String,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum StressScenario {
+        LatestFooterCrcCorrupt,
+        LatestTruncated,
+        LatestHeaderOnly,
+        TwoLatestFooterCrcCorrupt,
+        LatestHeaderOnlyAndSecondCorrupt,
+        AllFooterCrcCorrupt,
+        AllTruncated,
+        AllHeaderOnly,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum ExpectedOutcome {
+        LoadedId(u32),
+        NotFound,
+    }
+
     fn corrupt_slot_footer_crc(path: &Path) {
         let mut bytes = fs::read(path).unwrap();
         let crc_offset = bytes.len() - 8;
@@ -173,6 +200,23 @@ mod tests {
         let mut bytes = fs::read(path).unwrap();
         bytes.truncate(size);
         fs::write(path, bytes).unwrap();
+    }
+
+    fn assert_not_found(result: Result<TestData, Error>) {
+        assert!(matches!(
+            result,
+            Err(Error::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound
+        ));
+    }
+
+    fn build_json_case_data(id: u64, values_len: usize, payload_len: usize) -> JsonCaseData {
+        JsonCaseData {
+            id,
+            name: format!("case-{id}"),
+            tags: (0..8).map(|i| format!("tag-{id}-{i}")).collect(),
+            values: (0..values_len).map(|i| (id + i as u64) * 3).collect(),
+            payload: "x".repeat(payload_len),
+        }
     }
 
     #[test]
@@ -246,11 +290,7 @@ mod tests {
             corrupt_slot_footer_crc(&dir.path().join(format!("test.{}", slot)));
         }
 
-        let result = vault.load();
-        assert!(matches!(
-            result,
-            Err(Error::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound
-        ));
+        assert_not_found(vault.load());
     }
 
     #[test]
@@ -293,11 +333,7 @@ mod tests {
             truncate_slot(&dir.path().join(format!("test.{}", slot)), 8);
         }
 
-        let result = vault.load();
-        assert!(matches!(
-            result,
-            Err(Error::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound
-        ));
+        assert_not_found(vault.load());
     }
 
     #[test]
@@ -320,5 +356,145 @@ mod tests {
         // 不完全ファイルを無視して、有効な次点seq3へフォールバックできること
         let loaded = vault.load().unwrap();
         assert_eq!(loaded.id, 3);
+    }
+
+    #[test]
+    fn test_vault_stress_cases_enumerated() {
+        let cases = [
+            (
+                "latest_footer_crc_corrupt",
+                StressScenario::LatestFooterCrcCorrupt,
+                ExpectedOutcome::LoadedId(4),
+            ),
+            (
+                "latest_truncated",
+                StressScenario::LatestTruncated,
+                ExpectedOutcome::LoadedId(4),
+            ),
+            (
+                "latest_header_only",
+                StressScenario::LatestHeaderOnly,
+                ExpectedOutcome::LoadedId(4),
+            ),
+            (
+                "two_latest_footer_crc_corrupt",
+                StressScenario::TwoLatestFooterCrcCorrupt,
+                ExpectedOutcome::LoadedId(3),
+            ),
+            (
+                "latest_header_only_and_second_corrupt",
+                StressScenario::LatestHeaderOnlyAndSecondCorrupt,
+                ExpectedOutcome::LoadedId(3),
+            ),
+            (
+                "all_footer_crc_corrupt",
+                StressScenario::AllFooterCrcCorrupt,
+                ExpectedOutcome::NotFound,
+            ),
+            (
+                "all_truncated",
+                StressScenario::AllTruncated,
+                ExpectedOutcome::NotFound,
+            ),
+            (
+                "all_header_only",
+                StressScenario::AllHeaderOnly,
+                ExpectedOutcome::NotFound,
+            ),
+        ];
+
+        for (name, scenario, expected) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let vault = ReliableVault::<TestData>::new(dir.path(), "stress");
+
+            for id in 1..=5 {
+                let data = TestData {
+                    id,
+                    message: format!("msg {}", id),
+                };
+                vault.save(&data, ProtectionLevel::Medium).unwrap();
+            }
+
+            let slot0 = dir.path().join("stress.0"); // seq3
+            let slot1 = dir.path().join("stress.1"); // seq4
+            let slot2 = dir.path().join("stress.2"); // seq5
+
+            match scenario {
+                StressScenario::LatestFooterCrcCorrupt => corrupt_slot_footer_crc(&slot2),
+                StressScenario::LatestTruncated => truncate_slot(&slot2, 12),
+                StressScenario::LatestHeaderOnly => truncate_slot(&slot2, 32),
+                StressScenario::TwoLatestFooterCrcCorrupt => {
+                    corrupt_slot_footer_crc(&slot2);
+                    corrupt_slot_footer_crc(&slot1);
+                }
+                StressScenario::LatestHeaderOnlyAndSecondCorrupt => {
+                    truncate_slot(&slot2, 32);
+                    corrupt_slot_footer_crc(&slot1);
+                }
+                StressScenario::AllFooterCrcCorrupt => {
+                    corrupt_slot_footer_crc(&slot0);
+                    corrupt_slot_footer_crc(&slot1);
+                    corrupt_slot_footer_crc(&slot2);
+                }
+                StressScenario::AllTruncated => {
+                    truncate_slot(&slot0, 8);
+                    truncate_slot(&slot1, 8);
+                    truncate_slot(&slot2, 8);
+                }
+                StressScenario::AllHeaderOnly => {
+                    truncate_slot(&slot0, 32);
+                    truncate_slot(&slot1, 32);
+                    truncate_slot(&slot2, 32);
+                }
+            }
+
+            match expected {
+                ExpectedOutcome::LoadedId(expected_id) => {
+                    let loaded = vault
+                        .load()
+                        .unwrap_or_else(|e| panic!("{name}: load failed unexpectedly: {e}"));
+                    assert_eq!(loaded.id, expected_id, "{name}");
+                }
+                ExpectedOutcome::NotFound => {
+                    let result = vault.load();
+                    assert!(
+                        matches!(
+                            result,
+                            Err(Error::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound
+                        ),
+                        "{name}: expected NotFound, got {result:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_json_serialize_cases() {
+        let cases = [
+            ("small", build_json_case_data(1, 32, 256)),
+            ("medium", build_json_case_data(2, 512, 4 * 1024)),
+            ("large", build_json_case_data(3, 4096, 32 * 1024)),
+        ];
+
+        let mut prev_size = 0usize;
+        for (name, case) in cases {
+            let encoded = serde_json::to_vec(&case)
+                .unwrap_or_else(|e| panic!("{name}: failed to serialize JSON: {e}"));
+            assert!(
+                !encoded.is_empty(),
+                "{name}: serialized JSON should not be empty"
+            );
+            assert!(
+                encoded.len() > prev_size,
+                "{name}: serialized JSON size should grow with input size"
+            );
+
+            let decoded: JsonCaseData = serde_json::from_slice(&encoded)
+                .unwrap_or_else(|e| panic!("{name}: failed to deserialize JSON: {e}"));
+            assert_eq!(decoded, case, "{name}: JSON roundtrip mismatch");
+
+            prev_size = encoded.len();
+        }
     }
 }

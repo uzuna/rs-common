@@ -16,7 +16,7 @@ wgpu.workspace = true
 nalgebra = { workspace = true, features = ["convert-glam029"] }
 
 [build-dependencies]
-wgsl_to_wgpu = "0.13.1"
+wgsl_to_wgpu = "0.17.1"
 glob = "0.3.3"
 
 [dev-dependencies]

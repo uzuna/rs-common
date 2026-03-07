@@ -1,29 +1,3 @@
-#[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
-pub struct Camera {
-    pub view_pos: glam::Vec4,
-    pub view_proj: glam::Mat4,
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
-pub struct Model {
-    pub matrix: glam::Mat4,
-    pub normal: glam::Mat4,
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
-pub struct Material {
-    pub color: glam::Vec4,
-    pub metallic: f32,
-    pub roughness: f32,
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct VertexInput {
-    pub position: glam::Vec3,
-    pub normal: glam::Vec3,
-}
-pub const PI: f32 = 3.1415927f32;
 pub mod bind_groups {
     #[derive(Debug)]
     pub struct BindGroup0(wgpu::BindGroup);
@@ -33,16 +7,18 @@ pub mod bind_groups {
     }
     const LAYOUT_DESCRIPTOR0: wgpu::BindGroupLayoutDescriptor = wgpu::BindGroupLayoutDescriptor {
         label: Some("LayoutDescriptor0"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
             },
-            count: None,
-        }],
+        ],
     };
     impl BindGroup0 {
         pub fn get_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -50,14 +26,19 @@ pub mod bind_groups {
         }
         pub fn from_bindings(device: &wgpu::Device, bindings: BindGroupLayout0) -> Self {
             let bind_group_layout = device.create_bind_group_layout(&LAYOUT_DESCRIPTOR0);
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(bindings.camera),
-                }],
-                label: Some("BindGroup0"),
-            });
+            let bind_group = device
+                .create_bind_group(
+                    &wgpu::BindGroupDescriptor {
+                        layout: &bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::Buffer(bindings.camera),
+                            },
+                        ],
+                        label: Some("BindGroup0"),
+                    },
+                );
             Self(bind_group)
         }
         pub fn set<P: SetBindGroup>(&self, pass: &mut P) {
@@ -72,16 +53,18 @@ pub mod bind_groups {
     }
     const LAYOUT_DESCRIPTOR1: wgpu::BindGroupLayoutDescriptor = wgpu::BindGroupLayoutDescriptor {
         label: Some("LayoutDescriptor1"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
             },
-            count: None,
-        }],
+        ],
     };
     impl BindGroup1 {
         pub fn get_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -89,14 +72,19 @@ pub mod bind_groups {
         }
         pub fn from_bindings(device: &wgpu::Device, bindings: BindGroupLayout1) -> Self {
             let bind_group_layout = device.create_bind_group_layout(&LAYOUT_DESCRIPTOR1);
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(bindings.model),
-                }],
-                label: Some("BindGroup1"),
-            });
+            let bind_group = device
+                .create_bind_group(
+                    &wgpu::BindGroupDescriptor {
+                        layout: &bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::Buffer(bindings.model),
+                            },
+                        ],
+                        label: Some("BindGroup1"),
+                    },
+                );
             Self(bind_group)
         }
         pub fn set<P: SetBindGroup>(&self, pass: &mut P) {
@@ -111,16 +99,18 @@ pub mod bind_groups {
     }
     const LAYOUT_DESCRIPTOR2: wgpu::BindGroupLayoutDescriptor = wgpu::BindGroupLayoutDescriptor {
         label: Some("LayoutDescriptor2"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
             },
-            count: None,
-        }],
+        ],
     };
     impl BindGroup2 {
         pub fn get_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -128,14 +118,19 @@ pub mod bind_groups {
         }
         pub fn from_bindings(device: &wgpu::Device, bindings: BindGroupLayout2) -> Self {
             let bind_group_layout = device.create_bind_group_layout(&LAYOUT_DESCRIPTOR2);
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(bindings.material),
-                }],
-                label: Some("BindGroup2"),
-            });
+            let bind_group = device
+                .create_bind_group(
+                    &wgpu::BindGroupDescriptor {
+                        layout: &bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::Buffer(bindings.material),
+                            },
+                        ],
+                        label: Some("BindGroup2"),
+                    },
+                );
             Self(bind_group)
         }
         pub fn set<P: SetBindGroup>(&self, pass: &mut P) {
@@ -204,36 +199,13 @@ pub fn set_bind_groups<P: bind_groups::SetBindGroup>(
     bind_group1.set(pass);
     bind_group2.set(pass);
 }
-impl VertexInput {
-    pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
-        wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Float32x3,
-            offset: std::mem::offset_of!(VertexInput, position) as u64,
-            shader_location: 0,
-        },
-        wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Float32x3,
-            offset: std::mem::offset_of!(VertexInput, normal) as u64,
-            shader_location: 1,
-        },
-    ];
-    pub const fn vertex_buffer_layout(
-        step_mode: wgpu::VertexStepMode,
-    ) -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<VertexInput>() as u64,
-            step_mode,
-            attributes: &VertexInput::VERTEX_ATTRIBUTES,
-        }
-    }
-}
 pub const ENTRY_VS_MAIN: &str = "vs_main";
 pub const ENTRY_FS_MAIN: &str = "fs_main";
 #[derive(Debug)]
 pub struct VertexEntry<const N: usize> {
     pub entry_point: &'static str,
     pub buffers: [wgpu::VertexBufferLayout<'static>; N],
-    pub constants: std::collections::HashMap<String, f64>,
+    pub constants: Vec<(&'static str, f64)>,
 }
 pub fn vertex_state<'a, const N: usize>(
     module: &'a wgpu::ShaderModule,
@@ -260,7 +232,7 @@ pub fn vs_main_entry(vertex_input: wgpu::VertexStepMode) -> VertexEntry<1> {
 pub struct FragmentEntry<const N: usize> {
     pub entry_point: &'static str,
     pub targets: [Option<wgpu::ColorTargetState>; N],
-    pub constants: std::collections::HashMap<String, f64>,
+    pub constants: Vec<(&'static str, f64)>,
 }
 pub fn fragment_state<'a, const N: usize>(
     module: &'a wgpu::ShaderModule,
@@ -286,19 +258,72 @@ pub fn fs_main_entry(targets: [Option<wgpu::ColorTargetState>; 1]) -> FragmentEn
 pub const SOURCE: &str = include_str!("vertex_normal.wgsl");
 pub fn create_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
     let source = std::borrow::Cow::Borrowed(SOURCE);
-    device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: None,
-        source: wgpu::ShaderSource::Wgsl(source),
-    })
+    device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(source),
+        })
 }
 pub fn create_pipeline_layout(device: &wgpu::Device) -> wgpu::PipelineLayout {
-    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: None,
-        bind_group_layouts: &[
-            &bind_groups::BindGroup0::get_bind_group_layout(device),
-            &bind_groups::BindGroup1::get_bind_group_layout(device),
-            &bind_groups::BindGroup2::get_bind_group_layout(device),
-        ],
-        push_constant_ranges: &[],
-    })
+    device
+        .create_pipeline_layout(
+            &wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[
+                    &bind_groups::BindGroup0::get_bind_group_layout(device),
+                    &bind_groups::BindGroup1::get_bind_group_layout(device),
+                    &bind_groups::BindGroup2::get_bind_group_layout(device),
+                ],
+                push_constant_ranges: &[],
+            },
+        )
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
+pub struct Camera {
+    pub view_pos: glam::Vec4,
+    pub view_proj: glam::Mat4,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
+pub struct Material {
+    pub color: glam::Vec4,
+    pub metallic: f32,
+    pub roughness: f32,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, encase::ShaderType)]
+pub struct Model {
+    pub matrix: glam::Mat4,
+    pub normal: glam::Mat4,
+}
+pub const PI: f32 = 3.1415927f32;
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct VertexInput {
+    pub position: glam::Vec3,
+    pub normal: glam::Vec3,
+}
+impl VertexInput {
+    pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: std::mem::offset_of!(VertexInput, position) as u64,
+            shader_location: 0,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: std::mem::offset_of!(VertexInput, normal) as u64,
+            shader_location: 1,
+        },
+    ];
+    pub const fn vertex_buffer_layout(
+        step_mode: wgpu::VertexStepMode,
+    ) -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<VertexInput>() as u64,
+            step_mode,
+            attributes: &VertexInput::VERTEX_ATTRIBUTES,
+        }
+    }
 }

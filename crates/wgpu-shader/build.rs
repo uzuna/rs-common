@@ -28,6 +28,10 @@ fn generate(path: &str) {
     p.set_extension("rs");
 
     // Generate the bindings.
-    let text = create_shader_module(&wgsl_source, name, options).unwrap();
+    let mut text = create_shader_module(&wgsl_source, name, options).unwrap();
+    text = text.replace(
+        "                immediate_size: 0,\n",
+        "                push_constant_ranges: &[],\n",
+    );
     std::fs::write(&p, text.as_bytes()).unwrap();
 }

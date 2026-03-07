@@ -78,10 +78,11 @@ fn run_inner<T>(es: ExecStore<T>, p: &Plugin, component: &Component) -> anyhow::
 fn run(engine: &Engine, pair: &PluginPair) -> anyhow::Result<()> {
     let buffer = std::fs::read(&pair.file)
         .with_context(|| format!("Failed to read wasm file: {}", pair.file.display()))?;
-    let comp = wasmtime::component::Component::new(engine, &buffer).with_context(|| {
-        format!(
-            "Failed to create component from file: {}",
-            pair.file.display()
+    let comp = wasmtime::component::Component::new(engine, &buffer).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to create component from file: {}: {}",
+            pair.file.display(),
+            e
         )
     })?;
 

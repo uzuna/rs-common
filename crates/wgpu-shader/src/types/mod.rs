@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 pub mod uniform {
     use glam::{Vec4, Vec4Swizzles};
 
@@ -108,6 +109,7 @@ pub mod uniform {
     }
 }
 
+#[allow(dead_code)]
 pub mod vertex {
     use encase::ShaderType;
 

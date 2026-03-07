@@ -438,10 +438,8 @@ where
         name: &str,
         world: &Mat4,
     ) -> Option<()> {
-        if let Some(node) = self.nodes.get_mut(name) {
-            if let RenderSlot::Opacity(obj) = node {
-                obj.model.write(queue, &types::uniform::Model::from(world));
-            }
+        if let Some(RenderSlot::Opacity(obj)) = self.nodes.get_mut(name) {
+            obj.model.write(queue, &types::uniform::Model::from(world));
         }
         None
     }
@@ -482,6 +480,7 @@ where
     }
 }
 
+#[allow(dead_code)]
 enum RenderSlot<Mbg> {
     None,
     Opacity(DrawObject<Mbg>),
@@ -547,6 +546,7 @@ impl RenderFrame {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_camera(camera_id: u32) -> Self {
         Self::new(None, camera_id)
     }
@@ -603,6 +603,7 @@ impl egui_wgpu::CallbackTrait for RenderFrame {
 
 /// 特定ノードへのTrsの適用
 ///
+#[allow(dead_code)]
 pub struct AnimProperty {
     pub name: String,
     pub prop: Trs,

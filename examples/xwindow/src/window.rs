@@ -32,12 +32,14 @@ impl WindowBuilder {
     }
 
     /// マウス、キーボードイベントを無効にする
+    #[allow(dead_code)]
     pub fn enable_ui_event(&mut self) -> &mut Self {
         self.enable_ui_event = true;
         self
     }
 
     /// モーダルウィンドウとして表示、タイトルバーを非表示で全画面表示
+    #[allow(dead_code)]
     pub fn modal_window(&mut self) -> &mut Self {
         self.modal_window = true;
         self
@@ -65,6 +67,7 @@ pub struct Window {
     event: xlib::XEvent,
 
     /// has egl context
+    #[allow(dead_code)]
     egl_context: EglContext,
 }
 
@@ -172,10 +175,12 @@ impl Window {
     }
 
     /// 画面のバッファを入れ替える
+    #[allow(dead_code)]
     pub fn gl_swap_window(&self) -> anyhow::Result<()> {
         Ok(self.egl_context.swap_buffers()?)
     }
 
+    #[allow(dead_code)]
     pub fn egl_ctx(&self) -> &EglContext {
         &self.egl_context
     }

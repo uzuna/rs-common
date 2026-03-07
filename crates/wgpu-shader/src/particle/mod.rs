@@ -3,6 +3,7 @@ use crate::{
     WgpuContext,
 };
 
+#[allow(dead_code)]
 #[rustfmt::skip]
 pub mod shader;
 

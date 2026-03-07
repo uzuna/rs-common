@@ -134,7 +134,7 @@ impl WgpuContext for State<'_> {
         &self.device
     }
 
-    fn surface(&self) -> &wgpu::Surface {
+    fn surface(&self) -> &wgpu::Surface<'_> {
         &self.surface
     }
 

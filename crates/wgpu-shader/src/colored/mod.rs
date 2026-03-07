@@ -2,10 +2,13 @@ use wgpu::PrimitiveTopology;
 
 use crate::{common, prelude::Blend, types, uniform::UniformBuffer};
 
+#[allow(dead_code)]
 #[rustfmt::skip]
 pub mod instanced;
+#[allow(dead_code)]
 #[rustfmt::skip]
 pub mod shader;
+#[allow(dead_code)]
 #[rustfmt::skip]
 pub mod unif;
 
@@ -33,10 +36,7 @@ impl PipelinePrim {
         let fe = shader::fs_main_entry(fs_target);
         let fs = shader::fragment_state(&shader, &fe);
 
-        let depth_enabled = match blend {
-            Blend::Alpha => false,
-            _ => true,
-        };
+        let depth_enabled = !matches!(blend, Blend::Alpha);
 
         let pipeline = common::create_render_pipeline(
             device,
@@ -94,10 +94,7 @@ impl PipelineInstanced {
         let fe = instanced::fs_main_entry(fs_target);
         let fs = instanced::fragment_state(&shader, &fe);
 
-        let depth_enabled = match blend {
-            Blend::Alpha => false,
-            _ => true,
-        };
+        let depth_enabled = !matches!(blend, Blend::Alpha);
 
         let pipeline = common::create_render_pipeline(
             device,
@@ -161,10 +158,7 @@ impl PlUnif {
         let fe = s::fs_main_entry(fs_target);
         let fs = s::fragment_state(&shader, &fe);
 
-        let depth_enabled = match blend {
-            Blend::Alpha => false,
-            _ => true,
-        };
+        let depth_enabled = !matches!(blend, Blend::Alpha);
 
         let pipeline = common::create_render_pipeline(
             device,

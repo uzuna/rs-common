@@ -114,10 +114,7 @@ impl MemoryBackend {
         .into()
     }
 
-    fn slot_ref(
-        slots: &[Option<Vec<u8>>],
-        index: usize,
-    ) -> Result<&Option<Vec<u8>>, Error> {
+    fn slot_ref(slots: &[Option<Vec<u8>>], index: usize) -> Result<&Option<Vec<u8>>, Error> {
         slots.get(index).ok_or_else(|| Self::invalid_index(index))
     }
 

@@ -18,7 +18,7 @@ pub trait WgpuContext {
     // deviceを返す。リソースの作成に必要
     fn device(&self) -> &wgpu::Device;
     // レンダリングパス作成に必要
-    fn surface(&self) -> &wgpu::Surface;
+    fn surface(&self) -> &wgpu::Surface<'_>;
     // コマンドの実行に必要。レンダリングパスと同時に使ったり、Uniformの設定に使ったり
     fn queue(&self) -> &wgpu::Queue;
     // 1画面だけのレンダリングならコンテキストが1枚持っていれば十分

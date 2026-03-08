@@ -4498,7 +4498,6 @@ name = "rhythm-core"
 version = "0.1.0"
 dependencies = [
  "crossterm",
- "num-traits",
  "serde",
  "serde_json",
 ]

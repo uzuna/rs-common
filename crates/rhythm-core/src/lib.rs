@@ -1,14 +1,28 @@
 #![no_std]
 
-use core::{fmt::Debug, time::Duration};
+use core::time::Duration;
 
-use num_traits::{ops::wrapping::WrappingAdd, sign::Unsigned, AsPrimitive, Bounded, NumCast};
 use serde::{Deserialize, Serialize};
 
 /// 1分あたりのミリ秒。
 pub const MS_PER_MINUTE: u32 = 60_000;
 /// サインLUTの振幅スケール（i16最大付近）。
 pub const LUT_SCALE: i32 = 32_767;
+
+/// 共有用バイナリレイアウトの全体サイズ。
+pub const RHYTHM_MESSAGE_WIRE_SIZE: usize = 24;
+/// 送信タイムスタンプ(u64)のオフセット。
+pub const RHYTHM_MESSAGE_WIRE_TIMESTAMP_OFFSET: usize = 0;
+/// cycle_count(=beat_count, u64)のオフセット。
+pub const RHYTHM_MESSAGE_WIRE_CYCLE_COUNT_OFFSET: usize = 8;
+/// phase(u16)のオフセット。
+pub const RHYTHM_MESSAGE_WIRE_PHASE_OFFSET: usize = 16;
+/// bpm(u16)のオフセット。
+pub const RHYTHM_MESSAGE_WIRE_BPM_OFFSET: usize = 18;
+/// 予約領域(4byte)のオフセット。
+pub const RHYTHM_MESSAGE_WIRE_RESERVED_OFFSET: usize = 20;
+/// 予約領域サイズ。
+pub const RHYTHM_MESSAGE_WIRE_RESERVED_SIZE: usize = 4;
 
 /// 0..2π を 256 分割した整数サインテーブル。
 #[rustfmt::skip]
@@ -36,69 +50,88 @@ pub const SIN_LUT: [i16; 256] = [
     -6393, -5602, -4808, -4011, -3212, -2410, -1608, -804,
 ];
 
-/// 位相値として扱える整数型の境界。
-pub trait PhaseValue:
-    Copy + Default + WrappingAdd + Bounded + NumCast + AsPrimitive<u64> + Unsigned + Debug
-{
-}
-
-impl<T> PhaseValue for T where
-    T: Copy + Default + WrappingAdd + Bounded + NumCast + AsPrimitive<u64> + Unsigned + Debug
-{
-}
-
-/// BPM 値として扱える整数型の境界。
-pub trait TempoValue:
-    Copy + Default + Bounded + NumCast + AsPrimitive<u64> + Unsigned + Debug
-{
-}
-
-impl<T> TempoValue for T where
-    T: Copy + Default + Bounded + NumCast + AsPrimitive<u64> + Unsigned + Debug
-{
-}
-
 /// ネットワーク共有用の最小メッセージ。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RhythmMessage<P = u16, T = u16> {
-    /// 位相値。
-    pub phase: P,
-    /// BPM 値。
-    pub bpm: T,
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RhythmMessage {
     /// メッセージ生成時のタイムスタンプ（ミリ秒）。
     pub timestamp_ms: u64,
     /// 累積ビート数（位相ラップした回数）。
     pub beat_count: u64,
+    /// 位相値。
+    pub phase: u16,
+    /// BPM 値。
+    pub bpm: u16,
+    /// 予約領域。
+    #[serde(default)]
+    pub reserved: [u8; RHYTHM_MESSAGE_WIRE_RESERVED_SIZE],
+}
+
+impl RhythmMessage {
+    /// 生成ヘルパー（予約領域は0埋め）。
+    pub const fn new(phase: u16, bpm: u16, timestamp_ms: u64, beat_count: u64) -> Self {
+        Self {
+            timestamp_ms,
+            beat_count,
+            phase,
+            bpm,
+            reserved: [0_u8; RHYTHM_MESSAGE_WIRE_RESERVED_SIZE],
+        }
+    }
+
+    /// 固定24byteレイアウトへ構造体のメモリをそのまま書き出す。
+    pub fn to_wire_bytes(&self) -> [u8; RHYTHM_MESSAGE_WIRE_SIZE] {
+        let mut out = [0_u8; RHYTHM_MESSAGE_WIRE_SIZE];
+
+        debug_assert_eq!(core::mem::size_of::<Self>(), RHYTHM_MESSAGE_WIRE_SIZE);
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                (self as *const Self).cast::<u8>(),
+                out.as_mut_ptr(),
+                RHYTHM_MESSAGE_WIRE_SIZE,
+            );
+        }
+
+        out
+    }
+
+    /// 固定24byteレイアウトを構造体としてそのまま復元する。
+    pub fn from_wire_bytes(bytes: [u8; RHYTHM_MESSAGE_WIRE_SIZE]) -> Self {
+        debug_assert_eq!(core::mem::size_of::<Self>(), RHYTHM_MESSAGE_WIRE_SIZE);
+        unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<Self>()) }
+    }
+
+    /// 任意バイト列から固定24byteレイアウトを安全に復元する。
+    pub fn from_wire_slice(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != RHYTHM_MESSAGE_WIRE_SIZE {
+            return None;
+        }
+
+        debug_assert_eq!(core::mem::size_of::<Self>(), RHYTHM_MESSAGE_WIRE_SIZE);
+        Some(unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<Self>()) })
+    }
 }
 
 /// 位相生成と外部同期（引き込み）を担当するコア。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RhythmGenerator<P = u16, T = u16>
-where
-    P: PhaseValue,
-    T: TempoValue,
-{
+pub struct RhythmGenerator {
     /// 最新の位相
-    pub phase: P,
+    pub phase: u16,
     /// これまでの積算周期カウント数。
     pub beat_count: u64,
     /// 外部シグナルがないときの基準テンポ。
-    pub base_bpm: T,
+    pub base_bpm: u16,
     /// 現在テンポ（同期で変化しうる）。
-    pub current_bpm: T,
+    pub current_bpm: u16,
     /// BPM 補正の強さを表す係数。大きいほど外部シグナルに引き込まれやすい。
-    pub k: T,
+    pub k: u16,
 }
 
-pub type Rhythm = RhythmGenerator<u16, u16>;
+pub type Rhythm = RhythmGenerator;
 
-impl<P, T> RhythmGenerator<P, T>
-where
-    P: PhaseValue,
-    T: TempoValue,
-{
+impl RhythmGenerator {
     /// 初期位相・基準BPM・同期強度を指定して生成する。
-    pub fn new(phase: P, base_bpm: T, k: T) -> Self {
+    pub fn new(phase: u16, base_bpm: u16, k: u16) -> Self {
         Self {
             phase,
             beat_count: 0,
@@ -109,35 +142,35 @@ where
     }
 
     /// 位相0で生成する簡易コンストラクタ。
-    pub fn with_bpm(base_bpm: T, k: T) -> Self {
-        Self::new(P::default(), base_bpm, k)
+    pub fn with_bpm(base_bpm: u16, k: u16) -> Self {
+        Self::new(0, base_bpm, k)
     }
 
     /// 現在BPMに従って位相を進める（ラップアラウンド込み）。
     pub fn update(&mut self, dt: Duration) {
         let (step, wraps) = self.phase_step_and_wraps(self.current_bpm, dt);
-        self.phase = self.phase.wrapping_add(&step);
+        self.phase = self.phase.wrapping_add(step);
         self.beat_count = self.beat_count.saturating_add(wraps);
     }
 
     /// 外部位相との差から蔵本モデル風に BPM を補正する。
-    pub fn sync(&mut self, target_phase: P) {
+    pub fn sync(&mut self, target_phase: u16) {
         let diff = self.phase_error(target_phase);
-        let sin = sin_from_phase_diff(diff, phase_modulus::<P>());
+        let sin = sin_from_phase_diff(diff, phase_modulus());
 
-        let base_bpm = self.base_bpm.as_() as i64;
-        let k = self.k.as_() as i64;
+        let base_bpm = self.base_bpm as i64;
+        let k = self.k as i64;
         let correction = (k * sin as i64) / LUT_SCALE as i64;
 
-        let next_bpm = clamp_i64(base_bpm + correction, 0, T::max_value().as_() as i64);
-        self.current_bpm = cast_from_u64(next_bpm as u64);
+        let next_bpm = clamp_i64(base_bpm + correction, 0, u16::MAX as i64);
+        self.current_bpm = next_bpm as u16;
     }
 
     /// 位相差を最短距離（±半周以内）で返す。
-    pub fn phase_error(&self, target_phase: P) -> i64 {
-        let modulus = phase_modulus::<P>() as i64;
-        let target = target_phase.as_() as i64;
-        let current = self.phase.as_() as i64;
+    pub fn phase_error(&self, target_phase: u16) -> i64 {
+        let modulus = phase_modulus() as i64;
+        let target = target_phase as i64;
+        let current = self.phase as i64;
 
         let mut diff = (target - current).rem_euclid(modulus);
         if diff > modulus / 2 {
@@ -147,38 +180,31 @@ where
     }
 
     /// 位相差の絶対値。
-    pub fn phase_distance(&self, target_phase: P) -> u64 {
+    pub fn phase_distance(&self, target_phase: u16) -> u64 {
         self.phase_error(target_phase).unsigned_abs()
     }
 
     /// 現在状態を送信用メッセージに変換する。
-    pub fn to_message(&self, timestamp: Duration) -> RhythmMessage<P, T> {
+    pub fn to_message(&self, timestamp: Duration) -> RhythmMessage {
         let timestamp_ms = duration_to_millis_u64(timestamp);
 
-        RhythmMessage {
-            phase: self.phase,
-            bpm: self.current_bpm,
-            timestamp_ms,
-            beat_count: self.beat_count,
-        }
+        RhythmMessage::new(self.phase, self.current_bpm, timestamp_ms, self.beat_count)
     }
 
     /// 受信時刻を使って、受信メッセージの位相を現在時刻へ外挿する。
-    pub fn predict_phase_from_message(message: RhythmMessage<P, T>, now: Duration) -> P {
+    pub fn predict_phase_from_message(message: RhythmMessage, now: Duration) -> u16 {
         let base = Duration::from_millis(message.timestamp_ms);
         let elapsed_ms = now.saturating_sub(base).as_millis();
-        let modulus = phase_modulus::<P>() as u128;
-        let step =
-            (message.bpm.as_() as u128 * modulus * elapsed_ms / MS_PER_MINUTE as u128) % modulus;
-        let step_phase: P = cast_from_u64(step as u64);
-        message.phase.wrapping_add(&step_phase)
+        let modulus = phase_modulus() as u128;
+        let step = (message.bpm as u128 * modulus * elapsed_ms / MS_PER_MINUTE as u128) % modulus;
+        message.phase.wrapping_add(step as u16)
     }
 
     /// 外部ビート入力由来の2メッセージから現在状態を推定し、強制的に同期する。
     pub fn force_sync_from_beat_messages(
         &mut self,
-        older: RhythmMessage<P, T>,
-        newer: RhythmMessage<P, T>,
+        older: RhythmMessage,
+        newer: RhythmMessage,
         now: Duration,
     ) -> bool {
         let Some((estimated_phase, estimated_bpm)) =
@@ -188,7 +214,7 @@ where
         };
 
         let elapsed_from_newer_ms = duration_to_millis_u64(now).saturating_sub(newer.timestamp_ms);
-        let additional_beats = ((estimated_bpm.as_() as u128 * elapsed_from_newer_ms as u128)
+        let additional_beats = ((estimated_bpm as u128 * elapsed_from_newer_ms as u128)
             / MS_PER_MINUTE as u128)
             .min(u64::MAX as u128) as u64;
 
@@ -201,39 +227,38 @@ where
 
     /// 2点のビート観測メッセージ（1 beat 間隔）から、現在時刻の BPM と位相を推定する。
     pub fn estimate_bpm_phase_from_beat_messages(
-        older: RhythmMessage<P, T>,
-        newer: RhythmMessage<P, T>,
+        older: RhythmMessage,
+        newer: RhythmMessage,
         now: Duration,
-    ) -> Option<(P, T)> {
+    ) -> Option<(u16, u16)> {
         let observation_ms = newer.timestamp_ms.saturating_sub(older.timestamp_ms);
         if observation_ms == 0 {
             return None;
         }
 
-        let modulus = phase_modulus::<P>() as u128;
+        let modulus = phase_modulus() as u128;
         let bpm_raw = (MS_PER_MINUTE as u128 + observation_ms as u128 / 2) / observation_ms as u128;
-        let bpm_u64 = bpm_raw.min(T::max_value().as_() as u128) as u64;
-        let estimated_bpm: T = cast_from_u64(bpm_u64);
+        let estimated_bpm = bpm_raw.min(u16::MAX as u128) as u16;
 
         let elapsed_from_newer_ms =
             duration_to_millis_u64(now).saturating_sub(newer.timestamp_ms) as u128;
-        let phase_step =
-            (bpm_u64 as u128 * modulus * elapsed_from_newer_ms / MS_PER_MINUTE as u128) % modulus;
-        let step_phase: P = cast_from_u64(phase_step as u64);
-        let estimated_phase = newer.phase.wrapping_add(&step_phase);
+        let phase_step = (estimated_bpm as u128 * modulus * elapsed_from_newer_ms
+            / MS_PER_MINUTE as u128)
+            % modulus;
+        let estimated_phase = newer.phase.wrapping_add(phase_step as u16);
 
         Some((estimated_phase, estimated_bpm))
     }
 
     /// BPM と経過時間から位相ステップとラップ回数を算出する。
-    fn phase_step_and_wraps(&self, bpm: T, dt: Duration) -> (P, u64) {
+    fn phase_step_and_wraps(&self, bpm: u16, dt: Duration) -> (u16, u64) {
         let dt_ms = dt.as_millis();
-        let modulus = phase_modulus::<P>() as u128;
-        let total_advance = bpm.as_() as u128 * modulus * dt_ms / MS_PER_MINUTE as u128;
+        let modulus = phase_modulus() as u128;
+        let total_advance = bpm as u128 * modulus * dt_ms / MS_PER_MINUTE as u128;
 
         let step = total_advance % modulus;
         let wraps_from_advance = total_advance / modulus;
-        let wraps_from_carry = if self.phase.as_() as u128 + step >= modulus {
+        let wraps_from_carry = if self.phase as u128 + step >= modulus {
             1_u128
         } else {
             0_u128
@@ -242,7 +267,7 @@ where
             .saturating_add(wraps_from_carry)
             .min(u64::MAX as u128) as u64;
 
-        (cast_from_u64(step as u64), wraps)
+        (step as u16, wraps)
     }
 }
 
@@ -259,19 +284,8 @@ pub fn sin_from_phase_diff(phase_diff: i64, phase_modulus: u64) -> i16 {
 }
 
 #[inline]
-fn phase_modulus<P>() -> u64
-where
-    P: PhaseValue,
-{
-    P::max_value().as_() + 1
-}
-
-#[inline]
-fn cast_from_u64<T>(value: u64) -> T
-where
-    T: NumCast,
-{
-    NumCast::from(value).expect("value is in range of target integer type")
+fn phase_modulus() -> u64 {
+    u16::MAX as u64 + 1
 }
 
 #[inline]
@@ -301,7 +315,7 @@ mod tests {
     #[test]
     // 指定時間更新で位相が正しくラップすることを確認。
     fn update_wraps_phase_after_full_cycles() {
-        let mut rhythm = RhythmGenerator::<u16, u16>::with_bpm(120, 8);
+        let mut rhythm = RhythmGenerator::with_bpm(120, 8);
         rhythm.phase = u16::MAX - 5;
 
         rhythm.update(Duration::from_millis(60_000));
@@ -313,7 +327,7 @@ mod tests {
     #[test]
     // 位相の境界をまたぐ更新で beatcount が増えることを確認。
     fn update_increments_beatcount_on_wrap() {
-        let mut rhythm = RhythmGenerator::<u16, u16>::with_bpm(120, 8);
+        let mut rhythm = RhythmGenerator::with_bpm(120, 8);
         rhythm.phase = u16::MAX - 10;
 
         rhythm.update(Duration::from_millis(100));
@@ -324,7 +338,7 @@ mod tests {
     #[test]
     // メッセージへはジェネレーター保持の beatcount が出力されることを確認。
     fn message_exports_generator_beatcount() {
-        let mut rhythm = RhythmGenerator::<u16, u16>::with_bpm(120, 8);
+        let mut rhythm = RhythmGenerator::with_bpm(120, 8);
         rhythm.update(Duration::from_millis(1_500));
         let msg = rhythm.to_message(Duration::from_millis(10_000));
 
@@ -335,8 +349,8 @@ mod tests {
     #[test]
     // 同期を繰り返すと位相差が縮み、BPMが外部テンポに近づくことを確認。
     fn sync_reduces_phase_distance_and_tracks_external_tempo() {
-        let mut leader = RhythmGenerator::<u16, u16>::new(0, 125, 0);
-        let mut follower = RhythmGenerator::<u16, u16>::new(28_000, 120, 24);
+        let mut leader = RhythmGenerator::new(0, 125, 0);
+        let mut follower = RhythmGenerator::new(28_000, 120, 24);
 
         let initial_distance = follower.phase_distance(leader.phase);
 
@@ -364,16 +378,18 @@ mod tests {
             bpm: 130,
             timestamp_ms: 1_000,
             beat_count: 100,
+            ..RhythmMessage::default()
         };
         let msg1 = RhythmMessage {
             phase: 4_000,
             bpm: 130,
             timestamp_ms: 1_500,
             beat_count: 101,
+            ..RhythmMessage::default()
         };
         let now = Duration::from_millis(1_750);
 
-        let mut follower = RhythmGenerator::<u16, u16>::new(20_000, 90, 16);
+        let mut follower = RhythmGenerator::new(20_000, 90, 16);
         let synced = follower.force_sync_from_beat_messages(msg0, msg1, now);
 
         assert!(synced);
@@ -386,7 +402,7 @@ mod tests {
     #[test]
     // 観測時刻差が0なら推定不能として同期を拒否することを確認。
     fn force_sync_rejects_invalid_message_pair() {
-        let mut follower = RhythmGenerator::<u16, u16>::new(10_000, 100, 16);
+        let mut follower = RhythmGenerator::new(10_000, 100, 16);
         let before = follower;
 
         let msg0 = RhythmMessage {
@@ -394,12 +410,14 @@ mod tests {
             bpm: 120,
             timestamp_ms: 2_000,
             beat_count: 10,
+            ..RhythmMessage::default()
         };
         let msg1 = RhythmMessage {
             phase: 2_000,
             bpm: 120,
             timestamp_ms: 2_000,
             beat_count: 10,
+            ..RhythmMessage::default()
         };
 
         let synced =
@@ -416,23 +434,25 @@ mod tests {
             bpm: 120,
             timestamp_ms: 1_000,
             beat_count: 20,
+            ..RhythmMessage::default()
         };
         let newer = RhythmMessage {
             phase: 33_768,
             bpm: 120,
             timestamp_ms: 2_500,
             beat_count: 21,
+            ..RhythmMessage::default()
         };
 
         let now = Duration::from_millis(3_000);
         let (estimated_phase, estimated_bpm) =
-            RhythmGenerator::<u16, u16>::estimate_bpm_phase_from_beat_messages(older, newer, now)
+            RhythmGenerator::estimate_bpm_phase_from_beat_messages(older, newer, now)
                 .expect("valid pair should be estimable");
 
         assert_eq!(estimated_bpm, 40);
         assert_eq!(estimated_phase, 55_613);
 
-        let mut local = RhythmGenerator::<u16, u16>::new(10_000, 120, 16);
+        let mut local = RhythmGenerator::new(10_000, 120, 16);
         assert!(local.force_sync_from_beat_messages(older, newer, now));
         assert_eq!(local.base_bpm, 40);
         assert_eq!(local.current_bpm, 40);
@@ -447,29 +467,74 @@ mod tests {
     #[test]
     // メッセージ往復で値が保たれ、遅延ぶんの位相推定が一致することを確認。
     fn message_roundtrip_and_phase_prediction() {
-        let generator = RhythmGenerator::<u16, u16>::new(1234, 120, 10);
+        let generator = RhythmGenerator::new(1234, 120, 10);
         let msg = generator.to_message(Duration::from_millis(10_000));
 
         let encoded = serde_json::to_vec(&msg).unwrap();
-        let decoded: RhythmMessage<u16, u16> = serde_json::from_slice(&encoded).unwrap();
+        let decoded: RhythmMessage = serde_json::from_slice(&encoded).unwrap();
 
         assert_eq!(msg, decoded);
 
-        let predicted = RhythmGenerator::<u16, u16>::predict_phase_from_message(
-            decoded,
-            Duration::from_millis(10_500),
-        );
+        let predicted =
+            RhythmGenerator::predict_phase_from_message(decoded, Duration::from_millis(10_500));
 
-        let mut expected = RhythmGenerator::<u16, u16>::new(msg.phase, msg.bpm, 0);
+        let mut expected = RhythmGenerator::new(msg.phase, msg.bpm, 0);
         expected.update(Duration::from_millis(500));
 
         assert_eq!(predicted, expected.phase);
     }
 
     #[test]
+    // 固定レイアウトのバイト配置と往復変換を確認。
+    fn wire_layout_roundtrip() {
+        let msg = RhythmMessage {
+            phase: 0x1234,
+            bpm: 0x5678,
+            timestamp_ms: 0x0102_0304_0506_0708,
+            beat_count: 0x1112_1314_1516_1718,
+            ..RhythmMessage::default()
+        };
+
+        let bytes = msg.to_wire_bytes();
+
+        assert_eq!(
+            &bytes[RHYTHM_MESSAGE_WIRE_TIMESTAMP_OFFSET..RHYTHM_MESSAGE_WIRE_TIMESTAMP_OFFSET + 8],
+            &msg.timestamp_ms.to_le_bytes(),
+        );
+        assert_eq!(
+            &bytes[RHYTHM_MESSAGE_WIRE_CYCLE_COUNT_OFFSET
+                ..RHYTHM_MESSAGE_WIRE_CYCLE_COUNT_OFFSET + 8],
+            &msg.beat_count.to_le_bytes(),
+        );
+        assert_eq!(
+            &bytes[RHYTHM_MESSAGE_WIRE_PHASE_OFFSET..RHYTHM_MESSAGE_WIRE_PHASE_OFFSET + 2],
+            &msg.phase.to_le_bytes(),
+        );
+        assert_eq!(
+            &bytes[RHYTHM_MESSAGE_WIRE_BPM_OFFSET..RHYTHM_MESSAGE_WIRE_BPM_OFFSET + 2],
+            &msg.bpm.to_le_bytes(),
+        );
+        assert_eq!(
+            &bytes[RHYTHM_MESSAGE_WIRE_RESERVED_OFFSET
+                ..RHYTHM_MESSAGE_WIRE_RESERVED_OFFSET + RHYTHM_MESSAGE_WIRE_RESERVED_SIZE],
+            &[0_u8; RHYTHM_MESSAGE_WIRE_RESERVED_SIZE],
+        );
+
+        let decoded = RhythmMessage::from_wire_bytes(bytes);
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    // 固定サイズ以外の入力は復元に失敗することを確認。
+    fn wire_slice_rejects_invalid_size() {
+        assert!(RhythmMessage::from_wire_slice(&[0_u8; 23]).is_none());
+        assert!(RhythmMessage::from_wire_slice(&[0_u8; 25]).is_none());
+    }
+
+    #[test]
     // 同期入力が止まっても、直前状態で位相更新を継続できることを確認。
     fn rhythm_keeps_running_without_sync_input() {
-        let mut rhythm = RhythmGenerator::<u16, u16>::new(0, 120, 16);
+        let mut rhythm = RhythmGenerator::new(0, 120, 16);
         rhythm.sync(16_384);
         let synced_bpm = rhythm.current_bpm;
 

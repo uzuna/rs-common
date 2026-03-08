@@ -44,7 +44,7 @@ fn print_line(line: impl core::fmt::Display) -> io::Result<()> {
     stdout.flush()
 }
 
-fn prune_stale_inputs(inputs: &mut VecDeque<RhythmMessage<u16, u16>>, now_ms: u64) {
+fn prune_stale_inputs(inputs: &mut VecDeque<RhythmMessage>, now_ms: u64) {
     while let Some(front) = inputs.front() {
         if now_ms.saturating_sub(front.timestamp_ms) > STALE_INPUT_TIMEOUT_MS {
             inputs.pop_front();
@@ -153,6 +153,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             bpm: local.current_bpm,
                             timestamp_ms: input_now_ms,
                             beat_count: input_beat_count,
+                            ..RhythmMessage::default()
                         };
                         input_beat_count = input_beat_count.saturating_add(1);
 

@@ -10,14 +10,14 @@ use crossterm::{
     event::{self, Event, KeyCode},
     terminal::{disable_raw_mode, enable_raw_mode},
 };
-use rhythm_core::{Rhythm, RhythmMessage};
+use rhythm_core::{bpm_from_interval_ms, bpm_to_int_round, Rhythm, RhythmMessage};
 
 const MIN_ACCEPT_BPM: u64 = 40;
 const MAX_ACCEPT_BPM: u64 = 240;
 const MIN_ACCEPT_INTERVAL_MS: u64 = 60_000 / MAX_ACCEPT_BPM;
 const MAX_ACCEPT_INTERVAL_MS: u64 = 60_000 / MIN_ACCEPT_BPM;
 const STALE_INPUT_TIMEOUT_MS: u64 = MAX_ACCEPT_INTERVAL_MS * 2;
-const LOW_BPM_GENTLE_THRESHOLD: u16 = 80;
+const TICK_MS: u32 = 10;
 
 struct RawModeGuard;
 
@@ -59,47 +59,10 @@ fn interval_to_bpm(interval_ms: u64) -> u16 {
     bpm.min(u16::MAX as u64) as u16
 }
 
-fn blend_toward(current: u16, target: u16, divisor: i32) -> u16 {
-    let diff = target as i32 - current as i32;
-    if diff == 0 {
-        return current;
-    }
-
-    let mut step = diff / divisor;
-    if step == 0 {
-        step = diff.signum();
-    }
-
-    let next = (current as i32 + step).clamp(0, u16::MAX as i32);
-    next as u16
-}
-
-fn nudge_phase_toward(current: u16, target: u16, divisor: i32) -> u16 {
-    let modulus = 65_536_i32;
-    let mut diff = target as i32 - current as i32;
-
-    if diff > modulus / 2 {
-        diff -= modulus;
-    } else if diff < -modulus / 2 {
-        diff += modulus;
-    }
-
-    if diff == 0 {
-        return current;
-    }
-
-    let mut step = diff / divisor;
-    if step == 0 {
-        step = diff.signum();
-    }
-
-    current.wrapping_add(step as i16 as u16)
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
-    let tick = Duration::from_millis(10);
+    let tick = Duration::from_millis(TICK_MS as u64);
 
-    let mut local = Rhythm::new(0, 120, 24);
+    let mut local = RhythmGenerator::from_int_bpm(0, 120, 12);
     let mut local_last_beat_count = local.beat_count;
 
     let mut input_messages = VecDeque::with_capacity(2);
@@ -108,7 +71,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     print_line("rhythm-core CLI example")?;
     print_line("- 自分のビートタイミングでメッセージを出力")?;
     print_line("- スペースキー: 外部ビート入力（40-240bpmのみ受付）")?;
-    print_line("- 入力が古い場合は自動破棄、低bpm時は緩やかに同期")?;
+    print_line("- 入力間隔からQ8.8 BPMを推定し、遅延補償syncを適用")?;
     print_line("- 'q' キー: 終了")?;
 
     let _raw_mode = RawModeGuard::new()?;
@@ -148,12 +111,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                             interval_ms = Some(delta_ms);
                         }
 
+                        let input_bpm_q8 = match interval_ms {
+                            Some(ms) => bpm_from_interval_ms(ms as u32),
+                            None => local.current_bpm,
+                        };
+
                         let input_message = RhythmMessage {
                             phase: 0,
-                            bpm: local.current_bpm,
+                            bpm: input_bpm_q8,
                             timestamp_ms: input_now_ms,
-                            beat_count: input_beat_count,
-                            ..RhythmMessage::default()
+                            beat_count: input_beat_count.min(u32::MAX as u64) as u32,
                         };
                         input_beat_count = input_beat_count.saturating_add(1);
 
@@ -176,61 +143,39 @@ fn main() -> Result<(), Box<dyn Error>> {
                             ))?,
                         }
 
-                        if input_messages.len() >= 2 {
-                            let older = input_messages[input_messages.len() - 2];
-                            let newer = input_messages[input_messages.len() - 1];
-                            let before = local.to_message(input_now);
+                        let before = local.to_message(input_now_ms);
+                        local.sync(input_message, input_now_ms);
+                        let after = local.to_message(input_now_ms);
+                        local_last_beat_count = local.beat_count;
 
-                            let Some((target_phase, target_bpm)) =
-                                Rhythm::estimate_bpm_phase_from_beat_messages(
-                                    older, newer, input_now,
-                                )
-                            else {
-                                print_line("[sync] 失敗: 入力時刻差が不正です")?;
-                                continue;
-                            };
-
-                            let mode = if target_bpm <= LOW_BPM_GENTLE_THRESHOLD {
-                                local.base_bpm = blend_toward(local.base_bpm, target_bpm, 4);
-                                local.current_bpm = blend_toward(local.current_bpm, target_bpm, 4);
-                                local.phase = nudge_phase_toward(local.phase, target_phase, 4);
-                                "gentle"
-                            } else {
-                                local.force_sync_from_beat_messages(older, newer, input_now);
-                                "hard"
-                            };
-
-                            let after = local.to_message(input_now);
-                            local_last_beat_count = local.beat_count;
-                            print_line(format!(
-                                "[sync:{mode}] bpm {} -> {} (target={}), phase {} -> {}, beat={}",
-                                before.bpm,
-                                after.bpm,
-                                target_bpm,
-                                before.phase,
-                                after.phase,
-                                after.beat_count
-                            ))?;
-                        }
+                        print_line(format!(
+                            "[sync] bpm {} -> {} (input={}) phase {} -> {} beat={}",
+                            bpm_to_int_round(before.bpm),
+                            bpm_to_int_round(after.bpm),
+                            bpm_to_int_round(input_message.bpm),
+                            before.phase,
+                            after.phase,
+                            local.beat_count
+                        ))?;
                     }
                     _ => {}
                 }
             }
         }
 
-        local.update(tick);
+        local.update(TICK_MS);
 
         let now = start.elapsed();
 
         if local.beat_count != local_last_beat_count {
             local_last_beat_count = local.beat_count;
-            let local_message = local.to_message(now);
+            let local_message = local.to_message(to_millis_u64(now));
             print_line(format!(
                 "[beat t={:>6}ms] phase={:>5} bpm={:>3} beat={}",
                 to_millis_u64(now),
                 local_message.phase,
-                local_message.bpm,
-                local_message.beat_count,
+                bpm_to_int_round(local_message.bpm),
+                local.beat_count,
             ))?;
         }
 

@@ -25,7 +25,7 @@ test-log = { version = "0.2.19", default-features = false, features = ["trace"] 
 # 実装完了まで無視する
 [[example]]
 name = "cli_sync"
-required-features = ["unimplemented_feature"]
+required-features = ["std"]
 [[example]]
 name = "udp_multicast"
-required-features = ["unimplemented_feature"]
+required-features = ["std"]

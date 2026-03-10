@@ -8,12 +8,65 @@ pub mod util;
 use consts::RHYTHM_MESSAGE_WIRE_SIZE;
 use fixed_math::{phase_advance_sub16, BpmQ8, PhaseU16};
 
+const PULSE_INTERVAL_HISTORY_SIZE: usize = 8;
+const EMA_Q8_ONE: u32 = 256;
+
 // 下流クレートが使う公開定数・ユーティリティを再エクスポートする。
 pub use consts::{BPM_Q8_ONE, BPM_Q8_SHIFT, MS_PER_MINUTE, PHASE_MODULUS};
 pub use fixed_math::BpmLimitParam;
 pub use util::{
     bpm_from_int, bpm_from_interval_ms, bpm_to_int_floor, bpm_to_int_round, fast_sin_q1_15,
 };
+
+/// `sync_pulse` 振る舞いを制御するパラメータ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PulseSyncParam {
+    /// 想定拍でパルスが来ない状態が何周期続いたら `WaitSecondPoint` へ戻すか。
+    pub missing_cycle_threshold: u8,
+    /// BPM の指数平均で最新観測値に与える重み（Q0.8, 1..=255）。
+    pub bpm_ema_alpha_q8: u8,
+}
+
+impl PulseSyncParam {
+    /// 既定値（4周期タイムアウト、EMA重み 96/256）。
+    pub const DEFAULT: Self = Self {
+        missing_cycle_threshold: 4,
+        bpm_ema_alpha_q8: 96,
+    };
+
+    #[inline]
+    pub const fn new(missing_cycle_threshold: u8, bpm_ema_alpha_q8: u8) -> Self {
+        Self {
+            missing_cycle_threshold,
+            bpm_ema_alpha_q8,
+        }
+    }
+
+    /// `missing_cycle_threshold >= 1` かつ `1 <= bpm_ema_alpha_q8 <= 255` に正規化する。
+    #[inline]
+    pub const fn sanitize(self) -> Self {
+        let missing_cycle_threshold = if self.missing_cycle_threshold == 0 {
+            1
+        } else {
+            self.missing_cycle_threshold
+        };
+        let bpm_ema_alpha_q8 = if self.bpm_ema_alpha_q8 == 0 {
+            1
+        } else {
+            self.bpm_ema_alpha_q8
+        };
+        Self {
+            missing_cycle_threshold,
+            bpm_ema_alpha_q8,
+        }
+    }
+}
+
+impl Default for PulseSyncParam {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
 
 /// 既存サンプル互換のためのエイリアス。
 pub type Rhythm = RhythmGenerator;
@@ -111,6 +164,12 @@ pub struct RhythmGenerator {
     phase_accum_sub16: u64,
     first_point_ts_ms: Option<u64>,
     last_sync_ts_ms: Option<u64>,
+    pulse_last_ts_ms: Option<u64>,
+    pulse_silence_ms: u64,
+    pulse_sync_param: PulseSyncParam,
+    pulse_interval_ms_ring: [u32; PULSE_INTERVAL_HISTORY_SIZE],
+    pulse_interval_len: u8,
+    pulse_interval_next_idx: u8,
 }
 
 /// 低頻度入力でのジッタ耐性を持たせるための同期状態。
@@ -137,12 +196,29 @@ impl RhythmGenerator {
             phase_accum_sub16: (phase as u64) << 16,
             first_point_ts_ms: None,
             last_sync_ts_ms: None,
+            pulse_last_ts_ms: None,
+            pulse_silence_ms: 0,
+            pulse_sync_param: PulseSyncParam::default(),
+            pulse_interval_ms_ring: [0; PULSE_INTERVAL_HISTORY_SIZE],
+            pulse_interval_len: 0,
+            pulse_interval_next_idx: 0,
         }
     }
 
     /// 整数 BPM 指定でジェネレータを生成する。
     pub fn from_int_bpm(phase: u16, bpm: u16, coupling_divisor: u16) -> Self {
         Self::new(phase, BpmQ8::from_int(bpm), coupling_divisor)
+    }
+
+    /// `sync_pulse` の同期パラメータを更新する。
+    pub fn set_pulse_sync_param(&mut self, pulse_sync_param: PulseSyncParam) {
+        self.pulse_sync_param = pulse_sync_param.sanitize();
+    }
+
+    /// 現在の `sync_pulse` 同期パラメータを返す。
+    #[inline]
+    pub fn pulse_sync_param(&self) -> PulseSyncParam {
+        self.pulse_sync_param
     }
 
     /// 自律更新。パケット不在時は `base_bpm` を目標に `current_bpm` を徐々に戻す。
@@ -170,6 +246,8 @@ impl RhythmGenerator {
         let wraps = after_cycles.saturating_sub(before_cycles);
         self.beat_count = self.beat_count.saturating_add(wraps);
         self.phase = ((self.phase_accum_sub16 >> 16) & u16::MAX as u64) as u16;
+
+        self.handle_pulse_timeout(dt_ms, &bpm_limit_param);
     }
 
     /// 外部メッセージに同期する。
@@ -180,6 +258,8 @@ impl RhythmGenerator {
     /// - 位相: 90度刻みオフセットを候補に、現在位相へ最短の点へ吸着
     pub fn sync(&mut self, msg: RhythmMessage, now_ms: u64, bpm_limit_param: &BpmLimitParam) {
         let bpm_limit_param = bpm_limit_param.sanitize();
+        self.reset_pulse_tracking();
+
         let compensated_remote_phase = compensated_remote_phase(msg, now_ms);
         let phase_target = if is_bpm_in_primary_range(msg.bpm, &bpm_limit_param) {
             compensated_remote_phase
@@ -255,6 +335,111 @@ impl RhythmGenerator {
         self.last_sync_ts_ms = Some(msg.timestamp_ms);
     }
 
+    /// パルス時刻のみ（BPMヒントなし）で同期する。
+    ///
+    /// - パルス間隔の指数平均（EMA）から BPM を推定する
+    /// - 推定 BPM を `bpm_limit_param` で制約し、範囲外なら 2:1 分周で折りたたむ
+    /// - 想定拍でパルス欠落が一定周期続いた場合は `WaitSecondPoint` へ戻す
+    /// - 受信遅延分を補償して位相を補正する
+    pub fn sync_pulse(&mut self, pulse_ts_ms: u64, now_ms: u64, bpm_limit_param: &BpmLimitParam) {
+        let bpm_limit_param = bpm_limit_param.sanitize();
+        let pulse_sync_param = self.pulse_sync_param.sanitize();
+
+        let mut maybe_interval_ms = self
+            .pulse_last_ts_ms
+            .filter(|last_ts| pulse_ts_ms > *last_ts)
+            .map(|last_ts| (pulse_ts_ms - last_ts).min(u32::MAX as u64) as u32)
+            .filter(|interval_ms| *interval_ms > 0);
+
+        if let Some(interval_ms) = maybe_interval_ms {
+            if self.sync_state == SyncState::Locked
+                && self.is_pulse_interval_timed_out(
+                    interval_ms as u64,
+                    &bpm_limit_param,
+                    &pulse_sync_param,
+                )
+            {
+                // 長時間ヒントが途切れたパルスは新規キャリブレーションとして扱う。
+                self.transition_to_wait_second_point();
+                maybe_interval_ms = None;
+            }
+        }
+
+        if let Some(interval_ms) = maybe_interval_ms {
+            self.push_pulse_interval(interval_ms);
+        }
+
+        let raw_latest_bpm = maybe_interval_ms.map(BpmQ8::from_interval_ms);
+        let raw_smoothed_bpm = self
+            .estimated_pulse_bpm(&pulse_sync_param)
+            .or(raw_latest_bpm);
+
+        let raw_pulse_bpm = raw_latest_bpm
+            .or(raw_smoothed_bpm)
+            .unwrap_or(self.current_bpm);
+        let pulse_bpm = normalize_bpm_to_primary_range(raw_pulse_bpm, &bpm_limit_param);
+        let smoothed_pulse_bpm = normalize_bpm_to_primary_range(
+            raw_smoothed_bpm.unwrap_or(raw_pulse_bpm),
+            &bpm_limit_param,
+        );
+
+        let compensated_pulse_phase = compensated_pulse_phase(pulse_ts_ms, now_ms, pulse_bpm);
+        let phase_target = if is_bpm_in_primary_range(raw_pulse_bpm, &bpm_limit_param) {
+            compensated_pulse_phase
+        } else {
+            nearest_quarter_phase(self.phase, compensated_pulse_phase)
+        };
+
+        match self.sync_state {
+            SyncState::Idle => {
+                self.sync_state = SyncState::WaitSecondPoint;
+                self.first_point_ts_ms = Some(pulse_ts_ms);
+                self.base_bpm = pulse_bpm;
+                self.current_bpm =
+                    self.current_bpm
+                        .blend_toward_with_limit(pulse_bpm, 2, &bpm_limit_param);
+                self.force_phase(phase_target);
+            }
+            SyncState::WaitSecondPoint => {
+                if maybe_interval_ms.is_some() {
+                    self.base_bpm = smoothed_pulse_bpm;
+                    self.current_bpm = smoothed_pulse_bpm;
+                    self.sync_state = SyncState::Locked;
+                    self.first_point_ts_ms = None;
+                } else {
+                    self.first_point_ts_ms = Some(pulse_ts_ms);
+                    self.base_bpm = pulse_bpm;
+                    self.current_bpm =
+                        self.current_bpm
+                            .blend_toward_with_limit(pulse_bpm, 2, &bpm_limit_param);
+                }
+                self.force_phase(phase_target);
+            }
+            SyncState::Locked => {
+                if maybe_interval_ms.is_some() {
+                    self.base_bpm = smoothed_pulse_bpm;
+
+                    self.current_bpm = self.current_bpm.blend_toward_with_limit(
+                        smoothed_pulse_bpm,
+                        2,
+                        &bpm_limit_param,
+                    );
+                } else {
+                    self.current_bpm = self.current_bpm.blend_toward_with_limit(
+                        self.base_bpm,
+                        2,
+                        &bpm_limit_param,
+                    );
+                }
+                self.force_phase(phase_target);
+            }
+        }
+
+        self.pulse_last_ts_ms = Some(pulse_ts_ms);
+        self.pulse_silence_ms = 0;
+        self.last_sync_ts_ms = Some(pulse_ts_ms);
+    }
+
     pub fn to_message(&self, now_ms: u64) -> RhythmMessage {
         RhythmMessage {
             timestamp_ms: now_ms,
@@ -270,6 +455,113 @@ impl RhythmGenerator {
         let cycles = self.phase_accum_sub16 >> 32;
         self.phase_accum_sub16 = (cycles << 32) | ((phase as u64) << 16);
     }
+
+    #[inline]
+    fn handle_pulse_timeout(&mut self, dt_ms: u32, bpm_limit_param: &BpmLimitParam) {
+        if self.sync_state != SyncState::Locked || self.pulse_last_ts_ms.is_none() {
+            return;
+        }
+
+        self.pulse_silence_ms = self.pulse_silence_ms.saturating_add(dt_ms as u64);
+        let pulse_sync_param = self.pulse_sync_param.sanitize();
+        if self.is_pulse_interval_timed_out(
+            self.pulse_silence_ms,
+            bpm_limit_param,
+            &pulse_sync_param,
+        ) {
+            self.transition_to_wait_second_point();
+        }
+    }
+
+    #[inline]
+    fn is_pulse_interval_timed_out(
+        &self,
+        interval_ms: u64,
+        bpm_limit_param: &BpmLimitParam,
+        pulse_sync_param: &PulseSyncParam,
+    ) -> bool {
+        let expected_interval_ms =
+            expected_interval_ms_from_bpm(self.base_bpm.clamp_with_limit(bpm_limit_param));
+        let timeout_ms =
+            expected_interval_ms.saturating_mul(pulse_sync_param.missing_cycle_threshold as u64);
+        timeout_ms > 0 && interval_ms >= timeout_ms
+    }
+
+    #[inline]
+    fn transition_to_wait_second_point(&mut self) {
+        self.sync_state = SyncState::WaitSecondPoint;
+        self.first_point_ts_ms = None;
+        self.reset_pulse_tracking();
+    }
+
+    #[inline]
+    fn reset_pulse_tracking(&mut self) {
+        self.pulse_last_ts_ms = None;
+        self.pulse_silence_ms = 0;
+        self.pulse_interval_ms_ring = [0; PULSE_INTERVAL_HISTORY_SIZE];
+        self.pulse_interval_len = 0;
+        self.pulse_interval_next_idx = 0;
+    }
+
+    #[inline]
+    fn push_pulse_interval(&mut self, interval_ms: u32) {
+        if interval_ms == 0 {
+            return;
+        }
+
+        let idx = self.pulse_interval_next_idx as usize % PULSE_INTERVAL_HISTORY_SIZE;
+        self.pulse_interval_ms_ring[idx] = interval_ms;
+        self.pulse_interval_next_idx = ((idx + 1) % PULSE_INTERVAL_HISTORY_SIZE) as u8;
+        if self.pulse_interval_len < PULSE_INTERVAL_HISTORY_SIZE as u8 {
+            self.pulse_interval_len += 1;
+        }
+    }
+
+    #[inline]
+    fn estimated_pulse_bpm(&self, pulse_sync_param: &PulseSyncParam) -> Option<BpmQ8> {
+        let len = self.pulse_interval_len as usize;
+        if len == 0 {
+            return None;
+        }
+
+        let pulse_sync_param = pulse_sync_param.sanitize();
+        let alpha = pulse_sync_param.bpm_ema_alpha_q8 as u32;
+        let beta = EMA_Q8_ONE.saturating_sub(alpha);
+        let ring_size = PULSE_INTERVAL_HISTORY_SIZE;
+        let start_idx = if len < ring_size {
+            0
+        } else {
+            self.pulse_interval_next_idx as usize % ring_size
+        };
+
+        let mut ema_raw_q8: Option<u32> = None;
+        for offset in 0..len {
+            let idx = (start_idx + offset) % ring_size;
+            let interval_ms = self.pulse_interval_ms_ring[idx];
+            if interval_ms == 0 {
+                continue;
+            }
+
+            let bpm_raw_q8 = BpmQ8::from_interval_ms(interval_ms).raw() as u32;
+            ema_raw_q8 = Some(match ema_raw_q8 {
+                Some(prev_raw_q8) => {
+                    (prev_raw_q8.saturating_mul(beta)
+                        + bpm_raw_q8.saturating_mul(alpha)
+                        + EMA_Q8_ONE / 2)
+                        / EMA_Q8_ONE
+                }
+                None => bpm_raw_q8,
+            });
+        }
+
+        ema_raw_q8.map(|raw| BpmQ8(raw.min(u16::MAX as u32) as u16))
+    }
+}
+
+#[inline]
+fn expected_interval_ms_from_bpm(bpm: BpmQ8) -> u64 {
+    let raw_q8 = bpm.raw().max(1) as u64;
+    ((MS_PER_MINUTE as u64 * BPM_Q8_ONE as u64) + raw_q8 / 2) / raw_q8
 }
 
 #[inline]
@@ -283,6 +575,12 @@ fn compensated_remote_phase(msg: RhythmMessage, now_ms: u64) -> u16 {
     PhaseU16(msg.phase)
         .wrapping_add(PhaseU16::advance(msg.bpm, delay_ms))
         .raw()
+}
+
+#[inline]
+fn compensated_pulse_phase(pulse_ts_ms: u64, now_ms: u64, bpm: BpmQ8) -> u16 {
+    let delay_ms = now_ms.saturating_sub(pulse_ts_ms).min(u32::MAX as u64) as u32;
+    PhaseU16::advance(bpm, delay_ms).raw()
 }
 
 #[inline]

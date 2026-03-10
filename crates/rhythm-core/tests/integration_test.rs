@@ -1,6 +1,6 @@
 use rhythm_core::{
     fixed_math::{BpmLimitParam, BpmQ8},
-    RhythmGenerator, RhythmMessage, SyncState,
+    PulseSyncParam, RhythmGenerator, RhythmMessage, SyncState,
 };
 
 const PHASE_ONE_PERCENT: i32 = 655;
@@ -229,6 +229,192 @@ fn abnormal_harmonic_fold_cases() {
             case.label,
             quarter_error <= PHASE_ONE_PERCENT,
             "90度刻みグリッドから外れている",
+        );
+    }
+}
+
+// ── 正常系: Phase 3-2 パルス同期（ヒント無し） ────────────────────────────────
+
+#[test]
+fn normal_pulse_sync_phase3_2_cases() {
+    struct Case {
+        label: &'static str,
+        start_bpm: u16,
+        bpm_limit: BpmLimitParam,
+        pulse_sync_param: PulseSyncParam,
+        intervals_ms: &'static [u32],
+        expected_bpm_min: u16,
+        expected_bpm_max: u16,
+        expect_quarter_grid_phase: bool,
+    }
+
+    let cases = [
+        Case {
+            label: "step_input_90_to_120",
+            start_bpm: 90,
+            bpm_limit: BpmLimitParam::new(60, 120),
+            pulse_sync_param: PulseSyncParam::new(4, 96),
+            intervals_ms: &[
+                667, 667, 667, 667, 667, 667, 667, 667, 500, 500, 500, 500, 500, 500, 500, 500,
+                500, 500,
+            ],
+            expected_bpm_min: 116,
+            expected_bpm_max: 120,
+            expect_quarter_grid_phase: false,
+        },
+        Case {
+            label: "jitter_resilience_100bpm",
+            start_bpm: 100,
+            bpm_limit: BpmLimitParam::new(60, 120),
+            pulse_sync_param: PulseSyncParam::new(4, 80),
+            intervals_ms: &[
+                560, 625, 585, 635, 600, 575, 620, 595, 640, 580, 610, 590, 630, 570, 615, 600,
+            ],
+            expected_bpm_min: 97,
+            expected_bpm_max: 103,
+            expect_quarter_grid_phase: false,
+        },
+        Case {
+            label: "drift_follow_with_ema",
+            start_bpm: 100,
+            bpm_limit: BpmLimitParam::new(60, 120),
+            pulse_sync_param: PulseSyncParam::new(4, 128),
+            intervals_ms: &[600, 600, 600, 585, 575, 565, 555, 545, 535, 525],
+            expected_bpm_min: 108,
+            expected_bpm_max: 116,
+            expect_quarter_grid_phase: false,
+        },
+        Case {
+            label: "harmonic_fold_180_to_90",
+            start_bpm: 60,
+            bpm_limit: BpmLimitParam::new(60, 120),
+            pulse_sync_param: PulseSyncParam::new(4, 96),
+            intervals_ms: &[333, 333, 333, 333, 333, 333, 333, 333, 333, 333, 333, 333],
+            expected_bpm_min: 88,
+            expected_bpm_max: 92,
+            expect_quarter_grid_phase: true,
+        },
+    ];
+
+    for case in &cases {
+        let mut generator = RhythmGenerator::from_int_bpm(0, case.start_bpm, 12);
+        generator.set_pulse_sync_param(case.pulse_sync_param);
+        let mut now_ms = 0_u64;
+
+        generator.sync_pulse(now_ms, now_ms, &case.bpm_limit);
+        for interval_ms in case.intervals_ms {
+            generator.update(*interval_ms, &case.bpm_limit);
+            now_ms += *interval_ms as u64;
+            generator.sync_pulse(now_ms, now_ms, &case.bpm_limit);
+        }
+
+        let bpm_now = generator.current_bpm.to_int_round();
+
+        assert_case(
+            case.label,
+            generator.sync_state == SyncState::Locked,
+            "sync_state が Locked になっていない",
+        );
+        assert_case(
+            case.label,
+            (case.expected_bpm_min..=case.expected_bpm_max).contains(&bpm_now),
+            "推定 BPM が期待範囲外",
+        );
+        if case.expect_quarter_grid_phase {
+            let rem = generator.phase % QUARTER_PHASE;
+            let quarter_error = rem.min(QUARTER_PHASE - rem) as i32;
+            assert_case(
+                case.label,
+                quarter_error <= PHASE_ONE_PERCENT,
+                "位相が四半周期グリッドに収束していない",
+            );
+        } else {
+            assert_case(
+                case.label,
+                phase_abs_diff(generator.phase, 0).abs() <= PHASE_ONE_PERCENT,
+                "位相誤差が 1% を超えている",
+            );
+        }
+    }
+}
+
+// ── 異常系: パルス欠落が閾値周期続いたら WaitSecondPoint へ戻す ─────────────────────
+
+#[test]
+fn abnormal_pulse_timeout_to_wait_second_point_cases() {
+    struct Case {
+        label: &'static str,
+        pulse_sync_param: PulseSyncParam,
+        expected_interval_ms: u32,
+    }
+
+    let cases = [
+        Case {
+            label: "default_threshold_4cycles",
+            pulse_sync_param: PulseSyncParam::new(4, 96),
+            expected_interval_ms: 500,
+        },
+        Case {
+            label: "custom_threshold_2cycles",
+            pulse_sync_param: PulseSyncParam::new(2, 96),
+            expected_interval_ms: 500,
+        },
+    ];
+
+    for case in &cases {
+        let bpm_limit = BpmLimitParam::new(60, 120);
+        let mut generator = RhythmGenerator::from_int_bpm(0, 120, 12);
+        generator.set_pulse_sync_param(case.pulse_sync_param);
+        let mut now_ms = 0_u64;
+
+        // 2点目でロック。
+        generator.sync_pulse(now_ms, now_ms, &bpm_limit);
+        generator.update(case.expected_interval_ms, &bpm_limit);
+        now_ms += case.expected_interval_ms as u64;
+        generator.sync_pulse(now_ms, now_ms, &bpm_limit);
+        assert_case(
+            case.label,
+            generator.sync_state == SyncState::Locked,
+            "2点観測後に Locked へ遷移しない",
+        );
+
+        for _ in 0..case
+            .pulse_sync_param
+            .missing_cycle_threshold
+            .saturating_sub(1)
+        {
+            generator.update(case.expected_interval_ms, &bpm_limit);
+            now_ms += case.expected_interval_ms as u64;
+            assert_case(
+                case.label,
+                generator.sync_state == SyncState::Locked,
+                "閾値未満で WaitSecondPoint へ遷移してしまった",
+            );
+        }
+
+        generator.update(case.expected_interval_ms, &bpm_limit);
+        now_ms += case.expected_interval_ms as u64;
+        assert_case(
+            case.label,
+            generator.sync_state == SyncState::WaitSecondPoint,
+            "パルス欠落が閾値周期続いても WaitSecondPoint へ遷移しない",
+        );
+
+        // 欠落後の最初のパルスは再キャリブレーションの1点目として扱う。
+        generator.sync_pulse(now_ms, now_ms, &bpm_limit);
+        assert_case(
+            case.label,
+            generator.sync_state == SyncState::WaitSecondPoint,
+            "欠落後最初のパルスで即時再ロックしてしまった",
+        );
+
+        generator.update(case.expected_interval_ms, &bpm_limit);
+        now_ms += case.expected_interval_ms as u64;
+        generator.sync_pulse(now_ms, now_ms, &bpm_limit);
+        assert_case(
+            case.label,
+            generator.sync_state == SyncState::Locked,
+            "再キャリブレーション2点目で Locked に戻れない",
         );
     }
 }

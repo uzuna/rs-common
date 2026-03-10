@@ -10,7 +10,9 @@ use crossterm::{
     event::{self, Event, KeyCode},
     terminal::{disable_raw_mode, enable_raw_mode},
 };
-use rhythm_core::{bpm_from_interval_ms, bpm_to_int_round, Rhythm, RhythmMessage};
+use rhythm_core::{
+    bpm_from_interval_ms, bpm_to_int_round, BpmLimitParam, RhythmGenerator, RhythmMessage,
+};
 
 const MIN_ACCEPT_BPM: u64 = 40;
 const MAX_ACCEPT_BPM: u64 = 240;
@@ -61,6 +63,7 @@ fn interval_to_bpm(interval_ms: u64) -> u16 {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let tick = Duration::from_millis(TICK_MS as u64);
+    let bpm_limit = BpmLimitParam::new(60, 120);
 
     let mut local = RhythmGenerator::from_int_bpm(0, 120, 12);
     let mut local_last_beat_count = local.beat_count;
@@ -144,7 +147,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         }
 
                         let before = local.to_message(input_now_ms);
-                        local.sync(input_message, input_now_ms);
+                        local.sync(input_message, input_now_ms, &bpm_limit);
                         let after = local.to_message(input_now_ms);
                         local_last_beat_count = local.beat_count;
 
@@ -163,7 +166,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        local.update(TICK_MS);
+        local.update(TICK_MS, &bpm_limit);
 
         let now = start.elapsed();
 

@@ -2,13 +2,70 @@
 //!
 //! | 型           | 内部型  | エンコーディング       | 有効範囲        |
 //! |--------------|---------|-----------------------|----------------|
-//! | [`BpmQ8`]    | `u16`   | Q8.8 (1.0 BPM = 256) | 60 – 120 BPM   |
+//! | [`BpmQ8`]    | `u16`   | Q8.8 (1.0 BPM = 256) | `BpmLimitParam` |
 //! | [`PhaseU16`] | `u16`   | 線形 0–65535 ≡ 2π    | ラップ算術      |
 //! | [`SinQ15`]   | `i16`   | Q1.15 (1.0 ≈ 32767)  | [-1.0, 1.0]    |
 
 use serde::{Deserialize, Serialize};
 
 use crate::consts::{BPM_Q8_ONE, BPM_Q8_SHIFT, MS_PER_MINUTE, PHASE_MODULUS, SIN_LUT};
+
+/// BPM の有効範囲を指定するための構造体。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BpmLimitParam {
+    pub min: u16,
+    pub max: u16,
+}
+
+impl BpmLimitParam {
+    /// デフォルトの BPM 制約（60-120）。
+    pub const DEFAULT: Self = Self { min: 60, max: 120 };
+
+    /// 整数 BPM 指定の制約パラメータを生成する。
+    #[inline]
+    pub const fn new(min: u16, max: u16) -> Self {
+        Self { min, max }
+    }
+
+    /// 不正値を除去し、`min <= max` かつ `min >= 1` を満たす形に正規化する。
+    #[inline]
+    pub const fn sanitize(self) -> Self {
+        let min = if self.min == 0 { 1 } else { self.min };
+        let max = if self.max == 0 { 1 } else { self.max };
+        if min <= max {
+            Self { min, max }
+        } else {
+            Self { min: max, max: min }
+        }
+    }
+
+    /// 下限値を Q8.8 として返す。
+    #[inline]
+    pub const fn min_q8(self) -> BpmQ8 {
+        BpmQ8::from_int(self.sanitize().min)
+    }
+
+    /// 上限値を Q8.8 として返す。
+    #[inline]
+    pub const fn max_q8(self) -> BpmQ8 {
+        BpmQ8::from_int(self.sanitize().max)
+    }
+
+    /// Q8.8 BPM が制約範囲に入っているかを判定する。
+    #[inline]
+    pub fn contains_q8(self, bpm: BpmQ8) -> bool {
+        let s = self.sanitize();
+        let min = BpmQ8::from_int(s.min).raw();
+        let max = BpmQ8::from_int(s.max).raw();
+        (min..=max).contains(&bpm.raw())
+    }
+}
+
+impl Default for BpmLimitParam {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
 
 // ─────────────────────────────────────────
 //  BpmQ8
@@ -26,9 +83,9 @@ use crate::consts::{BPM_Q8_ONE, BPM_Q8_SHIFT, MS_PER_MINUTE, PHASE_MODULUS, SIN_
 pub struct BpmQ8(pub u16);
 
 impl BpmQ8 {
-    /// 60.0 BPM（Q8.8）— 有効範囲の下限。
+    /// 60.0 BPM（Q8.8）— 既定制約の下限。
     pub const MIN: Self = Self(60 * BPM_Q8_ONE);
-    /// 120.0 BPM（Q8.8）— 有効範囲の上限。
+    /// 120.0 BPM（Q8.8）— 既定制約の上限。
     pub const MAX: Self = Self(120 * BPM_Q8_ONE);
 
     /// 整数 BPM 値から生成する。
@@ -62,29 +119,52 @@ impl BpmQ8 {
         Self(raw)
     }
 
-    /// 有効 BPM 範囲 [`MIN`..`MAX`] にクランプする。
+    /// 既定制約（60-120 BPM）にクランプする。
     #[inline]
     pub fn clamp_to_range(self) -> Self {
-        Self(self.0.clamp(Self::MIN.0, Self::MAX.0))
+        self.clamp_with_limit(&BpmLimitParam::default())
+    }
+
+    /// 指定 BPM 制約にクランプする。
+    #[inline]
+    pub fn clamp_with_limit(self, limit: &BpmLimitParam) -> Self {
+        let min = limit.min_q8().raw();
+        let max = limit.max_q8().raw();
+        Self(self.0.clamp(min, max))
     }
 
     /// 呼び出しごとに `self` から `target` へ `1/divisor` ずつ滑らかに近づける。
     ///
-    /// 結果は [`MIN`..`MAX`] にクランプされる。
+    /// 結果は既定制約（60-120 BPM）にクランプされる。
     /// `divisor ≤ 1` の場合は `target` を即時返す。
     pub fn blend_toward(self, target: Self, divisor: i32) -> Self {
+        self.blend_toward_with_limit(target, divisor, &BpmLimitParam::default())
+    }
+
+    /// 呼び出しごとに `self` から `target` へ `1/divisor` ずつ滑らかに近づける。
+    ///
+    /// 結果は `limit` の範囲にクランプされる。
+    /// `divisor ≤ 1` の場合は `target` を即時返す。
+    pub fn blend_toward_with_limit(
+        self,
+        target: Self,
+        divisor: i32,
+        limit: &BpmLimitParam,
+    ) -> Self {
         if divisor <= 1 {
-            return target;
+            return target.clamp_with_limit(limit);
         }
         let diff = target.0 as i32 - self.0 as i32;
         if diff == 0 {
-            return self;
+            return self.clamp_with_limit(limit);
         }
         let mut step = diff / divisor;
         if step == 0 {
             step = diff.signum();
         }
-        let raw = (self.0 as i32 + step).clamp(Self::MIN.0 as i32, Self::MAX.0 as i32) as u16;
+        let min = limit.min_q8().raw() as i32;
+        let max = limit.max_q8().raw() as i32;
+        let raw = (self.0 as i32 + step).clamp(min, max) as u16;
         Self(raw)
     }
 
@@ -313,54 +393,68 @@ mod tests {
         }
     }
 
-    // ── BpmQ8: 値域確認 ─ clamp_to_range ───────────────────────────────────
+    // ── BpmQ8: 値域確認 ─ clamp_with_limit ─────────────────────────────────
 
-    /// clamp_to_range が MIN/MAX の外側および内側の値を正しく扱うこと。
+    /// clamp_with_limit が制約範囲の外側および内側の値を正しく扱うこと。
     #[test]
-    fn bpm_q8_clamp() {
+    fn bpm_q8_clamp_with_limit() {
         struct Case {
             label: &'static str,
             input: BpmQ8,
             expected: BpmQ8,
         }
-        let cases = [
-            Case {
-                label: "0 → MIN",
-                input: BpmQ8(0),
-                expected: BpmQ8::MIN,
-            },
-            Case {
-                label: "MAX_U16 → MAX",
-                input: BpmQ8(u16::MAX),
-                expected: BpmQ8::MAX,
-            },
-            Case {
-                label: "90 BPM → 変化なし",
-                input: BpmQ8::from_int(90),
-                expected: BpmQ8::from_int(90),
-            },
-            Case {
-                label: "MIN そのまま",
-                input: BpmQ8::MIN,
-                expected: BpmQ8::MIN,
-            },
-            Case {
-                label: "MAX そのまま",
-                input: BpmQ8::MAX,
-                expected: BpmQ8::MAX,
-            },
+        let bpm_limits = [
+            BpmLimitParam::new(60, 120),
+            BpmLimitParam::new(40, 80),
+            BpmLimitParam::new(100, 150),
         ];
-        for c in &cases {
-            assert_eq!(c.input.clamp_to_range(), c.expected, "[{}]", c.label,);
+        for bpm_limit in &bpm_limits {
+            let mid_bpm = ((bpm_limit.min as u32 + bpm_limit.max as u32) / 2) as u16;
+            let cases = [
+                Case {
+                    label: "0 → MIN",
+                    input: BpmQ8(0),
+                    expected: bpm_limit.min_q8(),
+                },
+                Case {
+                    label: "MAX_U16 → MAX",
+                    input: BpmQ8(u16::MAX),
+                    expected: bpm_limit.max_q8(),
+                },
+                Case {
+                    label: "制約範囲内の値は維持",
+                    input: BpmQ8::from_int(mid_bpm),
+                    expected: BpmQ8::from_int(mid_bpm),
+                },
+                Case {
+                    label: "MIN そのまま",
+                    input: bpm_limit.min_q8(),
+                    expected: bpm_limit.min_q8(),
+                },
+                Case {
+                    label: "MAX そのまま",
+                    input: bpm_limit.max_q8(),
+                    expected: bpm_limit.max_q8(),
+                },
+            ];
+            for c in &cases {
+                assert_eq!(
+                    c.input.clamp_with_limit(bpm_limit),
+                    c.expected,
+                    "[{}]",
+                    c.label,
+                );
+            }
         }
     }
 
-    // ── BpmQ8: 正常系 / 値域確認 ─ blend_toward ─────────────────────────────
+    // ── BpmQ8: 正常系 / 値域確認 ─ blend_toward_with_limit ──────────────────
 
-    /// blend_toward が 1/divisor ずつ目標へ近づくこと、
-    /// および結果が MIN/MAX を超えないこと。
+    /// blend_toward_with_limit が 1/divisor ずつ目標へ近づくこと、
+    /// および結果が制約範囲を超えないこと。
     #[test]
-    fn bpm_q8_blend_toward() {
+    fn bpm_q8_blend_toward_with_limit() {
+        let bpm_limit = BpmLimitParam::new(60, 120);
         struct Case {
             label: &'static str,
             start: BpmQ8,
@@ -387,22 +481,23 @@ mod tests {
             },
             Case {
                 label: "MAX を超える目標 → MAX に止まる",
-                start: BpmQ8::MAX,
+                start: bpm_limit.max_q8(),
                 target: BpmQ8(u16::MAX),
                 divisor: 2,
-                expected: BpmQ8::MAX,
+                expected: bpm_limit.max_q8(),
             },
             Case {
                 label: "MIN を下回る目標 → MIN に止まる",
-                start: BpmQ8::MIN,
+                start: bpm_limit.min_q8(),
                 target: BpmQ8(0),
                 divisor: 2,
-                expected: BpmQ8::MIN,
+                expected: bpm_limit.min_q8(),
             },
         ];
         for c in &cases {
             assert_eq!(
-                c.start.blend_toward(c.target, c.divisor),
+                c.start
+                    .blend_toward_with_limit(c.target, c.divisor, &bpm_limit),
                 c.expected,
                 "[{}]",
                 c.label,

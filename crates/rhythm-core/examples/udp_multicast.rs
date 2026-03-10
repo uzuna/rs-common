@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use rhythm_core::{
     bpm_to_int_round,
     comm::{instant_millis, LoopbackMulticast, DEFAULT_MULTICAST_PORT},
-    Rhythm, BPM_Q8_ONE, MS_PER_MINUTE,
+    BpmLimitParam, Rhythm, RhythmGenerator, BPM_Q8_ONE, MS_PER_MINUTE,
 };
 
 const MIN_SEND_INTERVAL_MS: u32 = 20;
@@ -92,6 +92,7 @@ fn run_sender(
     beat_limit: Option<u64>,
 ) -> Result<(), Box<dyn Error>> {
     let transport = LoopbackMulticast::sender(port)?;
+    let bpm_limit = BpmLimitParam::new(60, 120);
     let mut rhythm = Rhythm::from_int_bpm(0, bpm, k);
     let mut last_beat = 0_u64;
 
@@ -99,7 +100,7 @@ fn run_sender(
 
     loop {
         let interval_ms = select_send_interval_ms(rhythm.current_bpm, beat_div);
-        rhythm.update(interval_ms);
+        rhythm.update(interval_ms, &bpm_limit);
         let now_ms = instant_millis();
 
         let msg = rhythm.to_message(now_ms);
@@ -134,6 +135,7 @@ fn run_listener(
     beat_limit: Option<u64>,
 ) -> Result<(), Box<dyn Error>> {
     let transport = LoopbackMulticast::listener(port, Some(LISTENER_POLL_TIMEOUT))?;
+    let bpm_limit = BpmLimitParam::new(60, 120);
     let mut local = RhythmGenerator::from_int_bpm(0, bpm, k);
     let mut last_tick = Instant::now();
     let mut last_beat = 0_u64;
@@ -146,13 +148,13 @@ fn run_listener(
     loop {
         let dt_ms = last_tick.elapsed().as_millis().min(u32::MAX as u128) as u32;
         last_tick = Instant::now();
-        local.update(dt_ms.max(1));
+        local.update(dt_ms.max(1), &bpm_limit);
 
         let now_ms = instant_millis();
 
         match transport.recv() {
             Ok(Some(msg)) => {
-                local.sync(msg, now_ms);
+                local.sync(msg, now_ms, &bpm_limit);
             }
             Ok(None) => {}
             Err(e)

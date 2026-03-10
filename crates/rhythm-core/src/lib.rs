@@ -10,6 +10,7 @@ use fixed_math::{phase_advance_sub16, BpmQ8, PhaseU16};
 
 // 下流クレートが使う公開定数・ユーティリティを再エクスポートする。
 pub use consts::{BPM_Q8_ONE, BPM_Q8_SHIFT, MS_PER_MINUTE, PHASE_MODULUS};
+pub use fixed_math::BpmLimitParam;
 pub use util::{
     bpm_from_int, bpm_from_interval_ms, bpm_to_int_floor, bpm_to_int_round, fast_sin_q1_15,
 };
@@ -126,7 +127,6 @@ pub enum SyncState {
 impl RhythmGenerator {
     /// Q8.8 BPM 指定でジェネレータを生成する。
     pub fn new(phase: u16, bpm: BpmQ8, coupling_divisor: u16) -> Self {
-        let bpm = bpm.clamp_to_range();
         Self {
             phase,
             base_bpm: bpm,
@@ -146,14 +146,21 @@ impl RhythmGenerator {
     }
 
     /// 自律更新。パケット不在時は `base_bpm` を目標に `current_bpm` を徐々に戻す。
-    pub fn update(&mut self, dt_ms: u32) {
+    /// BPM 値は毎回 `bpm_limit_param` の範囲に制約される。
+    pub fn update(&mut self, dt_ms: u32, bpm_limit_param: &BpmLimitParam) {
         if dt_ms == 0 {
             return;
         }
 
-        self.current_bpm = self
-            .current_bpm
-            .blend_toward(self.base_bpm, self.coupling_divisor as i32);
+        let bpm_limit_param = bpm_limit_param.sanitize();
+        self.base_bpm = self.base_bpm.clamp_with_limit(&bpm_limit_param);
+        self.current_bpm = self.current_bpm.clamp_with_limit(&bpm_limit_param);
+
+        self.current_bpm = self.current_bpm.blend_toward_with_limit(
+            self.base_bpm,
+            self.coupling_divisor as i32,
+            &bpm_limit_param,
+        );
 
         let before_cycles = self.phase_accum_sub16 >> 32;
         let delta_sub16 = phase_advance_sub16(self.current_bpm.raw(), dt_ms);
@@ -171,14 +178,15 @@ impl RhythmGenerator {
     /// - 2点観測: 1点目で待機、2点目で BPM 確定
     /// - BPM 範囲外: 2:1 分周で 60-120 BPM に折りたたむ
     /// - 位相: 90度刻みオフセットを候補に、現在位相へ最短の点へ吸着
-    pub fn sync(&mut self, msg: RhythmMessage, now_ms: u64) {
+    pub fn sync(&mut self, msg: RhythmMessage, now_ms: u64, bpm_limit_param: &BpmLimitParam) {
+        let bpm_limit_param = bpm_limit_param.sanitize();
         let compensated_remote_phase = compensated_remote_phase(msg, now_ms);
-        let phase_target = if is_bpm_in_primary_range(msg.bpm) {
+        let phase_target = if is_bpm_in_primary_range(msg.bpm, &bpm_limit_param) {
             compensated_remote_phase
         } else {
             nearest_quarter_phase(self.phase, compensated_remote_phase)
         };
-        let hinted_bpm = normalize_bpm_to_primary_range(msg.bpm);
+        let hinted_bpm = normalize_bpm_to_primary_range(msg.bpm, &bpm_limit_param);
 
         match self.sync_state {
             SyncState::Idle => {
@@ -187,7 +195,9 @@ impl RhythmGenerator {
 
                 // 1点目でもリズム感を外さないよう、ヒントBPMへ強めに寄せる。
                 self.base_bpm = hinted_bpm;
-                self.current_bpm = self.current_bpm.blend_toward(hinted_bpm, 2);
+                self.current_bpm =
+                    self.current_bpm
+                        .blend_toward_with_limit(hinted_bpm, 2, &bpm_limit_param);
                 self.force_phase(phase_target);
             }
             SyncState::WaitSecondPoint => {
@@ -197,8 +207,10 @@ impl RhythmGenerator {
                     .map(|first_ts| (msg.timestamp_ms - first_ts).min(u32::MAX as u64) as u32);
 
                 if let Some(interval_ms) = maybe_interval_ms {
-                    let observed_bpm =
-                        normalize_bpm_to_primary_range(BpmQ8::from_interval_ms(interval_ms));
+                    let observed_bpm = normalize_bpm_to_primary_range(
+                        BpmQ8::from_interval_ms(interval_ms),
+                        &bpm_limit_param,
+                    );
                     self.base_bpm = observed_bpm;
                     self.current_bpm = observed_bpm;
                     self.sync_state = SyncState::Locked;
@@ -206,7 +218,9 @@ impl RhythmGenerator {
                 } else {
                     self.first_point_ts_ms = Some(msg.timestamp_ms);
                     self.base_bpm = hinted_bpm;
-                    self.current_bpm = self.current_bpm.blend_toward(hinted_bpm, 2);
+                    self.current_bpm =
+                        self.current_bpm
+                            .blend_toward_with_limit(hinted_bpm, 2, &bpm_limit_param);
                 }
                 self.force_phase(phase_target);
             }
@@ -215,15 +229,25 @@ impl RhythmGenerator {
                     if msg.timestamp_ms > last_ts_ms {
                         let interval_ms =
                             (msg.timestamp_ms - last_ts_ms).min(u32::MAX as u64) as u32;
-                        let observed_bpm =
-                            normalize_bpm_to_primary_range(BpmQ8::from_interval_ms(interval_ms));
+                        let observed_bpm = normalize_bpm_to_primary_range(
+                            BpmQ8::from_interval_ms(interval_ms),
+                            &bpm_limit_param,
+                        );
                         // ロック中はジッタを抑えつつ追従する。
-                        self.base_bpm = self.base_bpm.blend_toward(observed_bpm, 4);
+                        self.base_bpm = self.base_bpm.blend_toward_with_limit(
+                            observed_bpm,
+                            4,
+                            &bpm_limit_param,
+                        );
                     }
                 }
 
-                self.base_bpm = self.base_bpm.blend_toward(hinted_bpm, 4);
-                self.current_bpm = self.current_bpm.blend_toward(self.base_bpm, 2);
+                self.base_bpm =
+                    self.base_bpm
+                        .blend_toward_with_limit(hinted_bpm, 4, &bpm_limit_param);
+                self.current_bpm =
+                    self.current_bpm
+                        .blend_toward_with_limit(self.base_bpm, 2, &bpm_limit_param);
                 self.force_phase(phase_target);
             }
         }
@@ -249,8 +273,8 @@ impl RhythmGenerator {
 }
 
 #[inline]
-fn is_bpm_in_primary_range(bpm: BpmQ8) -> bool {
-    (BpmQ8::MIN.raw()..=BpmQ8::MAX.raw()).contains(&bpm.raw())
+fn is_bpm_in_primary_range(bpm: BpmQ8, bpm_limit_param: &BpmLimitParam) -> bool {
+    bpm_limit_param.contains_q8(bpm)
 }
 
 #[inline]
@@ -279,24 +303,28 @@ fn nearest_quarter_phase(current_phase: u16, remote_phase: u16) -> u16 {
 }
 
 #[inline]
-fn normalize_bpm_to_primary_range(bpm: BpmQ8) -> BpmQ8 {
+fn normalize_bpm_to_primary_range(bpm: BpmQ8, bpm_limit_param: &BpmLimitParam) -> BpmQ8 {
+    let bpm_limit_param = bpm_limit_param.sanitize();
+    let min = bpm_limit_param.min_q8().raw() as u32;
+    let max = bpm_limit_param.max_q8().raw() as u32;
+
     let mut raw = bpm.raw() as u32;
     if raw == 0 {
-        return BpmQ8::MIN;
+        return bpm_limit_param.min_q8();
     }
 
-    while raw > BpmQ8::MAX.raw() as u32 {
+    while raw > max {
         // 高すぎるテンポは 2:1 分周へ折りたたむ。
         raw = raw.div_ceil(2);
     }
-    while raw < BpmQ8::MIN.raw() as u32 {
+    while raw < min {
         raw = raw.saturating_mul(2);
         if raw == 0 {
-            return BpmQ8::MIN;
+            return bpm_limit_param.min_q8();
         }
     }
 
-    BpmQ8(raw as u16).clamp_to_range()
+    BpmQ8(raw as u16).clamp_with_limit(&bpm_limit_param)
 }
 
 #[cfg(test)]

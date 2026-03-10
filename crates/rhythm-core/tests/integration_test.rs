@@ -1,4 +1,7 @@
-use rhythm_core::{fixed_math::BpmQ8, RhythmGenerator, RhythmMessage, SyncState};
+use rhythm_core::{
+    fixed_math::{BpmLimitParam, BpmQ8},
+    RhythmGenerator, RhythmMessage, SyncState,
+};
 
 const PHASE_ONE_PERCENT: i32 = 655;
 const QUARTER_PHASE: u16 = 16_384;
@@ -20,6 +23,7 @@ fn value_range_wraparound_cases() {
     struct Case {
         label: &'static str,
         bpm: u16,
+        bpm_limit: BpmLimitParam,
         updates_ms: &'static [u32],
         expected_beats: u64,
         expected_phase: u16,
@@ -30,6 +34,7 @@ fn value_range_wraparound_cases() {
         Case {
             label: "120bpm_500ms_1beat",
             bpm: 120,
+            bpm_limit: BpmLimitParam::new(60, 120),
             updates_ms: &[500],
             expected_beats: 1,
             expected_phase: 0,
@@ -38,6 +43,7 @@ fn value_range_wraparound_cases() {
         Case {
             label: "120bpm_250ms_x2",
             bpm: 120,
+            bpm_limit: BpmLimitParam::new(60, 120),
             updates_ms: &[250, 250],
             expected_beats: 1,
             expected_phase: 0,
@@ -46,6 +52,7 @@ fn value_range_wraparound_cases() {
         Case {
             label: "90bpm_2000ms_3beat",
             bpm: 90,
+            bpm_limit: BpmLimitParam::new(60, 120),
             updates_ms: &[2_000],
             expected_beats: 3,
             expected_phase: 0,
@@ -56,7 +63,7 @@ fn value_range_wraparound_cases() {
     for case in &cases {
         let mut generator = RhythmGenerator::from_int_bpm(0, case.bpm, 12);
         for dt_ms in case.updates_ms {
-            generator.update(*dt_ms);
+            generator.update(*dt_ms, &case.bpm_limit);
         }
 
         assert_case(
@@ -82,6 +89,7 @@ fn normal_low_frequency_lock_cases() {
         label: &'static str,
         start_phase: u16,
         start_bpm: u16,
+        bpm_limit: BpmLimitParam,
         reference_bpm: u16,
         beats_to_run: u32,
     }
@@ -91,6 +99,7 @@ fn normal_low_frequency_lock_cases() {
             label: "start_phase_offset_90bpm",
             start_phase: 24_000,
             start_bpm: 120,
+            bpm_limit: BpmLimitParam::new(60, 120),
             reference_bpm: 90,
             beats_to_run: 8,
         },
@@ -98,6 +107,7 @@ fn normal_low_frequency_lock_cases() {
             label: "start_quarter_offset_90bpm",
             start_phase: QUARTER_PHASE,
             start_bpm: 105,
+            bpm_limit: BpmLimitParam::new(60, 120),
             reference_bpm: 90,
             beats_to_run: 8,
         },
@@ -108,7 +118,7 @@ fn normal_low_frequency_lock_cases() {
         let mut now_ms = 0_u64;
 
         let first = RhythmMessage::new(now_ms, 0, 0, BpmQ8::from_int(case.reference_bpm));
-        generator.sync(first, now_ms);
+        generator.sync(first, now_ms, &case.bpm_limit);
         assert_case(
             case.label,
             generator.sync_state == SyncState::WaitSecondPoint,
@@ -117,11 +127,11 @@ fn normal_low_frequency_lock_cases() {
 
         for beat in 1..=case.beats_to_run {
             let interval_ms = 60_000_u32 / case.reference_bpm as u32;
-            generator.update(interval_ms);
+            generator.update(interval_ms, &case.bpm_limit);
             now_ms += interval_ms as u64;
 
             let msg = RhythmMessage::new(now_ms, beat, 0, BpmQ8::from_int(case.reference_bpm));
-            generator.sync(msg, now_ms);
+            generator.sync(msg, now_ms, &case.bpm_limit);
         }
 
         assert_case(
@@ -151,25 +161,37 @@ fn abnormal_harmonic_fold_cases() {
     struct Case {
         label: &'static str,
         input_bpm: u16,
+        bpm_limit: BpmLimitParam,
         expected_bpm: u16,
         interval_ms: u32,
         beats_to_run: u32,
     }
 
-    let cases = [Case {
-        label: "180_to_90_fold",
-        input_bpm: 180,
-        expected_bpm: 90,
-        interval_ms: 333,
-        beats_to_run: 10,
-    }];
+    let cases = [
+        Case {
+            label: "180_to_90_fold",
+            input_bpm: 180,
+            bpm_limit: BpmLimitParam::new(60, 120),
+            expected_bpm: 90,
+            interval_ms: 333,
+            beats_to_run: 10,
+        },
+        Case {
+            label: "180_to_45_fold_with_dynamic_limit",
+            input_bpm: 180,
+            bpm_limit: BpmLimitParam::new(40, 80),
+            expected_bpm: 45,
+            interval_ms: 333,
+            beats_to_run: 10,
+        },
+    ];
 
     for case in &cases {
         let mut generator = RhythmGenerator::from_int_bpm(0, 60, 12);
         let mut now_ms = 0_u64;
 
         let first = RhythmMessage::new(now_ms, 0, 0, BpmQ8::from_int(case.input_bpm));
-        generator.sync(first, now_ms);
+        generator.sync(first, now_ms, &case.bpm_limit);
         assert_case(
             case.label,
             generator.sync_state == SyncState::WaitSecondPoint,
@@ -177,11 +199,11 @@ fn abnormal_harmonic_fold_cases() {
         );
 
         for beat in 1..=case.beats_to_run {
-            generator.update(case.interval_ms);
+            generator.update(case.interval_ms, &case.bpm_limit);
             now_ms += case.interval_ms as u64;
 
             let msg = RhythmMessage::new(now_ms, beat, 0, BpmQ8::from_int(case.input_bpm));
-            generator.sync(msg, now_ms);
+            generator.sync(msg, now_ms, &case.bpm_limit);
         }
 
         assert_case(

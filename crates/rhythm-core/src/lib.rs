@@ -6,11 +6,16 @@ pub mod fixed_math;
 pub mod util;
 
 use consts::RHYTHM_MESSAGE_WIRE_SIZE;
+use fixed_math::{phase_advance_sub16, BpmQ8, PhaseU16};
 
-// 下流クレートや結合テストで頻繁に使うユーティリティを再エクスポートする。
-pub use util::bpm_from_int;
+// 下流クレートが使う公開定数・ユーティリティを再エクスポートする。
+pub use consts::{BPM_Q8_ONE, BPM_Q8_SHIFT, MS_PER_MINUTE, PHASE_MODULUS};
+pub use util::{
+    bpm_from_int, bpm_from_interval_ms, bpm_to_int_floor, bpm_to_int_round, fast_sin_q1_15,
+};
 
-use crate::fixed_math::BpmQ8;
+/// 既存サンプル互換のためのエイリアス。
+pub type Rhythm = RhythmGenerator;
 
 /// ネットワーク共有用メッセージ
 ///
@@ -97,18 +102,201 @@ impl RhythmMessage {
 pub struct RhythmGenerator {
     pub phase: u16,
     pub base_bpm: BpmQ8,
+    pub current_bpm: BpmQ8,
     pub beat_count: u64,
+    pub sync_state: SyncState,
+
+    coupling_divisor: u16,
+    phase_accum_sub16: u64,
+    first_point_ts_ms: Option<u64>,
+    last_sync_ts_ms: Option<u64>,
+}
+
+/// 低頻度入力でのジッタ耐性を持たせるための同期状態。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncState {
+    /// 自律動作。
+    Idle,
+    /// 1点目受信後。2点目待ち。
+    WaitSecondPoint,
+    /// 2点観測済み。BPM確定済み。
+    Locked,
 }
 
 impl RhythmGenerator {
+    /// Q8.8 BPM 指定でジェネレータを生成する。
+    pub fn new(phase: u16, bpm: BpmQ8, coupling_divisor: u16) -> Self {
+        let bpm = bpm.clamp_to_range();
+        Self {
+            phase,
+            base_bpm: bpm,
+            current_bpm: bpm,
+            beat_count: 0,
+            sync_state: SyncState::Idle,
+            coupling_divisor: coupling_divisor.max(2),
+            phase_accum_sub16: (phase as u64) << 16,
+            first_point_ts_ms: None,
+            last_sync_ts_ms: None,
+        }
+    }
+
+    /// 整数 BPM 指定でジェネレータを生成する。
+    pub fn from_int_bpm(phase: u16, bpm: u16, coupling_divisor: u16) -> Self {
+        Self::new(phase, BpmQ8::from_int(bpm), coupling_divisor)
+    }
+
+    /// 自律更新。パケット不在時は `base_bpm` を目標に `current_bpm` を徐々に戻す。
+    pub fn update(&mut self, dt_ms: u32) {
+        if dt_ms == 0 {
+            return;
+        }
+
+        self.current_bpm = self
+            .current_bpm
+            .blend_toward(self.base_bpm, self.coupling_divisor as i32);
+
+        let before_cycles = self.phase_accum_sub16 >> 32;
+        let delta_sub16 = phase_advance_sub16(self.current_bpm.raw(), dt_ms);
+        self.phase_accum_sub16 = self.phase_accum_sub16.wrapping_add(delta_sub16);
+        let after_cycles = self.phase_accum_sub16 >> 32;
+
+        let wraps = after_cycles.saturating_sub(before_cycles);
+        self.beat_count = self.beat_count.saturating_add(wraps);
+        self.phase = ((self.phase_accum_sub16 >> 16) & u16::MAX as u64) as u16;
+    }
+
+    /// 外部メッセージに同期する。
+    ///
+    /// - 遅延補償: `now_ms - msg.timestamp_ms` ぶん相手位相を進める
+    /// - 2点観測: 1点目で待機、2点目で BPM 確定
+    /// - BPM 範囲外: 2:1 分周で 60-120 BPM に折りたたむ
+    /// - 位相: 90度刻みオフセットを候補に、現在位相へ最短の点へ吸着
+    pub fn sync(&mut self, msg: RhythmMessage, now_ms: u64) {
+        let compensated_remote_phase = compensated_remote_phase(msg, now_ms);
+        let phase_target = if is_bpm_in_primary_range(msg.bpm) {
+            compensated_remote_phase
+        } else {
+            nearest_quarter_phase(self.phase, compensated_remote_phase)
+        };
+        let hinted_bpm = normalize_bpm_to_primary_range(msg.bpm);
+
+        match self.sync_state {
+            SyncState::Idle => {
+                self.sync_state = SyncState::WaitSecondPoint;
+                self.first_point_ts_ms = Some(msg.timestamp_ms);
+
+                // 1点目でもリズム感を外さないよう、ヒントBPMへ強めに寄せる。
+                self.base_bpm = hinted_bpm;
+                self.current_bpm = self.current_bpm.blend_toward(hinted_bpm, 2);
+                self.force_phase(phase_target);
+            }
+            SyncState::WaitSecondPoint => {
+                let maybe_interval_ms = self
+                    .first_point_ts_ms
+                    .filter(|first_ts| msg.timestamp_ms > *first_ts)
+                    .map(|first_ts| (msg.timestamp_ms - first_ts).min(u32::MAX as u64) as u32);
+
+                if let Some(interval_ms) = maybe_interval_ms {
+                    let observed_bpm =
+                        normalize_bpm_to_primary_range(BpmQ8::from_interval_ms(interval_ms));
+                    self.base_bpm = observed_bpm;
+                    self.current_bpm = observed_bpm;
+                    self.sync_state = SyncState::Locked;
+                    self.first_point_ts_ms = None;
+                } else {
+                    self.first_point_ts_ms = Some(msg.timestamp_ms);
+                    self.base_bpm = hinted_bpm;
+                    self.current_bpm = self.current_bpm.blend_toward(hinted_bpm, 2);
+                }
+                self.force_phase(phase_target);
+            }
+            SyncState::Locked => {
+                if let Some(last_ts_ms) = self.last_sync_ts_ms {
+                    if msg.timestamp_ms > last_ts_ms {
+                        let interval_ms =
+                            (msg.timestamp_ms - last_ts_ms).min(u32::MAX as u64) as u32;
+                        let observed_bpm =
+                            normalize_bpm_to_primary_range(BpmQ8::from_interval_ms(interval_ms));
+                        // ロック中はジッタを抑えつつ追従する。
+                        self.base_bpm = self.base_bpm.blend_toward(observed_bpm, 4);
+                    }
+                }
+
+                self.base_bpm = self.base_bpm.blend_toward(hinted_bpm, 4);
+                self.current_bpm = self.current_bpm.blend_toward(self.base_bpm, 2);
+                self.force_phase(phase_target);
+            }
+        }
+
+        self.last_sync_ts_ms = Some(msg.timestamp_ms);
+    }
+
     pub fn to_message(&self, now_ms: u64) -> RhythmMessage {
         RhythmMessage {
             timestamp_ms: now_ms,
             beat_count: self.beat_count.min(u32::MAX as u64) as u32,
             phase: self.phase,
-            bpm: self.base_bpm,
+            bpm: self.current_bpm,
         }
     }
+
+    #[inline]
+    fn force_phase(&mut self, phase: u16) {
+        self.phase = phase;
+        let cycles = self.phase_accum_sub16 >> 32;
+        self.phase_accum_sub16 = (cycles << 32) | ((phase as u64) << 16);
+    }
+}
+
+#[inline]
+fn is_bpm_in_primary_range(bpm: BpmQ8) -> bool {
+    (BpmQ8::MIN.raw()..=BpmQ8::MAX.raw()).contains(&bpm.raw())
+}
+
+#[inline]
+fn compensated_remote_phase(msg: RhythmMessage, now_ms: u64) -> u16 {
+    let delay_ms = now_ms.saturating_sub(msg.timestamp_ms).min(u32::MAX as u64) as u32;
+    PhaseU16(msg.phase)
+        .wrapping_add(PhaseU16::advance(msg.bpm, delay_ms))
+        .raw()
+}
+
+#[inline]
+fn nearest_quarter_phase(current_phase: u16, remote_phase: u16) -> u16 {
+    const QUARTER_OFFSETS: [u16; 4] = [0, 16_384, 32_768, 49_152];
+
+    let mut best = remote_phase;
+    let mut best_abs = i32::MAX;
+    for offset in QUARTER_OFFSETS {
+        let candidate = remote_phase.wrapping_add(offset);
+        let abs = (PhaseU16(candidate).signed_diff(PhaseU16(current_phase)) as i32).abs();
+        if abs < best_abs {
+            best_abs = abs;
+            best = candidate;
+        }
+    }
+    best
+}
+
+#[inline]
+fn normalize_bpm_to_primary_range(bpm: BpmQ8) -> BpmQ8 {
+    let mut raw = bpm.raw() as u32;
+    if raw == 0 {
+        return BpmQ8::MIN;
+    }
+
+    while raw > BpmQ8::MAX.raw() as u32 {
+        // 高すぎるテンポは 2:1 分周へ折りたたむ。
+        raw = raw.div_ceil(2);
+    }
+    while raw < BpmQ8::MIN.raw() as u32 {
+        raw = raw.saturating_mul(2);
+        if raw == 0 {
+            return BpmQ8::MIN;
+        }
+    }
+
+    BpmQ8(raw as u16).clamp_to_range()
 }
 
 #[cfg(test)]

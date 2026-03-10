@@ -1,4 +1,4 @@
-use crate::consts::{BPM_Q8_ONE, BPM_Q8_SHIFT, MS_PER_MINUTE, PHASE_MODULUS, SIN_LUT};
+use crate::consts::{BPM_Q8_ONE, BPM_Q8_SHIFT, MS_PER_MINUTE, SIN_LUT};
 
 #[inline]
 pub const fn bpm_from_int(bpm: u16) -> u16 {

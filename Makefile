@@ -7,8 +7,8 @@ CLIPPY_WASM = -p wasm-mls-mpm --target wasm32-unknown-unknown
 fmt:
 	cargo fmt
 	git add -u
-	cargo clippy --fix --allow-staged $(CLIPPY_CRATES)
-	cargo clippy --fix --allow-staged $(CLIPPY_WASM)
+	cargo clippy --fix --allow-staged --allow-dirty $(CLIPPY_CRATES)
+	cargo clippy --fix --allow-staged --allow-dirty $(CLIPPY_WASM)
 
 check-fmt:
 	cargo fmt --check
@@ -18,6 +18,9 @@ check-fmt:
 
 test:
 	cargo test --workspace --exclude wasm-mls-mpm --exclude wasm-preview
+# 確実にno_stdでビルドをさせるためcheckをする
+	cargo check -p rhythm-core --no-default-features
+	cargo test -p rhythm-core --no-default-features
 	for target in $(WASM_TARGETS); do \
 		make -C examples/$$target test; \
 	done

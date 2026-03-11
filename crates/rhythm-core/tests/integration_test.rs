@@ -81,6 +81,113 @@ fn value_range_wraparound_cases() {
     }
 }
 
+// ── 明示検証: beat_count ラップ境界でも sync の BPM 推定が破綻しない ───────────────
+
+#[test]
+fn explicit_sync_beat_count_wraparound_cases() {
+    struct Case {
+        label: &'static str,
+        start_bpm: u16,
+        hinted_bpm: u16,
+        first_beat_count: u32,
+        beat_step_per_message: u32,
+        interval_ms: u32,
+        expected_bpm_min: u16,
+        expected_bpm_max: u16,
+    }
+
+    let cases = [
+        Case {
+            label: "wrap_max_to_zero_120bpm",
+            start_bpm: 60,
+            hinted_bpm: 120,
+            first_beat_count: u32::MAX,
+            beat_step_per_message: 1,
+            interval_ms: 500,
+            expected_bpm_min: 119,
+            expected_bpm_max: 120,
+        },
+        Case {
+            label: "wrap_sparse_every_2beats_90bpm",
+            start_bpm: 120,
+            hinted_bpm: 90,
+            first_beat_count: u32::MAX - 1,
+            beat_step_per_message: 2,
+            interval_ms: 1_333,
+            expected_bpm_min: 89,
+            expected_bpm_max: 91,
+        },
+    ];
+
+    for case in &cases {
+        let bpm_limit = BpmLimitParam::new(60, 120);
+        let mut generator = RhythmGenerator::from_int_bpm(0, case.start_bpm, 12);
+        let mut now_ms = 100_000_u64;
+
+        let first = RhythmMessage::new(
+            now_ms,
+            case.first_beat_count,
+            0,
+            BpmQ8::from_int(case.hinted_bpm),
+        );
+        generator.sync(first, now_ms, &bpm_limit);
+        assert_case(
+            case.label,
+            generator.sync_state == SyncState::WaitSecondPoint,
+            "1点目受信後に WaitSecondPoint へ遷移しない",
+        );
+
+        generator.update(case.interval_ms, &bpm_limit);
+        now_ms += case.interval_ms as u64;
+        let second_beat_count = case
+            .first_beat_count
+            .wrapping_add(case.beat_step_per_message);
+        let second = RhythmMessage::new(
+            now_ms,
+            second_beat_count,
+            0,
+            BpmQ8::from_int(case.hinted_bpm),
+        );
+        generator.sync(second, now_ms, &bpm_limit);
+
+        assert_case(
+            case.label,
+            generator.sync_state == SyncState::Locked,
+            "2点観測後に Locked へ遷移しない",
+        );
+        assert_case(
+            case.label,
+            (case.expected_bpm_min..=case.expected_bpm_max)
+                .contains(&generator.base_bpm.to_int_round()),
+            "ラップ境界観測後の base_bpm が期待範囲外",
+        );
+
+        // Locked 後の追従でもラップ算術が破綻しないことを確認する。
+        generator.update(case.interval_ms, &bpm_limit);
+        now_ms += case.interval_ms as u64;
+        let third_beat_count = second_beat_count.wrapping_add(case.beat_step_per_message);
+        let third = RhythmMessage::new(
+            now_ms,
+            third_beat_count,
+            0,
+            BpmQ8::from_int(case.hinted_bpm),
+        );
+        generator.sync(third, now_ms, &bpm_limit);
+
+        assert_case(
+            case.label,
+            generator.sync_state == SyncState::Locked,
+            "Locked 維持中に同期状態が崩れた",
+        );
+        assert_case(
+            case.label,
+            (case.expected_bpm_min..=case.expected_bpm_max)
+                .contains(&generator.current_bpm.to_int_round()),
+            "Locked 維持中の current_bpm が期待範囲外",
+        );
+    }
+}
+
 // ── 正常系: 低頻度入力で 2点観測ロックし、位相誤差 1% 以内へ収束 ───────────────────
 
 #[test]
@@ -91,7 +198,10 @@ fn normal_low_frequency_lock_cases() {
         start_bpm: u16,
         bpm_limit: BpmLimitParam,
         reference_bpm: u16,
-        beats_to_run: u32,
+        beat_stride: u32,
+        message_count: u32,
+        expected_bpm_min: u16,
+        expected_bpm_max: u16,
     }
 
     let cases = [
@@ -101,7 +211,10 @@ fn normal_low_frequency_lock_cases() {
             start_bpm: 120,
             bpm_limit: BpmLimitParam::new(60, 120),
             reference_bpm: 90,
-            beats_to_run: 8,
+            beat_stride: 1,
+            message_count: 8,
+            expected_bpm_min: 90,
+            expected_bpm_max: 90,
         },
         Case {
             label: "start_quarter_offset_90bpm",
@@ -109,7 +222,21 @@ fn normal_low_frequency_lock_cases() {
             start_bpm: 105,
             bpm_limit: BpmLimitParam::new(60, 120),
             reference_bpm: 90,
-            beats_to_run: 8,
+            beat_stride: 1,
+            message_count: 8,
+            expected_bpm_min: 90,
+            expected_bpm_max: 90,
+        },
+        Case {
+            label: "sparse_messages_every_2beats_120bpm",
+            start_phase: 8_000,
+            start_bpm: 60,
+            bpm_limit: BpmLimitParam::new(60, 120),
+            reference_bpm: 120,
+            beat_stride: 2,
+            message_count: 6,
+            expected_bpm_min: 120,
+            expected_bpm_max: 120,
         },
     ];
 
@@ -125,11 +252,12 @@ fn normal_low_frequency_lock_cases() {
             "1点目受信後に WaitSecondPoint へ遷移しない",
         );
 
-        for beat in 1..=case.beats_to_run {
-            let interval_ms = 60_000_u32 / case.reference_bpm as u32;
+        for idx in 1..=case.message_count {
+            let interval_ms = (60_000_u32 / case.reference_bpm as u32) * case.beat_stride;
             generator.update(interval_ms, &case.bpm_limit);
             now_ms += interval_ms as u64;
 
+            let beat = idx * case.beat_stride;
             let msg = RhythmMessage::new(now_ms, beat, 0, BpmQ8::from_int(case.reference_bpm));
             generator.sync(msg, now_ms, &case.bpm_limit);
         }
@@ -141,8 +269,9 @@ fn normal_low_frequency_lock_cases() {
         );
         assert_case(
             case.label,
-            generator.base_bpm.to_int_round() == case.reference_bpm,
-            "base_bpm が参照 BPM に収束しない",
+            (case.expected_bpm_min..=case.expected_bpm_max)
+                .contains(&generator.base_bpm.to_int_round()),
+            "base_bpm が期待 BPM 範囲に収束しない",
         );
 
         let phase_error = phase_abs_diff(generator.phase, 0).abs();

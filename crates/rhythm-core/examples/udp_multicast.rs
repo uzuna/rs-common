@@ -1,19 +1,25 @@
 use std::{
     error::Error,
-    io, thread,
+    thread,
     time::{Duration, Instant},
 };
 
 use clap::{Parser, Subcommand};
 use rhythm_core::{
-    comm::{instant_millis, LoopbackMulticast, DEFAULT_MULTICAST_PORT},
-    BpmLimitParam, Rhythm, RhythmGenerator, BPM_Q8_ONE, MS_PER_MINUTE,
+    comm::{
+        instant_millis, UdpMulticastSyncListener, UdpMulticastSyncSender,
+        DEFAULT_LISTENER_POLL_TIMEOUT, DEFAULT_MULTICAST_PORT, MAX_BEAT_DIV,
+    },
+    BpmLimitParam,
 };
 
-const MIN_SEND_INTERVAL_MS: u32 = 20;
-const MAX_BEAT_DIV: u32 = 4;
-const LISTENER_POLL_TIMEOUT: Duration = Duration::from_millis(20);
 const LISTENER_DEFAULT_STALE_MS: u64 = 3_000;
+const PHASE_WRAP_MIN_JUMP: u16 = 32_768;
+
+#[inline]
+fn phase_wrapped_across_zero(prev_phase: u16, current_phase: u16) -> bool {
+    prev_phase > current_phase && prev_phase.wrapping_sub(current_phase) >= PHASE_WRAP_MIN_JUMP
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "udp_multicast")]
@@ -53,16 +59,6 @@ enum Command {
     },
 }
 
-fn select_send_interval_ms(bpm_q8: u16, beat_div: u32) -> u32 {
-    let beat_div = beat_div.clamp(1, MAX_BEAT_DIV);
-    if bpm_q8 == 0 {
-        return MIN_SEND_INTERVAL_MS;
-    }
-    let beat_ms = ((MS_PER_MINUTE as u64 * BPM_Q8_ONE as u64) + bpm_q8 as u64 / 2) / bpm_q8 as u64;
-    let interval = beat_ms / beat_div as u64;
-    interval.max(MIN_SEND_INTERVAL_MS as u64) as u32
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     match cli.command {
@@ -90,36 +86,29 @@ fn run_sender(
     beat_div: u32,
     beat_limit: Option<u64>,
 ) -> Result<(), Box<dyn Error>> {
-    let transport = LoopbackMulticast::sender(port)?;
     let bpm_limit = BpmLimitParam::new(60, 120);
-    let mut rhythm = Rhythm::from_int_bpm(0, bpm, k);
-    let mut last_beat = 0_u64;
+    let mut sender = UdpMulticastSyncSender::new(port, bpm, k, beat_div, bpm_limit)?;
 
     println!("[send] loopback multicast 239.0.0.1:{port} bpm={bpm} k={k}");
 
     loop {
-        let interval_ms = select_send_interval_ms(rhythm.current_bpm.raw(), beat_div);
-        rhythm.update(interval_ms, &bpm_limit);
-        let now_ms = instant_millis();
+        let step = sender.step(instant_millis())?;
 
-        let msg = rhythm.to_message(now_ms);
-        transport.send(&msg)?;
-
-        if rhythm.beat_count != last_beat {
-            last_beat = rhythm.beat_count;
+        if let Some(msg) = step.sent_message {
+            let rhythm = sender.rhythm();
             println!(
                 "[send] t={}ms beat={} phase={} bpm={} interval={}ms",
                 msg.timestamp_ms,
                 rhythm.beat_count,
                 msg.phase,
                 msg.bpm.to_int_round(),
-                interval_ms,
+                step.interval_ms,
             );
         }
 
-        thread::sleep(Duration::from_millis(interval_ms as u64));
+        thread::sleep(Duration::from_millis(step.interval_ms as u64));
         if let Some(limit) = beat_limit {
-            if rhythm.beat_count >= limit {
+            if sender.rhythm().beat_count >= limit {
                 return Ok(());
             }
         }
@@ -133,11 +122,16 @@ fn run_listener(
     stale_ms: u64,
     beat_limit: Option<u64>,
 ) -> Result<(), Box<dyn Error>> {
-    let transport = LoopbackMulticast::listener(port, Some(LISTENER_POLL_TIMEOUT))?;
     let bpm_limit = BpmLimitParam::new(60, 120);
-    let mut local = RhythmGenerator::from_int_bpm(0, bpm, k);
+    let mut listener = UdpMulticastSyncListener::new(
+        port,
+        bpm,
+        k,
+        Some(DEFAULT_LISTENER_POLL_TIMEOUT),
+        bpm_limit,
+    )?;
     let mut last_tick = Instant::now();
-    let mut last_beat = 0_u64;
+    let mut last_phase: Option<u16> = None;
 
     println!(
         "[listen] loopback multicast 239.0.0.1:{} bpm={} k={} stale={}ms",
@@ -147,23 +141,17 @@ fn run_listener(
     loop {
         let dt_ms = last_tick.elapsed().as_millis().min(u32::MAX as u128) as u32;
         last_tick = Instant::now();
-        local.update(dt_ms.max(1), &bpm_limit);
 
         let now_ms = instant_millis();
+        listener.step(dt_ms.max(1), now_ms)?;
+        let local = listener.rhythm();
 
-        match transport.recv() {
-            Ok(Some(msg)) => {
-                local.sync(msg, now_ms, &bpm_limit);
-            }
-            Ok(None) => {}
-            Err(e)
-                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
-            }
-            Err(e) => return Err(e.into()),
-        }
+        let should_print = last_phase
+            .map(|prev_phase| phase_wrapped_across_zero(prev_phase, local.phase))
+            .unwrap_or(false);
+        last_phase = Some(local.phase);
 
-        if local.beat_count != last_beat {
-            last_beat = local.beat_count;
+        if should_print {
             println!(
                 "[beat] t={}ms beat={} phase={} bpm={}",
                 now_ms,
@@ -173,7 +161,7 @@ fn run_listener(
             );
         }
         if let Some(limit) = beat_limit {
-            if local.beat_count >= limit {
+            if listener.rhythm().beat_count >= limit {
                 return Ok(());
             }
         }

@@ -159,7 +159,9 @@ pub struct RhythmGenerator {
     coupling_divisor: u16,
     phase_accum_sub16: u64,
     first_point_ts_ms: Option<u64>,
+    first_point_beat_count: Option<u32>,
     last_sync_ts_ms: Option<u64>,
+    last_sync_beat_count: Option<u32>,
     pulse_last_ts_ms: Option<u64>,
     pulse_silence_ms: u64,
     pulse_sync_param: PulseSyncParam,
@@ -191,7 +193,9 @@ impl RhythmGenerator {
             coupling_divisor: coupling_divisor.max(2),
             phase_accum_sub16: (phase as u64) << 16,
             first_point_ts_ms: None,
+            first_point_beat_count: None,
             last_sync_ts_ms: None,
+            last_sync_beat_count: None,
             pulse_last_ts_ms: None,
             pulse_silence_ms: 0,
             pulse_sync_param: PulseSyncParam::default(),
@@ -249,7 +253,7 @@ impl RhythmGenerator {
     /// 外部メッセージに同期する。
     ///
     /// - 遅延補償: `now_ms - msg.timestamp_ms` ぶん相手位相を進める
-    /// - 2点観測: 1点目で待機、2点目で BPM 確定
+    /// - 2点観測: 1点目で待機、2点目で `timestamp_ms` と `beat_count` の差分から BPM 確定
     /// - BPM 範囲外: 2:1 分周で 60-120 BPM に折りたたむ
     /// - 位相: 90度刻みオフセットを候補に、現在位相へ最短の点へ吸着
     pub fn sync(&mut self, msg: RhythmMessage, now_ms: u64, bpm_limit_param: &BpmLimitParam) {
@@ -268,6 +272,7 @@ impl RhythmGenerator {
             SyncState::Idle => {
                 self.sync_state = SyncState::WaitSecondPoint;
                 self.first_point_ts_ms = Some(msg.timestamp_ms);
+                self.first_point_beat_count = Some(msg.beat_count);
 
                 // 1点目でもリズム感を外さないよう、ヒントBPMへ強めに寄せる。
                 self.base_bpm = hinted_bpm;
@@ -277,22 +282,29 @@ impl RhythmGenerator {
                 self.force_phase(phase_target);
             }
             SyncState::WaitSecondPoint => {
-                let maybe_interval_ms = self
+                let maybe_observed_bpm = self
                     .first_point_ts_ms
-                    .filter(|first_ts| msg.timestamp_ms > *first_ts)
-                    .map(|first_ts| (msg.timestamp_ms - first_ts).min(u32::MAX as u64) as u32);
+                    .zip(self.first_point_beat_count)
+                    .and_then(|(first_ts, first_beat_count)| {
+                        observed_bpm_from_points(
+                            first_ts,
+                            first_beat_count,
+                            msg.timestamp_ms,
+                            msg.beat_count,
+                        )
+                    });
 
-                if let Some(interval_ms) = maybe_interval_ms {
-                    let observed_bpm = normalize_bpm_to_primary_range(
-                        BpmQ8::from_interval_ms(interval_ms),
-                        &bpm_limit_param,
-                    );
+                if let Some(observed_raw_bpm) = maybe_observed_bpm {
+                    let observed_bpm =
+                        normalize_bpm_to_primary_range(observed_raw_bpm, &bpm_limit_param);
                     self.base_bpm = observed_bpm;
                     self.current_bpm = observed_bpm;
                     self.sync_state = SyncState::Locked;
                     self.first_point_ts_ms = None;
+                    self.first_point_beat_count = None;
                 } else {
                     self.first_point_ts_ms = Some(msg.timestamp_ms);
+                    self.first_point_beat_count = Some(msg.beat_count);
                     self.base_bpm = hinted_bpm;
                     self.current_bpm =
                         self.current_bpm
@@ -301,21 +313,24 @@ impl RhythmGenerator {
                 self.force_phase(phase_target);
             }
             SyncState::Locked => {
-                if let Some(last_ts_ms) = self.last_sync_ts_ms {
-                    if msg.timestamp_ms > last_ts_ms {
-                        let interval_ms =
-                            (msg.timestamp_ms - last_ts_ms).min(u32::MAX as u64) as u32;
-                        let observed_bpm = normalize_bpm_to_primary_range(
-                            BpmQ8::from_interval_ms(interval_ms),
-                            &bpm_limit_param,
-                        );
-                        // ロック中はジッタを抑えつつ追従する。
-                        self.base_bpm = self.base_bpm.blend_toward_with_limit(
-                            observed_bpm,
-                            4,
-                            &bpm_limit_param,
-                        );
-                    }
+                if let Some(observed_raw_bpm) = self
+                    .last_sync_ts_ms
+                    .zip(self.last_sync_beat_count)
+                    .and_then(|(last_ts_ms, last_beat_count)| {
+                        observed_bpm_from_points(
+                            last_ts_ms,
+                            last_beat_count,
+                            msg.timestamp_ms,
+                            msg.beat_count,
+                        )
+                    })
+                {
+                    let observed_bpm =
+                        normalize_bpm_to_primary_range(observed_raw_bpm, &bpm_limit_param);
+                    // ロック中はジッタを抑えつつ追従する。
+                    self.base_bpm =
+                        self.base_bpm
+                            .blend_toward_with_limit(observed_bpm, 4, &bpm_limit_param);
                 }
 
                 self.base_bpm =
@@ -329,6 +344,7 @@ impl RhythmGenerator {
         }
 
         self.last_sync_ts_ms = Some(msg.timestamp_ms);
+        self.last_sync_beat_count = Some(msg.beat_count);
     }
 
     /// パルス時刻のみ（BPMヒントなし）で同期する。
@@ -390,6 +406,7 @@ impl RhythmGenerator {
             SyncState::Idle => {
                 self.sync_state = SyncState::WaitSecondPoint;
                 self.first_point_ts_ms = Some(pulse_ts_ms);
+                self.first_point_beat_count = None;
                 self.base_bpm = pulse_bpm;
                 self.current_bpm =
                     self.current_bpm
@@ -402,8 +419,10 @@ impl RhythmGenerator {
                     self.current_bpm = smoothed_pulse_bpm;
                     self.sync_state = SyncState::Locked;
                     self.first_point_ts_ms = None;
+                    self.first_point_beat_count = None;
                 } else {
                     self.first_point_ts_ms = Some(pulse_ts_ms);
+                    self.first_point_beat_count = None;
                     self.base_bpm = pulse_bpm;
                     self.current_bpm =
                         self.current_bpm
@@ -434,6 +453,7 @@ impl RhythmGenerator {
         self.pulse_last_ts_ms = Some(pulse_ts_ms);
         self.pulse_silence_ms = 0;
         self.last_sync_ts_ms = Some(pulse_ts_ms);
+        self.last_sync_beat_count = None;
     }
 
     pub fn to_message(&self, now_ms: u64) -> RhythmMessage {
@@ -487,6 +507,7 @@ impl RhythmGenerator {
     fn transition_to_wait_second_point(&mut self) {
         self.sync_state = SyncState::WaitSecondPoint;
         self.first_point_ts_ms = None;
+        self.first_point_beat_count = None;
         self.reset_pulse_tracking();
     }
 
@@ -558,6 +579,32 @@ impl RhythmGenerator {
 fn expected_interval_ms_from_bpm(bpm: BpmQ8) -> u64 {
     let raw_q8 = bpm.raw().max(1) as u64;
     ((MS_PER_MINUTE as u64 * BPM_Q8_ONE as u64) + raw_q8 / 2) / raw_q8
+}
+
+/// 観測2点（時刻・拍数）から Q8.8 BPM を推定する。
+///
+/// `beat_count` は `u32` ラップ算術で差分を計算する。
+#[inline]
+fn observed_bpm_from_points(
+    prev_ts_ms: u64,
+    prev_beat_count: u32,
+    current_ts_ms: u64,
+    current_beat_count: u32,
+) -> Option<BpmQ8> {
+    if current_ts_ms <= prev_ts_ms {
+        return None;
+    }
+
+    let beat_delta = current_beat_count.wrapping_sub(prev_beat_count);
+    if beat_delta == 0 {
+        return None;
+    }
+
+    let interval_ms = current_ts_ms - prev_ts_ms;
+    let numerator = MS_PER_MINUTE as u128 * BPM_Q8_ONE as u128 * beat_delta as u128;
+    let raw = ((numerator + interval_ms as u128 / 2) / interval_ms as u128)
+        .clamp(BPM_Q8_ONE as u128, u16::MAX as u128) as u16;
+    Some(BpmQ8(raw))
 }
 
 #[inline]

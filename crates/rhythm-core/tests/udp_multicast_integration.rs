@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rhythm_core::{bpm_from_int, comm::LoopbackMulticast, fixed_math::BpmQ8, RhythmMessage};
+use rhythm_core::{comm::LoopbackMulticast, fixed_math::BpmQ8, RhythmMessage};
 
 const RECV_TIMEOUT: Duration = Duration::from_millis(20);
 const WAIT_DEADLINE: Duration = Duration::from_secs(2);
@@ -68,7 +68,7 @@ fn listener_receives_from_sender() {
         LoopbackMulticast::listener(port, Some(RECV_TIMEOUT)).expect("failed to create listener");
     let sender = LoopbackMulticast::sender(port).expect("failed to create sender");
 
-    let expected = RhythmMessage::new(1_000, 7, 24_000, BpmQ8(bpm_from_int(90)));
+    let expected = RhythmMessage::new(1_000, 7, 24_000, BpmQ8::from_int(90));
     send_burst(&sender, &expected, 6).expect("failed to send burst");
 
     let received =
@@ -84,7 +84,7 @@ fn listener_receives_after_sender_restart() {
     let listener =
         LoopbackMulticast::listener(port, Some(RECV_TIMEOUT)).expect("failed to create listener");
 
-    let first = RhythmMessage::new(2_000, 11, 12_345, BpmQ8(bpm_from_int(105)));
+    let first = RhythmMessage::new(2_000, 11, 12_345, BpmQ8::from_int(105));
     {
         let sender = LoopbackMulticast::sender(port).expect("failed to create first sender");
         send_burst(&sender, &first, 4).expect("failed to send first burst");
@@ -97,7 +97,7 @@ fn listener_receives_after_sender_restart() {
 
     thread::sleep(Duration::from_millis(40));
 
-    let second = RhythmMessage::new(3_000, 12, 54_321, BpmQ8(bpm_from_int(80)));
+    let second = RhythmMessage::new(3_000, 12, 54_321, BpmQ8::from_int(80));
     {
         let sender = LoopbackMulticast::sender(port).expect("failed to create second sender");
         send_burst(&sender, &second, 6).expect("failed to send second burst");

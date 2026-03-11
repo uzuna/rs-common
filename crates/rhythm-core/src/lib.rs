@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 pub mod comm;
 pub mod consts;
 pub mod fixed_math;
-pub mod util;
 
 use consts::RHYTHM_MESSAGE_WIRE_SIZE;
 use fixed_math::{phase_advance_sub16, BpmQ8, PhaseU16};
@@ -14,9 +13,6 @@ const EMA_Q8_ONE: u32 = 256;
 // 下流クレートが使う公開定数・ユーティリティを再エクスポートする。
 pub use consts::{BPM_Q8_ONE, BPM_Q8_SHIFT, MS_PER_MINUTE, PHASE_MODULUS};
 pub use fixed_math::BpmLimitParam;
-pub use util::{
-    bpm_from_int, bpm_from_interval_ms, bpm_to_int_floor, bpm_to_int_round, fast_sin_q1_15,
-};
 
 /// `sync_pulse` 振る舞いを制御するパラメータ。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

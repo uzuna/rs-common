@@ -278,22 +278,6 @@ pub(crate) fn phase_advance_u16(bpm_q8: u16, dt_ms: u32) -> u16 {
     (numerator / denominator) as u16
 }
 
-/// 幅広アキュムレータ用の位相増分を `u64` で返す。
-///
-/// 呼び出し側は `u64` の累積値を保持し、現在の位相を
-/// `(total % PHASE_MODULUS as u64) as u16` で取得する。
-/// これにより長時間動作での切り捨てドリフトを回避できる。
-///
-/// **注意**: `dt_ms` がビート周期より短い場合でも 1 ステップあたり
-/// 最大 1 単位の切り捨てが発生する。細かいステップ（< 100 ms）では
-/// 下位 16 ビットに小数残差を保持する [`phase_advance_sub16`] を使うこと。
-#[inline]
-pub(crate) fn phase_advance_u64(bpm_q8: u16, dt_ms: u32) -> u64 {
-    let numerator = bpm_q8 as u128 * PHASE_MODULUS as u128 * dt_ms as u128;
-    let denominator = MS_PER_MINUTE as u128 * BPM_Q8_ONE as u128;
-    (numerator / denominator).min(u64::MAX as u128) as u64
-}
-
 /// 高精度 `u64` アキュムレータ向けのサブ位相増分を返す。
 ///
 /// 1 周回 = 2³² サブ位相単位。現在の `u16` 位相は

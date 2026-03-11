@@ -6,7 +6,6 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use rhythm_core::{
-    bpm_to_int_round,
     comm::{instant_millis, LoopbackMulticast, DEFAULT_MULTICAST_PORT},
     BpmLimitParam, Rhythm, RhythmGenerator, BPM_Q8_ONE, MS_PER_MINUTE,
 };
@@ -99,7 +98,7 @@ fn run_sender(
     println!("[send] loopback multicast 239.0.0.1:{port} bpm={bpm} k={k}");
 
     loop {
-        let interval_ms = select_send_interval_ms(rhythm.current_bpm, beat_div);
+        let interval_ms = select_send_interval_ms(rhythm.current_bpm.raw(), beat_div);
         rhythm.update(interval_ms, &bpm_limit);
         let now_ms = instant_millis();
 
@@ -113,7 +112,7 @@ fn run_sender(
                 msg.timestamp_ms,
                 rhythm.beat_count,
                 msg.phase,
-                bpm_to_int_round(msg.bpm),
+                msg.bpm.to_int_round(),
                 interval_ms,
             );
         }
@@ -170,7 +169,7 @@ fn run_listener(
                 now_ms,
                 local.beat_count,
                 local.phase,
-                bpm_to_int_round(local.current_bpm),
+                local.current_bpm.to_int_round(),
             );
         }
         if let Some(limit) = beat_limit {

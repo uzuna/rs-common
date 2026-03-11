@@ -54,6 +54,12 @@
 - 受信 API は、1ステップで `update + recv + sync` をまとめて実行
 - example はこの API を薄く呼び出すだけにし、ロジックの重複を避ける
 
+## `RhythmMessage` の wire フォーマット
+
+- メッセージは固定長 16 バイトの Little Endian レイアウト
+- `bpm` フィールドは整数 BPM へ変換せず、Q8.8 の生値をそのまま `u16` で格納
+- `to_wire_bytes` / `from_wire_slice` と `Serialize` / `Deserialize` は同じバイトフォーマットを共有
+
 ## テスト戦略
 
 テストは次の区分で保守します。

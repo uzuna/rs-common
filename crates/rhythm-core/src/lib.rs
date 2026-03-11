@@ -74,13 +74,41 @@ pub type Rhythm = RhythmGenerator;
 ///
 /// 16バイトの固定レイアウトで、UDPマルチキャストなどで送受信することを想定する。
 /// シリアライズはリトルエンディアンで行い、受信側で環境に応じて変換する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// `bpm` は整数 BPM ではなく、Q8.8 生値（固定小数点）をそのまま wire に載せる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(C)]
 pub struct RhythmMessage {
     pub timestamp_ms: u64,
     pub beat_count: u32,
     pub phase: u16,
     pub bpm: BpmQ8,
+}
+
+#[cfg(feature = "std")]
+impl Serialize for RhythmMessage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.to_wire_bytes().serialize(serializer)
+    }
+}
+
+#[cfg(feature = "std")]
+impl<'de> Deserialize<'de> for RhythmMessage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let buf = <[u8; RHYTHM_MESSAGE_WIRE_SIZE]>::deserialize(deserializer)?;
+        Self::from_wire_slice(&buf).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "invalid byte slice length for RhythmMessage: expected {}, got {}",
+                RHYTHM_MESSAGE_WIRE_SIZE,
+                buf.len()
+            ))
+        })
+    }
 }
 
 impl RhythmMessage {
@@ -102,7 +130,9 @@ impl RhythmMessage {
         }
     }
 
-    /// BigEndian環境の場合は Little Endian に変換してからシリアライズする。
+    /// Little Endian の wire バイト列へシリアライズする。
+    ///
+    /// `bpm` は Q8.8 生値をそのまま `u16` として書き込む。
     pub fn to_wire_bytes(self) -> [u8; RHYTHM_MESSAGE_WIRE_SIZE] {
         let mut buf = [0u8; RHYTHM_MESSAGE_WIRE_SIZE];
         buf[Self::WIRE_TIMESTAMP_OFFSET..Self::WIRE_TIMESTAMP_OFFSET + 8]
@@ -112,11 +142,13 @@ impl RhythmMessage {
         buf[Self::WIRE_PHASE_OFFSET..Self::WIRE_PHASE_OFFSET + 2]
             .copy_from_slice(&self.phase.to_le_bytes());
         buf[Self::WIRE_BPM_OFFSET..Self::WIRE_BPM_OFFSET + 2]
-            .copy_from_slice(&self.bpm.to_int_round().to_le_bytes());
+            .copy_from_slice(&self.bpm.raw().to_le_bytes());
         buf
     }
 
     /// リトルエンディアンのバイトスライスからデシリアライズする。
+    ///
+    /// `bpm` は wire 上の Q8.8 生値をそのまま `BpmQ8` へ復元する。
     pub fn from_wire_slice(buf: &[u8]) -> Option<Self> {
         if buf.len() < RHYTHM_MESSAGE_WIRE_SIZE {
             return None;
@@ -145,7 +177,7 @@ impl RhythmMessage {
             timestamp_ms,
             beat_count,
             phase,
-            bpm: BpmQ8::from_int(bpm),
+            bpm: BpmQ8(bpm),
         })
     }
 }
@@ -688,6 +720,10 @@ mod tests {
                 RhythmMessage::new(1_000, 1, 0, BpmQ8::from_int(120)),
             ),
             (
+                "90.5 BPM / 小数保持",
+                RhythmMessage::new(1_500, 2, 8_192, BpmQ8(90 * BPM_Q8_ONE + BPM_Q8_ONE / 2)),
+            ),
+            (
                 "90 BPM / 標準",
                 RhythmMessage::new(2_000, 10, 32768, BpmQ8::from_int(90)),
             ),
@@ -720,12 +756,48 @@ mod tests {
         }
     }
 
+    // ── 値域確認: BPM の wire 値は Q8.8 生値をそのまま保持する ────────────────────
+
+    #[test]
+    fn wire_bytes_bpm_q8_raw_preserved_cases() {
+        let cases: &[(&str, BpmQ8)] = &[
+            ("ゼロ値", BpmQ8(0)),
+            ("整数 BPM", BpmQ8::from_int(120)),
+            ("小数 BPM", BpmQ8(90 * BPM_Q8_ONE + BPM_Q8_ONE / 2)),
+            ("上限生値", BpmQ8(u16::MAX)),
+        ];
+
+        for (label, bpm_q8) in cases {
+            let msg = RhythmMessage::new(42, 7, 12345, *bpm_q8);
+            let buf = msg.to_wire_bytes();
+
+            let raw_in_wire = u16::from_le_bytes(
+                buf[RhythmMessage::WIRE_BPM_OFFSET..][..2]
+                    .try_into()
+                    .unwrap(),
+            );
+            assert_eq!(
+                raw_in_wire,
+                bpm_q8.raw(),
+                "[{label}] wire の bpm 生値が不一致"
+            );
+
+            let restored = RhythmMessage::from_wire_slice(&buf)
+                .unwrap_or_else(|| panic!("[{label}] from_wire_slice が None を返した"));
+            assert_eq!(
+                restored.bpm.raw(),
+                bpm_q8.raw(),
+                "[{label}] 復元後 bpm 生値が不一致"
+            );
+        }
+    }
+
     // ── 値域確認: ワイヤーバイトの各フィールドのバイト位置 ─────────────────────────
 
     /// 各フィールドが仕様のオフセット位置に正しく書き込まれていること。
     #[test]
     fn wire_bytes_field_layout() {
-        // (label, msg, timestamp_ms, beat_count, phase, bpm_int)
+        // (label, msg, timestamp_ms, beat_count, phase, bpm_raw_q8)
         let cases: &[(&str, RhythmMessage, u64, u32, u16, u16)] = &[
             (
                 "通常値",
@@ -738,11 +810,24 @@ mod tests {
                 0x0102_0304_0506_0708,
                 0xDEAD_BEEF,
                 0xABCD,
-                120,
+                BpmQ8::from_int(120).raw(),
+            ),
+            (
+                "小数 BPM",
+                RhythmMessage::new(
+                    0x1111,
+                    0x2222,
+                    0x3333,
+                    BpmQ8(90 * BPM_Q8_ONE + BPM_Q8_ONE / 2),
+                ),
+                0x1111,
+                0x2222,
+                0x3333,
+                90 * BPM_Q8_ONE + BPM_Q8_ONE / 2,
             ),
             ("全ゼロ", RhythmMessage::default(), 0, 0, 0, 0),
         ];
-        for (label, msg, ts, bc, ph, bpm_int) in cases {
+        for (label, msg, ts, bc, ph, bpm_raw_q8) in cases {
             let buf = msg.to_wire_bytes();
             assert_eq!(
                 u64::from_le_bytes(
@@ -777,9 +862,44 @@ mod tests {
                         .try_into()
                         .unwrap()
                 ),
-                *bpm_int,
-                "[{label}] bpm",
+                *bpm_raw_q8,
+                "[{label}] bpm(raw q8)",
             );
+        }
+    }
+
+    // ── 正常系: serde も wire バイトフォーマットと同一で往復できる（stdのみ） ─────────
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn serde_uses_same_wire_format_cases() {
+        let cases: &[(&str, RhythmMessage)] = &[
+            (
+                "整数 BPM",
+                RhythmMessage::new(123, 4, 5, BpmQ8::from_int(90)),
+            ),
+            (
+                "小数 BPM",
+                RhythmMessage::new(456, 7, 8, BpmQ8(90 * BPM_Q8_ONE + BPM_Q8_ONE / 2)),
+            ),
+        ];
+
+        for (label, msg) in cases {
+            let serialized = serde_json::to_vec(msg)
+                .unwrap_or_else(|e| panic!("[{label}] serde_json::to_vec failed: {e}"));
+
+            let wire_from_serde: [u8; RHYTHM_MESSAGE_WIRE_SIZE] =
+                serde_json::from_slice(&serialized)
+                    .unwrap_or_else(|e| panic!("[{label}] serde wire decode failed: {e}"));
+            assert_eq!(
+                wire_from_serde,
+                msg.to_wire_bytes(),
+                "[{label}] serde と wire が不一致"
+            );
+
+            let restored: RhythmMessage = serde_json::from_slice(&serialized)
+                .unwrap_or_else(|e| panic!("[{label}] serde_json::from_slice failed: {e}"));
+            assert_eq!(restored, *msg, "[{label}] serde 往復で値が一致しない");
         }
     }
 

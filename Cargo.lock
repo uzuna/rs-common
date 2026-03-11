@@ -4509,6 +4509,7 @@ dependencies = [
 name = "rhythm-core"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "clap",
  "crossterm",
  "nix",

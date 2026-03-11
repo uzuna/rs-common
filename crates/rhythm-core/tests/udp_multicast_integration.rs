@@ -1,3 +1,5 @@
+#![cfg(feature = "std")]
+
 use std::{
     io,
     net::{Ipv4Addr, SocketAddrV4, UdpSocket},

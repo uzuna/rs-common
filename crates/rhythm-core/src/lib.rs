@@ -1,5 +1,8 @@
+#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
+
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "std")]
 pub mod comm;
 pub mod consts;
 pub mod fixed_math;

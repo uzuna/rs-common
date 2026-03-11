@@ -18,6 +18,9 @@ check-fmt:
 
 test:
 	cargo test --workspace --exclude wasm-mls-mpm --exclude wasm-preview
+# 確実にno_stdでビルドをさせるためcheckをする
+	cargo check -p rhythm-core --no-default-features
+	cargo test -p rhythm-core --no-default-features
 	for target in $(WASM_TARGETS); do \
 		make -C examples/$$target test; \
 	done

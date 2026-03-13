@@ -1,0 +1,12 @@
+[package]
+name = "rhythm-core-py"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "py_rhythm_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+rhythm-core = { workspace = true, features = ["std"] }
+pyo3 = { version = "0.28.0", features = ["extension-module"] }

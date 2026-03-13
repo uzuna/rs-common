@@ -173,6 +173,13 @@ impl BpmQ8 {
     pub const fn raw(self) -> u16 {
         self.0
     }
+
+    /// f64 BPM 値へ変換する。
+    #[cfg(feature = "std")]
+    #[inline]
+    pub fn to_float(self) -> f64 {
+        self.0 as f64 / BPM_Q8_ONE as f64
+    }
 }
 
 // ─────────────────────────────────────────

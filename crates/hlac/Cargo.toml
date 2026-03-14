@@ -7,7 +7,13 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+wide = "0.7.33"
 
 [dev-dependencies]
+criterion.workspace = true
 image.workspace = true
 ndarray = "0.17.2"
+
+[[bench]]
+name = "hlac_bench"
+harness = false

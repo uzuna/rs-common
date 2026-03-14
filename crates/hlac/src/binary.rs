@@ -1,6 +1,9 @@
 use std::fmt;
 
 use crate::mask::{HLAC25_OFFSETS, HLAC_DIM};
+use wide::u8x16;
+
+const SIMD_LANES: usize = 16;
 
 /// 2値HLACの25次元特徴量。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,18 +185,25 @@ impl HlacExtractor {
     ) -> Result<HlacFeature, HlacError> {
         Self::validate_shape(width, height)?;
         validate_buffer_len(width, height, image.len())?;
-
-        for (idx, value) in image.iter().enumerate() {
-            if *value > 1 {
-                return Err(HlacError::NonBinaryValue {
-                    x: idx % width,
-                    y: idx / width,
-                    value: *value,
-                });
-            }
-        }
+        self.validate_binary_u8_values(image, width)?;
 
         Ok(self.extract_core_unchecked(width, height, |y, x| image[flat_index(width, y, x)] == 1))
+    }
+
+    /// `u8` 2値配列（0/1のみ許可）から、`wide` を使って2値HLACを抽出する。
+    ///
+    /// `image` は行優先（row-major）で `width * height` 要素を持つ必要がある。
+    pub fn extract_binary_u8_simd(
+        &self,
+        image: &[u8],
+        width: usize,
+        height: usize,
+    ) -> Result<HlacFeature, HlacError> {
+        Self::validate_shape(width, height)?;
+        validate_buffer_len(width, height, image.len())?;
+        self.validate_binary_u8_values(image, width)?;
+
+        Ok(self.extract_binary_u8_simd_unchecked(image, width, height))
     }
 
     /// `u8` グレースケール配列から積和HLACを抽出する。
@@ -209,6 +219,19 @@ impl HlacExtractor {
         validate_buffer_len(width, height, image.len())?;
 
         Ok(self.extract_gray_core_unchecked(width, height, |y, x| image[flat_index(width, y, x)]))
+    }
+
+    fn validate_binary_u8_values(&self, image: &[u8], width: usize) -> Result<(), HlacError> {
+        for (idx, value) in image.iter().enumerate() {
+            if *value > 1 {
+                return Err(HlacError::NonBinaryValue {
+                    x: idx % width,
+                    y: idx / width,
+                    value: *value,
+                });
+            }
+        }
+        Ok(())
     }
 
     fn validate_shape(width: usize, height: usize) -> Result<(), HlacError> {
@@ -239,6 +262,55 @@ impl HlacExtractor {
                     }
 
                     if matched {
+                        counts[mask_idx] += 1;
+                    }
+                }
+            }
+        }
+
+        HlacFeature::new(counts)
+    }
+
+    fn extract_binary_u8_simd_unchecked(
+        &self,
+        image: &[u8],
+        width: usize,
+        height: usize,
+    ) -> HlacFeature {
+        let mut counts = [0_u64; HLAC_DIM];
+
+        for y in 1..(height - 1) {
+            let mut x = 1;
+
+            while x + SIMD_LANES <= width - 1 {
+                for (mask_idx, mask) in self.masks.iter().enumerate() {
+                    let (dx0, dy0) = mask[0];
+                    let mut matched = load_u8x16_lane(image, width, y, x, dx0, dy0);
+
+                    for &(dx, dy) in &mask[1..] {
+                        matched &= load_u8x16_lane(image, width, y, x, dx, dy);
+                    }
+
+                    counts[mask_idx] += count_true_lanes(matched);
+                }
+
+                x += SIMD_LANES;
+            }
+
+            for xx in x..(width - 1) {
+                for (mask_idx, mask) in self.masks.iter().enumerate() {
+                    let mut all_on = true;
+
+                    for &(dx, dy) in *mask {
+                        let yy = (y as isize + dy) as usize;
+                        let xn = (xx as isize + dx) as usize;
+                        if image[flat_index(width, yy, xn)] != 1 {
+                            all_on = false;
+                            break;
+                        }
+                    }
+
+                    if all_on {
                         counts[mask_idx] += 1;
                     }
                 }
@@ -282,6 +354,25 @@ impl HlacExtractor {
 #[inline]
 fn flat_index(width: usize, y: usize, x: usize) -> usize {
     y * width + x
+}
+
+#[inline]
+fn load_u8x16_lane(image: &[u8], width: usize, y: usize, x: usize, dx: isize, dy: isize) -> u8x16 {
+    let yy = (y as isize + dy) as usize;
+    let xx = (x as isize + dx) as usize;
+    let start = flat_index(width, yy, xx);
+    let lane: [u8; SIMD_LANES] = image[start..start + SIMD_LANES]
+        .try_into()
+        .expect("SIMD lane load must have exact width");
+    u8x16::from(lane)
+}
+
+#[inline]
+fn count_true_lanes(v: u8x16) -> u64 {
+    v.to_array()
+        .iter()
+        .map(|value| u64::from(*value == 1))
+        .sum()
 }
 
 fn validate_buffer_len(width: usize, height: usize, len: usize) -> Result<(), HlacError> {
@@ -390,6 +481,20 @@ mod tests {
     ) -> Result<HlacFeature, HlacError> {
         let (height, width) = image.dim();
         extractor.extract_binary_u8(
+            image
+                .as_slice()
+                .expect("binary u8 ndarray must be contiguous"),
+            width,
+            height,
+        )
+    }
+
+    fn extract_binary_u8_simd_array(
+        extractor: &HlacExtractor,
+        image: &Array2<u8>,
+    ) -> Result<HlacFeature, HlacError> {
+        let (height, width) = image.dim();
+        extractor.extract_binary_u8_simd(
             image
                 .as_slice()
                 .expect("binary u8 ndarray must be contiguous"),
@@ -673,6 +778,60 @@ mod tests {
                 } => extractor.extract_binary_bool(&image, width, height),
             };
             assert_error_eq(result, &case.expected, case.name);
+        }
+    }
+
+    #[test]
+    fn hlac_binary_simd_matches_scalar_cases() {
+        struct Case {
+            name: &'static str,
+            image: Array2<u8>,
+        }
+
+        let mut generated = Array2::from_elem((32, 64), 0_u8);
+        for y in 0..32 {
+            for x in 0..64 {
+                generated[(y, x)] = if ((x * 31 + y * 17 + x * y) % 5) < 2 {
+                    1
+                } else {
+                    0
+                };
+            }
+        }
+
+        let cases = vec![
+            Case {
+                name: "small_width_tail_only",
+                image: Array2::from_shape_vec(
+                    (4, 6),
+                    vec![
+                        0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0,
+                    ],
+                )
+                .unwrap(),
+            },
+            Case {
+                name: "one_simd_chunk",
+                image: Array2::from_shape_vec(
+                    (5, 18),
+                    (0..90)
+                        .map(|v| if (v % 3) == 0 { 1_u8 } else { 0_u8 })
+                        .collect(),
+                )
+                .unwrap(),
+            },
+            Case {
+                name: "multi_chunk_generated",
+                image: generated,
+            },
+        ];
+
+        let extractor = HlacExtractor::new_binary_25();
+
+        for case in cases {
+            let scalar = extract_binary_u8_array(&extractor, &case.image).unwrap();
+            let simd = extract_binary_u8_simd_array(&extractor, &case.image).unwrap();
+            assert_eq!(scalar, simd, "case={}", case.name);
         }
     }
 

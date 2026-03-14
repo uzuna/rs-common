@@ -8,14 +8,14 @@ pub mod consts;
 pub mod fixed_math;
 
 use consts::RHYTHM_MESSAGE_WIRE_SIZE;
-use fixed_math::{phase_advance_sub16, BpmQ8, PhaseU16};
+use fixed_math::{phase_advance_sub16, PhaseU16};
 
 const PULSE_INTERVAL_HISTORY_SIZE: usize = 8;
 const EMA_Q8_ONE: u32 = 256;
 
 // 下流クレートが使う公開定数・ユーティリティを再エクスポートする。
 pub use consts::{BPM_Q8_ONE, BPM_Q8_SHIFT, MS_PER_MINUTE, PHASE_MODULUS};
-pub use fixed_math::BpmLimitParam;
+pub use fixed_math::{BpmLimitParam, BpmQ8};
 
 /// `sync_pulse` 振る舞いを制御するパラメータ。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

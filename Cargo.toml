@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*", "jetson/*", "examples/*", "wasm-comp/*"]
+members = ["crates/*", "jetson/*", "examples/*", "wasm-comp/*", "pycrates/*"]
 resolver = "2"
 
 [workspace.package]
@@ -29,6 +29,7 @@ nalgebra = "0.34.1"
 num-traits = "0.2.19"
 rand = "0.10.0"
 rawproc = { path = "crates/rawproc" }
+rhythm-core = { path = "crates/rhythm-core" }
 serde = "1.0.228"
 serde_yaml = "0.9.34"
 tempfile = "3.26.0"
@@ -48,8 +49,8 @@ wasmtime-wasi = "42.0.1"
 web-sys = "0.3"
 wgpu = "27.0.1"
 wgpu-shader = { path = "crates/wgpu-shader" }
-xegl = { path = "crates/xegl" }
 wit-bindgen-rt = { version = "0.44.0", features = ["bitflags"] }
+xegl = { path = "crates/xegl" }
 
 [profile.release.package.wasm-preview]
 opt-level = 3

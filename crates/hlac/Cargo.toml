@@ -7,4 +7,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+
+[dev-dependencies]
+image.workspace = true
 ndarray = "0.17.2"

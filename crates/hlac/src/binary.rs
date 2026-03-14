@@ -4,6 +4,13 @@ use crate::mask::{HLAC25_OFFSETS, HLAC_DIM};
 use wide::u8x16;
 
 const SIMD_LANES: usize = 16;
+const SIMD_MIN_WIDTH: usize = SIMD_LANES + 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BinaryExtractPath {
+    Scalar,
+    Simd,
+}
 
 /// 2値HLACの25次元特徴量。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,7 +181,10 @@ impl HlacExtractor {
         Ok(self.extract_core_unchecked(width, height, |y, x| image[flat_index(width, y, x)]))
     }
 
-    /// `u8` 2値配列（0/1のみ許可）から2値HLACを抽出する。
+    /// `u8` 2値配列（0/1のみ許可）から2値HLACを抽出する（自動経路選択）。
+    ///
+    /// 画像サイズに応じてスカラ実装とSIMD実装（`wide`）を自動的に切り替える。
+    /// 常にスカラ実装を使いたい場合は `extract_binary_u8_scalar` を使う。
     ///
     /// `image` は行優先（row-major）で `width * height` 要素を持つ必要がある。
     pub fn extract_binary_u8(
@@ -187,7 +197,23 @@ impl HlacExtractor {
         validate_buffer_len(width, height, image.len())?;
         self.validate_binary_u8_values(image, width)?;
 
-        Ok(self.extract_core_unchecked(width, height, |y, x| image[flat_index(width, y, x)] == 1))
+        Ok(self.extract_binary_u8_auto_unchecked(image, width, height))
+    }
+
+    /// `u8` 2値配列（0/1のみ許可）から2値HLACを抽出する（スカラ固定）。
+    ///
+    /// `image` は行優先（row-major）で `width * height` 要素を持つ必要がある。
+    pub fn extract_binary_u8_scalar(
+        &self,
+        image: &[u8],
+        width: usize,
+        height: usize,
+    ) -> Result<HlacFeature, HlacError> {
+        Self::validate_shape(width, height)?;
+        validate_buffer_len(width, height, image.len())?;
+        self.validate_binary_u8_values(image, width)?;
+
+        Ok(self.extract_binary_u8_scalar_unchecked(image, width, height))
     }
 
     /// `u8` 2値配列（0/1のみ許可）から、`wide` を使って2値HLACを抽出する。
@@ -320,6 +346,41 @@ impl HlacExtractor {
         HlacFeature::new(counts)
     }
 
+    fn extract_binary_u8_scalar_unchecked(
+        &self,
+        image: &[u8],
+        width: usize,
+        height: usize,
+    ) -> HlacFeature {
+        self.extract_core_unchecked(width, height, |y, x| image[flat_index(width, y, x)] == 1)
+    }
+
+    fn extract_binary_u8_auto_unchecked(
+        &self,
+        image: &[u8],
+        width: usize,
+        height: usize,
+    ) -> HlacFeature {
+        match Self::select_binary_u8_path(width, height) {
+            BinaryExtractPath::Scalar => {
+                self.extract_binary_u8_scalar_unchecked(image, width, height)
+            }
+            BinaryExtractPath::Simd => self.extract_binary_u8_simd_unchecked(image, width, height),
+        }
+    }
+
+    fn select_binary_u8_path(width: usize, height: usize) -> BinaryExtractPath {
+        let valid_width = width.saturating_sub(2);
+        let valid_height = height.saturating_sub(2);
+        let simd_chunks = (valid_width / SIMD_LANES).saturating_mul(valid_height);
+
+        if width >= SIMD_MIN_WIDTH && simd_chunks > 0 {
+            BinaryExtractPath::Simd
+        } else {
+            BinaryExtractPath::Scalar
+        }
+    }
+
     fn extract_gray_core_unchecked<F>(
         &self,
         width: usize,
@@ -394,7 +455,8 @@ mod tests {
     use crate::mask::HLAC25_OFFSETS;
 
     use super::{
-        u8_to_binary_array, GrayHlacFeature, HlacError, HlacExtractor, HlacFeature, HLAC_DIM,
+        u8_to_binary_array, BinaryExtractPath, GrayHlacFeature, HlacError, HlacExtractor,
+        HlacFeature, HLAC_DIM,
     };
 
     fn build_image(height: usize, width: usize, ones: &[(usize, usize)]) -> Array2<bool> {
@@ -481,6 +543,20 @@ mod tests {
     ) -> Result<HlacFeature, HlacError> {
         let (height, width) = image.dim();
         extractor.extract_binary_u8(
+            image
+                .as_slice()
+                .expect("binary u8 ndarray must be contiguous"),
+            width,
+            height,
+        )
+    }
+
+    fn extract_binary_u8_scalar_array(
+        extractor: &HlacExtractor,
+        image: &Array2<u8>,
+    ) -> Result<HlacFeature, HlacError> {
+        let (height, width) = image.dim();
+        extractor.extract_binary_u8_scalar(
             image
                 .as_slice()
                 .expect("binary u8 ndarray must be contiguous"),
@@ -829,9 +905,53 @@ mod tests {
         let extractor = HlacExtractor::new_binary_25();
 
         for case in cases {
-            let scalar = extract_binary_u8_array(&extractor, &case.image).unwrap();
+            let scalar = extract_binary_u8_scalar_array(&extractor, &case.image).unwrap();
+            let auto = extract_binary_u8_array(&extractor, &case.image).unwrap();
             let simd = extract_binary_u8_simd_array(&extractor, &case.image).unwrap();
-            assert_eq!(scalar, simd, "case={}", case.name);
+            assert_eq!(scalar, auto, "case={}, scalar_vs_auto", case.name);
+            assert_eq!(scalar, simd, "case={}, scalar_vs_simd", case.name);
+        }
+    }
+
+    #[test]
+    fn hlac_binary_auto_path_selection_cases() {
+        struct Case {
+            name: &'static str,
+            width: usize,
+            height: usize,
+            expected: BinaryExtractPath,
+        }
+
+        let cases = vec![
+            Case {
+                name: "width_17_no_simd_lane",
+                width: 17,
+                height: 10,
+                expected: BinaryExtractPath::Scalar,
+            },
+            Case {
+                name: "width_18_single_lane",
+                width: 18,
+                height: 3,
+                expected: BinaryExtractPath::Simd,
+            },
+            Case {
+                name: "large_image",
+                width: 64,
+                height: 32,
+                expected: BinaryExtractPath::Simd,
+            },
+            Case {
+                name: "too_narrow",
+                width: 8,
+                height: 128,
+                expected: BinaryExtractPath::Scalar,
+            },
+        ];
+
+        for case in cases {
+            let actual = HlacExtractor::select_binary_u8_path(case.width, case.height);
+            assert_eq!(actual, case.expected, "case={}", case.name);
         }
     }
 

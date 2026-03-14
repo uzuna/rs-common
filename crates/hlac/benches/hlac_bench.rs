@@ -18,11 +18,11 @@ fn make_binary_image(width: usize, height: usize) -> Vec<u8> {
     image
 }
 
-fn bench_binary_scalar_vs_simd(c: &mut Criterion) {
+fn bench_binary_scalar_auto_simd(c: &mut Criterion) {
     let extractor = HlacExtractor::new_binary_25();
     let sizes = [(128_usize, 128_usize), (512_usize, 512_usize)];
 
-    let mut group = c.benchmark_group("binary_scalar_vs_simd");
+    let mut group = c.benchmark_group("binary_scalar_auto_simd");
 
     for (width, height) in sizes {
         let image = make_binary_image(width, height);
@@ -30,6 +30,19 @@ fn bench_binary_scalar_vs_simd(c: &mut Criterion) {
 
         group.bench_with_input(
             BenchmarkId::new("scalar", format!("{}x{}", width, height)),
+            &(width, height),
+            |b, &(w, h)| {
+                b.iter(|| {
+                    let feature = extractor
+                        .extract_binary_u8_scalar(black_box(&image), black_box(w), black_box(h))
+                        .unwrap();
+                    black_box(feature)
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("auto", format!("{}x{}", width, height)),
             &(width, height),
             |b, &(w, h)| {
                 b.iter(|| {
@@ -58,5 +71,5 @@ fn bench_binary_scalar_vs_simd(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_binary_scalar_vs_simd);
+criterion_group!(benches, bench_binary_scalar_auto_simd);
 criterion_main!(benches);

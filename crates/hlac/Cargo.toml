@@ -11,7 +11,7 @@ wide = "0.7.33"
 
 [dev-dependencies]
 criterion.workspace = true
-image.workspace = true
+image = { workspace = true, features = ["webp", "png"] }
 ndarray = "0.17.2"
 
 [[bench]]

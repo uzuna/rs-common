@@ -1,6 +1,6 @@
 [package]
 name = "healed-serde"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [dependencies]
@@ -17,4 +17,8 @@ criterion.workspace = true
 
 [[bench]]
 name = "json_serialize_bench"
+harness = false
+
+[[bench]]
+name = "encode_decode_bench"
 harness = false

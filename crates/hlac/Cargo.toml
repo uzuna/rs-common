@@ -1,0 +1,19 @@
+[package]
+name = "hlac"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+wide = "0.7.33"
+
+[dev-dependencies]
+criterion.workspace = true
+image = { workspace = true, features = ["webp", "png"] }
+ndarray = "0.17.2"
+
+[[bench]]
+name = "hlac_bench"
+harness = false

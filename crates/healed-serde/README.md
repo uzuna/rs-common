@@ -16,6 +16,45 @@
 
 ## 使用方法
 
+### バイナリのECC保護（ストレージなし）
+
+別途ストレージを取り扱う場合は、`encode` / `decode` 関数を使って
+「バイナリをECC保護する」「ECC保護バイナリを復元する」ことができます。
+想定ユースケースは、別シリアライザ（`serde_json` や `postcard` など）で
+`to_vec` した結果を追加保護し、復元後に `from_slice` する流れです。
+
+```rust
+use healed_serde::{decode, encode, ProtectionLevel};
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct SensorData {
+    id: u32,
+    temperature: f32,
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let data = SensorData { id: 1, temperature: 23.5 };
+
+    // 1) 別シリアライザでバイナリ化
+    let binary = serde_json::to_vec(&data)?;
+
+    // 2) バイナリをECC保護
+    let protected = encode(&binary, ProtectionLevel::Medium)?;
+
+    // 3) ECC保護バイナリを復元（1ビット反転などは自動修復）
+    let recovered_binary = decode(&protected)?;
+
+    // 4) 別シリアライザで型に戻す
+    let recovered: SensorData = serde_json::from_slice(&recovered_binary)?;
+
+    println!("Recovered: {:?}", recovered);
+    Ok(())
+}
+```
+
+### ファイル永続化（ReliableVault）
+
 `ReliableVault` 構造体を使用してデータの保存と読み込みを行います。保存対象のデータ構造体は `serde::Serialize` および `serde::Deserialize` を実装している必要があります。
 
 ```rust

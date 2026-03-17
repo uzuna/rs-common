@@ -1,6 +1,8 @@
 use crate::error::Error;
 use crate::frame::StorageFrame;
 use crate::metadata::MetaDataHeader;
+use crate::tmr::{TmrStrategy, TMR_HEADER_GROUP_BYTES};
+use crate::DataClass;
 use crate::ProtectionLevel;
 use bitflip::{BitFlipConfig, BitFlipWriter, BitFlipWriterError};
 use serde::{de::DeserializeOwned, Serialize};
@@ -8,6 +10,10 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const FRAME_HEADER_SCAN_BYTES: usize = 32;
+const SLOT_SCAN_BYTES: usize = TMR_HEADER_GROUP_BYTES;
 
 /// ストレージバックエンドの振る舞いを定義するトレイト。
 ///
@@ -36,6 +42,50 @@ fn map_bitflip_writer_error(error: BitFlipWriterError) -> Error {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SlotPayload {
+    sequence: u64,
+    payload: Vec<u8>,
+    data_class: DataClass,
+}
+
+fn decode_slot_payload(bytes: &[u8]) -> Result<SlotPayload, Error> {
+    if let Ok(slot) = TmrStrategy::decode_tmr_with_vote(bytes) {
+        return Ok(SlotPayload {
+            sequence: slot.sequence,
+            payload: slot.payload,
+            data_class: DataClass::Small,
+        });
+    }
+
+    let frame = StorageFrame::recover(bytes)?;
+    Ok(SlotPayload {
+        sequence: frame.meta.sequence,
+        payload: frame.payload,
+        data_class: DataClass::Large,
+    })
+}
+
+fn scan_slot_sequence(header_bytes: &[u8]) -> Option<u64> {
+    TmrStrategy::peek_sequence(header_bytes).or_else(|| scan_frame_sequence(header_bytes))
+}
+
+fn scan_frame_sequence(header_bytes: &[u8]) -> Option<u64> {
+    if header_bytes.len() < FRAME_HEADER_SCAN_BYTES {
+        return None;
+    }
+
+    let primary_bytes: [u8; 16] = header_bytes[0..16].try_into().ok()?;
+    if let Some(meta) = MetaDataHeader::from_bytes(&primary_bytes).decode() {
+        return Some(meta.sequence);
+    }
+
+    let secondary_bytes: [u8; 16] = header_bytes[16..32].try_into().ok()?;
+    MetaDataHeader::from_bytes(&secondary_bytes)
+        .decode()
+        .map(|meta| meta.sequence)
+}
+
 /// 標準のファイルシステムをバックエンドとして使用する実装。
 pub struct FileSystemBackend {
     dir: PathBuf,
@@ -62,6 +112,21 @@ impl FileSystemBackend {
     fn slot_path(&self, index: usize) -> PathBuf {
         self.dir.join(format!("{}.{}", self.filename_base, index))
     }
+
+    fn slot_temp_path(&self, index: usize) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        self.dir
+            .join(format!("{}.{}.tmp-{}", self.filename_base, index, stamp))
+    }
+
+    fn sync_parent_dir(&self) -> Result<(), Error> {
+        let dir = File::open(&self.dir)?;
+        dir.sync_all()?;
+        Ok(())
+    }
 }
 
 impl StorageBackend for FileSystemBackend {
@@ -70,7 +135,11 @@ impl StorageBackend for FileSystemBackend {
     }
 
     fn write_slot(&self, index: usize, data: &[u8]) -> Result<(), Error> {
-        let file = File::create(self.slot_path(index))?;
+        self.ensure_backend_exists()?;
+
+        let slot_path = self.slot_path(index);
+        let temp_path = self.slot_temp_path(index);
+        let file = File::create(&temp_path)?;
         let file = match self.bitflip_config {
             Some(config) => {
                 let mut writer = BitFlipWriter::new(file, config);
@@ -83,7 +152,15 @@ impl StorageBackend for FileSystemBackend {
                 file
             }
         };
-        file.sync_all()?;
+        if let Err(error) = file.sync_all() {
+            let _ = fs::remove_file(&temp_path);
+            return Err(error.into());
+        }
+        if let Err(error) = fs::rename(&temp_path, &slot_path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(error.into());
+        }
+        self.sync_parent_dir()?;
         Ok(())
     }
 
@@ -110,6 +187,8 @@ pub struct MemoryBackend {
     slots: Arc<Mutex<Vec<Option<Vec<u8>>>>>,
     bitflip_config: Option<BitFlipConfig>,
 }
+
+pub type InMemBackend = MemoryBackend;
 
 impl MemoryBackend {
     /// 指定スロット数で新しい `MemoryBackend` を作成します。
@@ -273,25 +352,46 @@ where
         }
     }
 
-    /// 最新の有効なデータを読み込みます。
-    ///
-    /// 全てのスロットを確認し、破損していないデータの中で最も新しいシーケンス番号を持つものを返します。
-    pub fn load(&self) -> Result<T, Error> {
-        let mut candidates = Vec::new();
+    fn next_sequence(&self) -> u64 {
+        let mut max_sequence = 0;
+        let mut found_any = false;
 
-        for i in 0..self.num_slots {
-            let bytes = match self.backend.read_slot(i) {
-                Ok(b) => b,
-                Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(_) => continue, // その他の読み込みエラーはスキップ
+        for index in 0..self.num_slots {
+            let Ok(buffer) = self.backend.read_header(index, SLOT_SCAN_BYTES) else {
+                continue;
             };
 
-            // フレーム復元試行
-            match StorageFrame::recover(&bytes) {
-                Ok(frame) => {
-                    candidates.push(frame);
-                }
-                Err(_) => continue, // 破損データはスキップ
+            if let Some(sequence) = scan_slot_sequence(&buffer) {
+                max_sequence = max_sequence.max(sequence);
+                found_any = true;
+            }
+        }
+
+        if found_any {
+            max_sequence + 1
+        } else {
+            1
+        }
+    }
+
+    fn latest_slot(&self, expected_class: Option<DataClass>) -> Result<SlotPayload, Error> {
+        let mut candidates = Vec::new();
+
+        for index in 0..self.num_slots {
+            let bytes = match self.backend.read_slot(index) {
+                Ok(bytes) => bytes,
+                Err(error) if error.is_recoverable() => continue,
+                Err(error) => return Err(error),
+            };
+
+            let slot = match decode_slot_payload(&bytes) {
+                Ok(slot) => slot,
+                Err(error) if error.is_recoverable() => continue,
+                Err(error) => return Err(error),
+            };
+
+            if expected_class.is_none_or(|class| slot.data_class == class) {
+                candidates.push(slot);
             }
         }
 
@@ -303,14 +403,45 @@ where
             .into());
         }
 
-        // シーケンス番号で降順ソート (最新が先頭)
-        candidates.sort_by_key(|f| std::cmp::Reverse(f.meta.sequence));
+        candidates.sort_by_key(|slot| std::cmp::Reverse(slot.sequence));
+        Ok(candidates.remove(0))
+    }
 
-        // 最新のものをデシリアライズ
-        let latest = &candidates[0];
-        let data: T = bincode::deserialize(&latest.payload)?;
+    /// 最新の有効なデータを読み込みます。
+    ///
+    /// 全てのスロットを確認し、破損していないデータの中で最も新しいシーケンス番号を持つものを返します。
+    pub fn load(&self) -> Result<T, Error> {
+        let latest = self.latest_slot(None)?;
+        Ok(bincode::deserialize(&latest.payload)?)
+    }
 
-        Ok(data)
+    /// 小サイズデータをTMRで保存します。
+    pub fn save_small(&self, data: &T) -> Result<(), Error> {
+        self.backend.ensure_backend_exists()?;
+
+        let payload = bincode::serialize(data)?;
+        if DataClass::from_payload_len(payload.len()) != DataClass::Small {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Serialized payload size {} exceeds small-data threshold {}",
+                    payload.len(),
+                    crate::SMALL_DATA_THRESHOLD_BYTES
+                ),
+            )
+            .into());
+        }
+
+        let sequence = self.next_sequence();
+        let target_slot = (sequence as usize) % self.num_slots;
+        let bytes = TmrStrategy::encode_tmr(sequence, &payload)?;
+        self.backend.write_slot(target_slot, &bytes)
+    }
+
+    /// TMRで保存された最新の小サイズデータを読み込みます。
+    pub fn load_small(&self) -> Result<T, Error> {
+        let latest = self.latest_slot(Some(DataClass::Small))?;
+        Ok(bincode::deserialize(&latest.payload)?)
     }
 
     /// データを保存します。
@@ -318,39 +449,7 @@ where
     /// 現在の最大シーケンス番号を確認し、最も古いスロット（次のシーケンス番号 % スロット数）を上書きします。
     pub fn save(&self, data: &T, level: ProtectionLevel) -> Result<(), Error> {
         self.backend.ensure_backend_exists()?;
-
-        // 次のシーケンス番号を決定するためにヘッダーをスキャン
-        let mut max_sequence = 0;
-        let mut found_any = false;
-
-        for i in 0..self.num_slots {
-            if let Ok(buf) = self.backend.read_header(i, 32) {
-                if buf.len() != 32 {
-                    continue;
-                }
-
-                // Primary Header check
-                let primary_bytes: [u8; 16] = buf[0..16].try_into().unwrap();
-                if let Some(meta) = MetaDataHeader::from_bytes(&primary_bytes).decode() {
-                    if meta.sequence > max_sequence {
-                        max_sequence = meta.sequence;
-                    }
-                    found_any = true;
-                    continue; // Primaryが生きていればSecondaryは見なくてよい
-                }
-
-                // Secondary Header check
-                let secondary_bytes: [u8; 16] = buf[16..32].try_into().unwrap();
-                if let Some(meta) = MetaDataHeader::from_bytes(&secondary_bytes).decode() {
-                    if meta.sequence > max_sequence {
-                        max_sequence = meta.sequence;
-                    }
-                    found_any = true;
-                }
-            }
-        }
-
-        let new_sequence = if found_any { max_sequence + 1 } else { 1 };
+        let new_sequence = self.next_sequence();
         let target_slot = (new_sequence as usize) % self.num_slots;
 
         // ペイロードのシリアライズ
@@ -371,7 +470,7 @@ mod tests {
     use serde::Deserialize;
     use std::path::Path;
 
-    #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
     struct TestData {
         id: u32,
         message: String,
@@ -941,5 +1040,161 @@ mod tests {
 
             prev_size = encoded.len();
         }
+    }
+
+    /// Phase1の値域確認として、DataClass境界とエラー分類を検証。
+    #[test]
+    fn test_phase1_value_range() {
+        let data_class_cases = [
+            ("empty_payload", 0usize, crate::DataClass::Small),
+            (
+                "max_small_payload",
+                crate::SMALL_DATA_THRESHOLD_BYTES - 1,
+                crate::DataClass::Small,
+            ),
+            (
+                "large_payload_boundary",
+                crate::SMALL_DATA_THRESHOLD_BYTES,
+                crate::DataClass::Large,
+            ),
+        ];
+
+        for (name, payload_len, expected) in data_class_cases {
+            let actual = crate::DataClass::from_payload_len(payload_len);
+            assert_eq!(actual, expected, "{name}: DataClass mismatch");
+        }
+
+        let error_class_cases = [
+            (
+                "recoverable_crc",
+                Error::CrcMismatch,
+                crate::error::ErrorClass::Recoverable,
+            ),
+            (
+                "fatal_invalid_protection_level",
+                Error::InvalidProtectionLevel,
+                crate::error::ErrorClass::Fatal,
+            ),
+            (
+                "recoverable_not_found",
+                Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "missing")),
+                crate::error::ErrorClass::Recoverable,
+            ),
+        ];
+
+        for (name, error, expected) in error_class_cases {
+            assert_eq!(error.class(), expected, "{name}: error class mismatch");
+        }
+    }
+
+    /// Phase1の正常系として、TMR小サイズ保存/復元と原子的書き込みを検証。
+    #[test]
+    fn test_phase1_ok_cases() {
+        let small_data = TestData {
+            id: 101,
+            message: "small tmr payload".to_string(),
+        };
+
+        let memory_cases = [(
+            "memory_save_small_roundtrip",
+            MemoryBackend::new(3),
+            small_data.clone(),
+        )];
+
+        for (name, backend, data) in memory_cases {
+            let vault = ReliableVault::<TestData, _>::new(backend.clone(), 3);
+            vault
+                .save_small(&data)
+                .unwrap_or_else(|e| panic!("{name}: save_small failed: {e}"));
+
+            let loaded = vault
+                .load_small()
+                .unwrap_or_else(|e| panic!("{name}: load_small failed: {e}"));
+            assert_eq!(loaded, data, "{name}: small roundtrip mismatch");
+
+            backend
+                .mutate_slot(1, |bytes| {
+                    let payload_offset = crate::tmr::TMR_HEADER_GROUP_BYTES + 5;
+                    bytes[payload_offset] ^= 0b0000_0010;
+                })
+                .unwrap_or_else(|e| panic!("{name}: mutate_slot failed: {e}"));
+
+            let recovered = vault
+                .load_small()
+                .unwrap_or_else(|e| panic!("{name}: load_small after corruption failed: {e}"));
+            assert_eq!(recovered, data, "{name}: TMR recovery mismatch");
+        }
+
+        let file_cases = [("filesystem_save_small_atomic", small_data.clone())];
+
+        for (name, data) in file_cases {
+            let dir = tempfile::tempdir().unwrap();
+            let vault = ReliableVault::<TestData>::new_with_fs(dir.path(), "phase1");
+
+            vault
+                .save_small(&data)
+                .unwrap_or_else(|e| panic!("{name}: save_small failed: {e}"));
+
+            let loaded = vault
+                .load_small()
+                .unwrap_or_else(|e| panic!("{name}: load_small failed: {e}"));
+            assert_eq!(loaded, data, "{name}: filesystem roundtrip mismatch");
+
+            let mut entries = fs::read_dir(dir.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            entries.sort();
+            assert!(
+                entries.iter().all(|entry| !entry.contains(".tmp-")),
+                "{name}: temporary file should not remain: {entries:?}"
+            );
+        }
+    }
+
+    /// Phase1の異常系として、small APIのサイズ超過とsmall未存在時エラーを検証。
+    #[test]
+    fn test_phase1_error_cases() {
+        #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+        struct LargeCaseData {
+            payload: Vec<u8>,
+        }
+
+        let too_large = LargeCaseData {
+            payload: vec![0xEF; crate::SMALL_DATA_THRESHOLD_BYTES + 512],
+        };
+        let large_backend = MemoryBackend::new(3);
+        let large_vault = ReliableVault::<LargeCaseData, _>::new(large_backend, 3);
+
+        let save_small_error = match large_vault.save_small(&too_large) {
+            Ok(_) => panic!("save_small should fail for large payload"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                save_small_error,
+                Error::Io(ref error) if error.kind() == std::io::ErrorKind::InvalidInput
+            ),
+            "save_small large payload error mismatch: {save_small_error:?}"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let large_only_vault = ReliableVault::<JsonCaseData>::new_with_fs(dir.path(), "large-only");
+        let large_case = build_json_case_data(90, 2048, 16 * 1024);
+        large_only_vault
+            .save(&large_case, ProtectionLevel::Medium)
+            .unwrap();
+
+        let load_small_error = match large_only_vault.load_small() {
+            Ok(_) => panic!("load_small should fail when only large slots exist"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                load_small_error,
+                Error::Io(ref error) if error.kind() == std::io::ErrorKind::NotFound
+            ),
+            "load_small missing small slot error mismatch: {load_small_error:?}"
+        );
     }
 }

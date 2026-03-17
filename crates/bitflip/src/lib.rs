@@ -32,8 +32,10 @@ impl TryFrom<&str> for BitFlipTarget {
 
 /// ビット反転の注入パターンです。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum BitFlipMode {
     /// 反転位置を独立ランダムに選択します。
+    #[default]
     Independent,
     /// 隣接bitを含むMBU (Multi-Bit Upset) として注入します。
     Mbu {
@@ -42,11 +44,6 @@ pub enum BitFlipMode {
     },
 }
 
-impl Default for BitFlipMode {
-    fn default() -> Self {
-        Self::Independent
-    }
-}
 
 /// ビット反転注入の設定です。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

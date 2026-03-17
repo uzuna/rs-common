@@ -2,6 +2,7 @@ pub mod ecc;
 pub mod error;
 pub mod frame;
 pub mod metadata;
+pub mod rs;
 pub mod tmr;
 pub mod vault;
 
@@ -18,7 +19,7 @@ pub const SMALL_DATA_THRESHOLD_BYTES: usize = 4 * 1024;
 pub enum DataClass {
     /// 4KiB未満の小サイズデータ。Phase1ではTMRを適用します。
     Small,
-    /// 4KiB以上の大サイズデータ。Phase1では既存フレーム実装を暫定利用します。
+    /// 4KiB以上の大サイズデータ。Phase2ではRSセグメント化を適用します。
     Large,
 }
 

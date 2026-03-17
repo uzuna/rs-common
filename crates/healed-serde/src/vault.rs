@@ -1,6 +1,7 @@
 use crate::error::Error;
 use crate::frame::StorageFrame;
 use crate::metadata::MetaDataHeader;
+use crate::rs::RsStrategy;
 use crate::tmr::{TmrStrategy, TMR_HEADER_GROUP_BYTES};
 use crate::DataClass;
 use crate::ProtectionLevel;
@@ -58,6 +59,14 @@ fn decode_slot_payload(bytes: &[u8]) -> Result<SlotPayload, Error> {
         });
     }
 
+    if let Ok(slot) = RsStrategy::decode_record(bytes) {
+        return Ok(SlotPayload {
+            sequence: slot.sequence,
+            payload: slot.payload,
+            data_class: DataClass::Large,
+        });
+    }
+
     let frame = StorageFrame::recover(bytes)?;
     Ok(SlotPayload {
         sequence: frame.meta.sequence,
@@ -67,7 +76,9 @@ fn decode_slot_payload(bytes: &[u8]) -> Result<SlotPayload, Error> {
 }
 
 fn scan_slot_sequence(header_bytes: &[u8]) -> Option<u64> {
-    TmrStrategy::peek_sequence(header_bytes).or_else(|| scan_frame_sequence(header_bytes))
+    TmrStrategy::peek_sequence(header_bytes)
+        .or_else(|| RsStrategy::peek_sequence(header_bytes))
+        .or_else(|| scan_frame_sequence(header_bytes))
 }
 
 fn scan_frame_sequence(header_bytes: &[u8]) -> Option<u64> {
@@ -444,9 +455,39 @@ where
         Ok(bincode::deserialize(&latest.payload)?)
     }
 
+    /// 大サイズデータをRSセグメント化で保存します。
+    pub fn save_large(&self, data: &T) -> Result<(), Error> {
+        self.backend.ensure_backend_exists()?;
+
+        let payload = bincode::serialize(data)?;
+        if DataClass::from_payload_len(payload.len()) != DataClass::Large {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Serialized payload size {} is below large-data threshold {}",
+                    payload.len(),
+                    crate::SMALL_DATA_THRESHOLD_BYTES
+                ),
+            )
+            .into());
+        }
+
+        let sequence = self.next_sequence();
+        let target_slot = (sequence as usize) % self.num_slots;
+        let bytes = RsStrategy::encode_record(sequence, &payload)?;
+        self.backend.write_slot(target_slot, &bytes)
+    }
+
+    /// RSまたは従来フレームで保存された最新の大サイズデータを読み込みます。
+    pub fn load_large(&self) -> Result<T, Error> {
+        let latest = self.latest_slot(Some(DataClass::Large))?;
+        Ok(bincode::deserialize(&latest.payload)?)
+    }
+
     /// データを保存します。
     ///
     /// 現在の最大シーケンス番号を確認し、最も古いスロット（次のシーケンス番号 % スロット数）を上書きします。
+    /// 大サイズデータはRSセグメント化を使用し、小サイズは従来フレーム形式を維持します。
     pub fn save(&self, data: &T, level: ProtectionLevel) -> Result<(), Error> {
         self.backend.ensure_backend_exists()?;
         let new_sequence = self.next_sequence();
@@ -455,9 +496,12 @@ where
         // ペイロードのシリアライズ
         let payload = bincode::serialize(data)?;
 
-        // フレーム作成
-        let frame = StorageFrame::new(payload, new_sequence, level);
-        let bytes = frame.to_bytes()?;
+        let bytes = if DataClass::from_payload_len(payload.len()) == DataClass::Large {
+            RsStrategy::encode_record(new_sequence, &payload)?
+        } else {
+            let frame = StorageFrame::new(payload, new_sequence, level);
+            frame.to_bytes()?
+        };
 
         self.backend.write_slot(target_slot, &bytes)
     }
@@ -466,6 +510,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rs::{
+        RS_DATA_BYTES_PER_SEGMENT, RS_RECORD_HEADER_BYTES, RS_SHARD_BYTES, RS_TOTAL_SHARDS,
+    };
     use bitflip::{BitFlipConfig, BitFlipTarget};
     use serde::Deserialize;
     use std::path::Path;
@@ -483,6 +530,12 @@ mod tests {
         tags: Vec<String>,
         values: Vec<u64>,
         payload: String,
+    }
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+    struct LargeCaseData {
+        id: u64,
+        payload: Vec<u8>,
     }
 
     /// ストレステストで注入する故障シナリオ。
@@ -540,6 +593,27 @@ mod tests {
             tags: (0..8).map(|i| format!("tag-{id}-{i}")).collect(),
             values: (0..values_len).map(|i| (id + i as u64) * 3).collect(),
             payload: "x".repeat(payload_len),
+        }
+    }
+
+    fn build_large_case_data(id: u64, payload_len: usize) -> LargeCaseData {
+        LargeCaseData {
+            id,
+            payload: (0..payload_len)
+                .map(|index| ((id as usize + index) % 251) as u8)
+                .collect(),
+        }
+    }
+
+    fn corrupt_rs_segment_shards(bytes: &mut [u8], shard_indices: &[usize]) {
+        const RS_SEGMENT_HEADER_BYTES_FOR_TEST: usize = 24;
+        let shard_crc_table_bytes = RS_TOTAL_SHARDS * 4;
+        let shard_data_start =
+            RS_RECORD_HEADER_BYTES + RS_SEGMENT_HEADER_BYTES_FOR_TEST + shard_crc_table_bytes;
+
+        for (offset, shard_index) in shard_indices.iter().enumerate() {
+            let target = shard_data_start + (*shard_index * RS_SHARD_BYTES) + offset;
+            bytes[target] ^= 1u8 << (offset % 8);
         }
     }
 
@@ -1195,6 +1269,86 @@ mod tests {
                 Error::Io(ref error) if error.kind() == std::io::ErrorKind::NotFound
             ),
             "load_small missing small slot error mismatch: {load_small_error:?}"
+        );
+    }
+
+    /// Phase2の正常系として、RS保存/復元と2シャード欠損までの再構成を検証。
+    #[test]
+    fn test_phase2_ok_cases() {
+        let data = build_large_case_data(501, RS_DATA_BYTES_PER_SEGMENT / 2);
+        let backend = MemoryBackend::new(3);
+        let vault = ReliableVault::<LargeCaseData, _>::new(backend.clone(), 3);
+
+        vault
+            .save_large(&data)
+            .unwrap_or_else(|e| panic!("save_large failed: {e}"));
+
+        let loaded = vault
+            .load_large()
+            .unwrap_or_else(|e| panic!("load_large failed: {e}"));
+        assert_eq!(loaded, data, "phase2 roundtrip mismatch");
+
+        backend
+            .mutate_slot(1, |bytes| {
+                corrupt_rs_segment_shards(bytes, &[0, 1]);
+            })
+            .unwrap();
+
+        let recovered = vault
+            .load_large()
+            .unwrap_or_else(|e| panic!("load_large after 2-shard corruption failed: {e}"));
+        assert_eq!(recovered, data, "phase2 2-shard recovery mismatch");
+
+        let auto_data = build_large_case_data(502, RS_DATA_BYTES_PER_SEGMENT / 3);
+        vault
+            .save(&auto_data, ProtectionLevel::Medium)
+            .unwrap_or_else(|e| panic!("save(auto large) failed: {e}"));
+        let auto_loaded = vault
+            .load()
+            .unwrap_or_else(|e| panic!("load(auto large) failed: {e}"));
+        assert_eq!(auto_loaded, auto_data, "phase2 auto route mismatch");
+    }
+
+    /// Phase2の異常系として、save_largeのサイズ境界と復元不能欠損を検証。
+    #[test]
+    fn test_phase2_error_cases() {
+        let backend = MemoryBackend::new(3);
+        let vault = ReliableVault::<TestData, _>::new(backend, 3);
+        let small = TestData {
+            id: 1,
+            message: "small".to_string(),
+        };
+
+        let save_large_error = match vault.save_large(&small) {
+            Ok(_) => panic!("save_large should fail for small payload"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                save_large_error,
+                Error::Io(ref error) if error.kind() == std::io::ErrorKind::InvalidInput
+            ),
+            "save_large small payload error mismatch: {save_large_error:?}"
+        );
+
+        let backend = MemoryBackend::new(3);
+        let vault = ReliableVault::<LargeCaseData, _>::new(backend.clone(), 3);
+        let data = build_large_case_data(503, RS_DATA_BYTES_PER_SEGMENT / 2);
+        vault.save_large(&data).unwrap();
+
+        backend
+            .mutate_slot(1, |bytes| {
+                corrupt_rs_segment_shards(bytes, &[0, 1, 2]);
+            })
+            .unwrap();
+
+        let load_error = match vault.load_large() {
+            Ok(_) => panic!("load_large should fail after > parity shard erasures"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(load_error, Error::Io(ref e) if e.kind() == std::io::ErrorKind::NotFound),
+            "load_large too-many-erasures mismatch: {load_error:?}"
         );
     }
 }

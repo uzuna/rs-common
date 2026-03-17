@@ -1,4 +1,5 @@
 use crate::ecc::EccError;
+use crate::rs::RsError;
 use crate::tmr::TmrError;
 use bitflip::BitFlipError;
 
@@ -36,6 +37,9 @@ pub enum Error {
     #[error("TMR error: {0}")]
     Tmr(#[from] TmrError),
 
+    #[error("RS error: {0}")]
+    Rs(#[from] RsError),
+
     #[error("Serialization/deserialization error: {0}")]
     Bincode(#[from] Box<bincode::ErrorKind>),
 
@@ -54,7 +58,8 @@ impl Error {
             | Error::InvalidFrameFormat
             | Error::Ecc(_)
             | Error::BitFlip(_)
-            | Error::Tmr(_) => ErrorClass::Recoverable,
+            | Error::Tmr(_)
+            | Error::Rs(_) => ErrorClass::Recoverable,
             Error::Io(error) => match error.kind() {
                 std::io::ErrorKind::NotFound
                 | std::io::ErrorKind::InvalidData

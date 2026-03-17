@@ -2,6 +2,7 @@ use crate::error::Error;
 use crate::frame::StorageFrame;
 use crate::metadata::MetaDataHeader;
 use crate::ProtectionLevel;
+use bitflip::{BitFlipConfig, BitFlipWriter, BitFlipWriterError};
 use serde::{de::DeserializeOwned, Serialize};
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -28,10 +29,18 @@ pub trait StorageBackend {
     fn ensure_backend_exists(&self) -> Result<(), Error>;
 }
 
+fn map_bitflip_writer_error(error: BitFlipWriterError) -> Error {
+    match error {
+        BitFlipWriterError::BitFlip(e) => Error::BitFlip(e),
+        BitFlipWriterError::Io(e) => Error::Io(e),
+    }
+}
+
 /// 標準のファイルシステムをバックエンドとして使用する実装。
 pub struct FileSystemBackend {
     dir: PathBuf,
     filename_base: String,
+    bitflip_config: Option<BitFlipConfig>,
 }
 
 impl FileSystemBackend {
@@ -40,7 +49,14 @@ impl FileSystemBackend {
         Self {
             dir: dir.into(),
             filename_base: filename_base.into(),
+            bitflip_config: None,
         }
+    }
+
+    /// テスト/検証用途で保存時の故障注入を有効にします。
+    pub fn with_bitflip_for_tests(mut self, config: BitFlipConfig) -> Self {
+        self.bitflip_config = Some(config);
+        self
     }
 
     fn slot_path(&self, index: usize) -> PathBuf {
@@ -54,8 +70,19 @@ impl StorageBackend for FileSystemBackend {
     }
 
     fn write_slot(&self, index: usize, data: &[u8]) -> Result<(), Error> {
-        let mut file = File::create(self.slot_path(index))?;
-        file.write_all(data)?;
+        let file = File::create(self.slot_path(index))?;
+        let file = match self.bitflip_config {
+            Some(config) => {
+                let mut writer = BitFlipWriter::new(file, config);
+                writer.write_all(data)?;
+                writer.finish().map_err(map_bitflip_writer_error)?
+            }
+            None => {
+                let mut file = file;
+                file.write_all(data)?;
+                file
+            }
+        };
         file.sync_all()?;
         Ok(())
     }
@@ -81,6 +108,7 @@ impl StorageBackend for FileSystemBackend {
 #[derive(Debug, Clone)]
 pub struct MemoryBackend {
     slots: Arc<Mutex<Vec<Option<Vec<u8>>>>>,
+    bitflip_config: Option<BitFlipConfig>,
 }
 
 impl MemoryBackend {
@@ -89,7 +117,14 @@ impl MemoryBackend {
         assert!(num_slots > 0, "MemoryBackend requires at least 1 slot");
         Self {
             slots: Arc::new(Mutex::new(vec![None; num_slots])),
+            bitflip_config: None,
         }
+    }
+
+    /// テスト/検証用途で保存時の故障注入を有効にします。
+    pub fn with_bitflip_for_tests(mut self, config: BitFlipConfig) -> Self {
+        self.bitflip_config = Some(config);
+        self
     }
 
     fn lock_slots(&self) -> Result<std::sync::MutexGuard<'_, Vec<Option<Vec<u8>>>>, Error> {
@@ -150,7 +185,17 @@ impl StorageBackend for MemoryBackend {
     fn write_slot(&self, index: usize, data: &[u8]) -> Result<(), Error> {
         let mut slots = self.lock_slots()?;
         let slot = Self::slot_mut(&mut slots, index)?;
-        *slot = Some(data.to_vec());
+
+        let stored = match self.bitflip_config {
+            Some(config) => {
+                let mut writer = BitFlipWriter::new(Vec::<u8>::new(), config);
+                writer.write_all(data)?;
+                writer.finish().map_err(map_bitflip_writer_error)?
+            }
+            None => data.to_vec(),
+        };
+
+        *slot = Some(stored);
         Ok(())
     }
 
@@ -322,6 +367,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bitflip::{BitFlipConfig, BitFlipTarget};
     use serde::Deserialize;
     use std::path::Path;
 
@@ -373,6 +419,14 @@ mod tests {
         fs::write(path, bytes).unwrap();
     }
 
+    fn count_diff_bits(lhs: &[u8], rhs: &[u8]) -> usize {
+        assert_eq!(lhs.len(), rhs.len(), "length mismatch");
+        lhs.iter()
+            .zip(rhs.iter())
+            .map(|(l, r)| (l ^ r).count_ones() as usize)
+            .sum()
+    }
+
     fn assert_not_found(result: Result<TestData, Error>) {
         assert!(matches!(
             result,
@@ -409,6 +463,69 @@ mod tests {
             backend.read_slot(0),
             Err(Error::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound
         ));
+    }
+
+    /// BitFlip未設定時は保存データがそのまま保持されることを検証。
+    #[test]
+    fn test_backend_bitflip_disabled_by_default() {
+        let backend = MemoryBackend::new(3);
+        let payload = vec![0x5Au8; 64];
+
+        backend.write_slot(0, &payload).unwrap();
+        let stored = backend.read_slot(0).unwrap();
+
+        assert_eq!(stored, payload);
+    }
+
+    /// Memory/FileSystem の両バックエンドでBitFlip注入が機能することを検証。
+    #[test]
+    fn test_backend_bitflip_injection_enabled_cases() {
+        let payload = vec![0xA3u8; 64];
+        let cases = [
+            (
+                "memory_backend",
+                BitFlipConfig::new(5, Some(12345), BitFlipTarget::FullFrame),
+            ),
+            (
+                "filesystem_backend",
+                BitFlipConfig::new(5, Some(12345), BitFlipTarget::FullFrame),
+            ),
+        ];
+
+        for (name, config) in cases {
+            if name == "memory_backend" {
+                let backend = MemoryBackend::new(3).with_bitflip_for_tests(config);
+                backend
+                    .write_slot(1, &payload)
+                    .unwrap_or_else(|e| panic!("{name}: write_slot failed: {e}"));
+                let stored = backend
+                    .read_slot(1)
+                    .unwrap_or_else(|e| panic!("{name}: read_slot failed: {e}"));
+
+                assert_eq!(
+                    count_diff_bits(&payload, &stored),
+                    config.flip_bits,
+                    "{name}: unexpected flipped bit count"
+                );
+                continue;
+            }
+
+            let dir = tempfile::tempdir().unwrap();
+            let backend =
+                FileSystemBackend::new(dir.path(), "bitflip").with_bitflip_for_tests(config);
+            backend
+                .write_slot(2, &payload)
+                .unwrap_or_else(|e| panic!("{name}: write_slot failed: {e}"));
+            let stored = backend
+                .read_slot(2)
+                .unwrap_or_else(|e| panic!("{name}: read_slot failed: {e}"));
+
+            assert_eq!(
+                count_diff_bits(&payload, &stored),
+                config.flip_bits,
+                "{name}: unexpected flipped bit count"
+            );
+        }
     }
 
     /// MemoryBackendの境界外インデックスが InvalidInput として扱われることを検証。

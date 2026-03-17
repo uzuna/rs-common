@@ -1,4 +1,5 @@
 use crate::ecc::EccError;
+use bitflip::BitFlipError;
 
 /// ライブラリ全体で使用されるエラー型。
 #[derive(Debug, thiserror::Error)]
@@ -20,6 +21,9 @@ pub enum Error {
 
     #[error("ECC error: {0}")]
     Ecc(#[from] EccError),
+
+    #[error("Bit flip error: {0}")]
+    BitFlip(#[from] BitFlipError),
 
     #[error("Serialization/deserialization error: {0}")]
     Bincode(#[from] Box<bincode::ErrorKind>),

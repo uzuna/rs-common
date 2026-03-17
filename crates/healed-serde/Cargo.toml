@@ -9,6 +9,7 @@ thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 crc = "3.4.0"
 bincode = "=1.3.3"
+bitflip = { path = "../bitflip" }
 
 [dev-dependencies]
 tempfile = "3"

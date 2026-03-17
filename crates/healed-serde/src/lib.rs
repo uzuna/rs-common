@@ -4,6 +4,8 @@ pub mod frame;
 pub mod metadata;
 pub mod vault;
 
+pub use bitflip;
+
 use error::Error;
 use frame::StorageFrame;
 use serde::{Deserialize, Serialize};

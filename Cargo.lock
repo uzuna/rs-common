@@ -640,6 +640,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 
 [[package]]
+name = "bitflip"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "bitmaps"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2596,6 +2603,7 @@ name = "healed-serde"
 version = "0.1.1"
 dependencies = [
  "bincode",
+ "bitflip",
  "crc",
  "criterion",
  "secded",

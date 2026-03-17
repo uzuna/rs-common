@@ -24,3 +24,7 @@ harness = false
 [[bench]]
 name = "encode_decode_bench"
 harness = false
+
+[[bench]]
+name = "rs_phase2_bench"
+harness = false

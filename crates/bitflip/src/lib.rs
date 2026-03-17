@@ -31,8 +31,7 @@ impl TryFrom<&str> for BitFlipTarget {
 }
 
 /// ビット反転の注入パターンです。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BitFlipMode {
     /// 反転位置を独立ランダムに選択します。
     #[default]
@@ -43,7 +42,6 @@ pub enum BitFlipMode {
         max_adjacent_bits: usize,
     },
 }
-
 
 /// ビット反転注入の設定です。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -348,8 +346,8 @@ fn choose_mbu_offsets(
 
             if !candidates.is_empty() {
                 let start = candidates[rng.gen_index(candidates.len())];
-                for index in start..start + burst_len {
-                    selected[index] = true;
+                for selected in selected.iter_mut().skip(start).take(burst_len) {
+                    *selected = true;
                 }
                 remaining -= burst_len;
                 placed = true;

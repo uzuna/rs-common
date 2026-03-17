@@ -9,6 +9,7 @@ use bitflip::{BitFlipConfig, BitFlipWriter, BitFlipWriterError};
 use serde::{de::DeserializeOwned, Serialize};
 use std::fs::{self, File};
 use std::io::{Read, Write};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -27,6 +28,17 @@ pub trait StorageBackend {
 
     /// 指定されたインデックスのスロットにデータを書き込みます。
     fn write_slot(&self, index: usize, data: &[u8]) -> Result<(), Error>;
+
+    /// 逐次書き込みでスロットにデータを書き込みます。
+    fn write_slot_stream(
+        &self,
+        index: usize,
+        stream_writer: &mut dyn FnMut(&mut dyn Write) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let mut bytes = Vec::new();
+        stream_writer(&mut bytes)?;
+        self.write_slot(index, &bytes)
+    }
 
     /// スロットの先頭から指定された長さのデータを読み込みます。
     /// `save` 時のシーケンス番号スキャンを高速化するために使用されます。
@@ -163,6 +175,41 @@ impl StorageBackend for FileSystemBackend {
                 file
             }
         };
+        if let Err(error) = file.sync_all() {
+            let _ = fs::remove_file(&temp_path);
+            return Err(error.into());
+        }
+        if let Err(error) = fs::rename(&temp_path, &slot_path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(error.into());
+        }
+        self.sync_parent_dir()?;
+        Ok(())
+    }
+
+    fn write_slot_stream(
+        &self,
+        index: usize,
+        stream_writer: &mut dyn FnMut(&mut dyn Write) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.ensure_backend_exists()?;
+
+        let slot_path = self.slot_path(index);
+        let temp_path = self.slot_temp_path(index);
+        let file = File::create(&temp_path)?;
+        let file = match self.bitflip_config {
+            Some(config) => {
+                let mut writer = BitFlipWriter::new(file, config);
+                stream_writer(&mut writer)?;
+                writer.finish().map_err(map_bitflip_writer_error)?
+            }
+            None => {
+                let mut file = file;
+                stream_writer(&mut file)?;
+                file
+            }
+        };
+
         if let Err(error) = file.sync_all() {
             let _ = fs::remove_file(&temp_path);
             return Err(error.into());
@@ -418,6 +465,27 @@ where
         Ok(candidates.remove(0))
     }
 
+    fn large_slot_indexes_desc(&self) -> Result<Vec<usize>, Error> {
+        let mut candidates = Vec::new();
+
+        for index in 0..self.num_slots {
+            let header = match self.backend.read_header(index, SLOT_SCAN_BYTES) {
+                Ok(header) => header,
+                Err(error) if error.is_recoverable() => continue,
+                Err(error) => return Err(error),
+            };
+
+            let sequence =
+                RsStrategy::peek_sequence(&header).or_else(|| scan_frame_sequence(&header));
+            if let Some(sequence) = sequence {
+                candidates.push((sequence, index));
+            }
+        }
+
+        candidates.sort_by_key(|(sequence, _)| std::cmp::Reverse(*sequence));
+        Ok(candidates.into_iter().map(|(_, index)| index).collect())
+    }
+
     /// 最新の有効なデータを読み込みます。
     ///
     /// 全てのスロットを確認し、破損していないデータの中で最も新しいシーケンス番号を持つものを返します。
@@ -474,14 +542,68 @@ where
 
         let sequence = self.next_sequence();
         let target_slot = (sequence as usize) % self.num_slots;
-        let bytes = RsStrategy::encode_record(sequence, &payload)?;
-        self.backend.write_slot(target_slot, &bytes)
+        let mut writer = |sink: &mut dyn Write| -> Result<(), Error> {
+            RsStrategy::encode_record_to_writer(sequence, &payload, sink)?;
+            Ok(())
+        };
+        self.backend.write_slot_stream(target_slot, &mut writer)
     }
 
     /// RSまたは従来フレームで保存された最新の大サイズデータを読み込みます。
     pub fn load_large(&self) -> Result<T, Error> {
         let latest = self.latest_slot(Some(DataClass::Large))?;
         Ok(bincode::deserialize(&latest.payload)?)
+    }
+
+    /// 最新の大サイズスロットから、シリアライズ済みペイロードの指定バイト範囲を読み込みます。
+    pub fn load_large_range(&self, range: Range<usize>) -> Result<Vec<u8>, Error> {
+        if range.start > range.end {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Invalid large range: start {} is greater than end {}",
+                    range.start, range.end
+                ),
+            )
+            .into());
+        }
+
+        let candidates = self.large_slot_indexes_desc()?;
+        if candidates.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "No valid large-data slots found",
+            )
+            .into());
+        }
+
+        for index in candidates {
+            let bytes = match self.backend.read_slot(index) {
+                Ok(bytes) => bytes,
+                Err(error) if error.is_recoverable() => continue,
+                Err(error) => return Err(error),
+            };
+
+            if let Ok(partial) = RsStrategy::decode_payload_range(&bytes, range.clone()) {
+                return Ok(partial);
+            }
+
+            let frame = match StorageFrame::recover(&bytes) {
+                Ok(frame) => frame,
+                Err(error) if error.is_recoverable() => continue,
+                Err(error) => return Err(error),
+            };
+
+            let start = range.start.min(frame.payload.len());
+            let end = range.end.min(frame.payload.len());
+            return Ok(frame.payload[start..end].to_vec());
+        }
+
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "No valid large-data slots found",
+        )
+        .into())
     }
 
     /// データを保存します。
@@ -496,14 +618,17 @@ where
         // ペイロードのシリアライズ
         let payload = bincode::serialize(data)?;
 
-        let bytes = if DataClass::from_payload_len(payload.len()) == DataClass::Large {
-            RsStrategy::encode_record(new_sequence, &payload)?
+        if DataClass::from_payload_len(payload.len()) == DataClass::Large {
+            let mut writer = |sink: &mut dyn Write| -> Result<(), Error> {
+                RsStrategy::encode_record_to_writer(new_sequence, &payload, sink)?;
+                Ok(())
+            };
+            self.backend.write_slot_stream(target_slot, &mut writer)
         } else {
             let frame = StorageFrame::new(payload, new_sequence, level);
-            frame.to_bytes()?
-        };
-
-        self.backend.write_slot(target_slot, &bytes)
+            let bytes = frame.to_bytes()?;
+            self.backend.write_slot(target_slot, &bytes)
+        }
     }
 }
 
@@ -1272,10 +1397,10 @@ mod tests {
         );
     }
 
-    /// Phase2の正常系として、RS保存/復元と2シャード欠損までの再構成を検証。
+    /// Phase2の正常系として、RS保存/復元・範囲読込・2シャード欠損復元を検証。
     #[test]
     fn test_phase2_ok_cases() {
-        let data = build_large_case_data(501, RS_DATA_BYTES_PER_SEGMENT / 2);
+        let data = build_large_case_data(501, RS_DATA_BYTES_PER_SEGMENT + 2048);
         let backend = MemoryBackend::new(3);
         let vault = ReliableVault::<LargeCaseData, _>::new(backend.clone(), 3);
 
@@ -1287,6 +1412,18 @@ mod tests {
             .load_large()
             .unwrap_or_else(|e| panic!("load_large failed: {e}"));
         assert_eq!(loaded, data, "phase2 roundtrip mismatch");
+
+        let serialized = bincode::serialize(&data).unwrap();
+        let range_start = RS_DATA_BYTES_PER_SEGMENT.saturating_sub(64);
+        let range_end = (RS_DATA_BYTES_PER_SEGMENT + 64).min(serialized.len());
+        let partial = vault
+            .load_large_range(range_start..range_end)
+            .unwrap_or_else(|e| panic!("load_large_range failed: {e}"));
+        assert_eq!(
+            partial,
+            serialized[range_start..range_end].to_vec(),
+            "phase2 range read mismatch"
+        );
 
         backend
             .mutate_slot(1, |bytes| {
@@ -1309,7 +1446,7 @@ mod tests {
         assert_eq!(auto_loaded, auto_data, "phase2 auto route mismatch");
     }
 
-    /// Phase2の異常系として、save_largeのサイズ境界と復元不能欠損を検証。
+    /// Phase2の異常系として、save_large境界・不正範囲・復元不能欠損を検証。
     #[test]
     fn test_phase2_error_cases() {
         let backend = MemoryBackend::new(3);
@@ -1333,8 +1470,20 @@ mod tests {
 
         let backend = MemoryBackend::new(3);
         let vault = ReliableVault::<LargeCaseData, _>::new(backend.clone(), 3);
-        let data = build_large_case_data(503, RS_DATA_BYTES_PER_SEGMENT / 2);
+        let data = build_large_case_data(503, RS_DATA_BYTES_PER_SEGMENT + 256);
         vault.save_large(&data).unwrap();
+
+        let invalid_range_error = match vault.load_large_range(128..64) {
+            Ok(_) => panic!("load_large_range should fail for invalid range"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                invalid_range_error,
+                Error::Io(ref e) if e.kind() == std::io::ErrorKind::InvalidInput
+            ),
+            "load_large_range invalid range mismatch: {invalid_range_error:?}"
+        );
 
         backend
             .mutate_slot(1, |bytes| {
@@ -1349,6 +1498,15 @@ mod tests {
         assert!(
             matches!(load_error, Error::Io(ref e) if e.kind() == std::io::ErrorKind::NotFound),
             "load_large too-many-erasures mismatch: {load_error:?}"
+        );
+
+        let range_error = match vault.load_large_range(0..256) {
+            Ok(_) => panic!("load_large_range should fail after > parity shard erasures"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(range_error, Error::Io(ref e) if e.kind() == std::io::ErrorKind::NotFound),
+            "load_large_range too-many-erasures mismatch: {range_error:?}"
         );
     }
 }

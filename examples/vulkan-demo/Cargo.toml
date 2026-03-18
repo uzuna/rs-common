@@ -10,13 +10,13 @@ rust-version.workspace = true
 anyhow.workspace = true
 bytemuck = { version = "1.25", features = ["derive"] }
 cfg-if = "1"
-encase = { version = "0.10.0", features = ["glam"] }
+encase = { version = "0.12.0" }
 env_logger = "0.11"
 fxhash = "0.2.1"
-glam = { version = "0.29.3", features = ["bytemuck"] }
+glam = { version = "0.30.10", features = ["bytemuck", "encase"] }
 image = { workspace = true, features = ["png", "jpeg"], default-features = false }
 log = "0.4"
-nalgebra = { workspace = true, features = ["convert-glam029"] }
+nalgebra = { workspace = true, features = ["convert-glam030"] }
 pollster = "0.4"
 thiserror.workspace = true
 tobj = { version = "4.0.3", features = ["async"] }

@@ -30,11 +30,62 @@ interface api {
         temperature: f32,
     }
 
+    /// 128バイトの入力データ転送を測るベンチマーク入力
+    ///
+    /// `payload` は必ず 128 バイトとする。
+    record benchmark-input-128 {
+        payload: list<u8>,
+    }
+
+    /// 128バイトの出力データ転送を測るベンチマーク出力
+    ///
+    /// `payload` は必ず 128 バイトとする。
+    record benchmark-output-128 {
+        payload: list<u8>,
+    }
+
+    /// 1KBの入力データ転送を測るベンチマーク入力
+    ///
+    /// `payload` は必ず 1024 バイトとする。
+    record benchmark-input-1k {
+        payload: list<u8>,
+    }
+
+    /// 1KBの出力データ転送を測るベンチマーク出力
+    ///
+    /// `payload` は必ず 1024 バイトとする。
+    record benchmark-output-1k {
+        payload: list<u8>,
+    }
+
+    /// 4KBの入力データ転送を測るベンチマーク入力
+    ///
+    /// `payload` は必ず 4096 バイトとする。
+    record benchmark-input-4k {
+        payload: list<u8>,
+    }
+
+    /// 4KBの出力データ転送を測るベンチマーク出力
+    ///
+    /// `payload` は必ず 4096 バイトとする。
+    record benchmark-output-4k {
+        payload: list<u8>,
+    }
+
     /// センサーデータを受け取りモーター出力を返す制御関数
     update: func(input: list<sensor-data>) -> list<motor-output>;
 
     /// プラグインの内部状態を返す
     get-status: func() -> plugin-status;
+
+    /// 128バイト入出力の呼び出しコストを測るベンチマーク関数
+    benchmark-128: func(input: benchmark-input-128) -> benchmark-output-128;
+
+    /// 1KB入出力の呼び出しコストを測るベンチマーク関数
+    benchmark-1k: func(input: benchmark-input-1k) -> benchmark-output-1k;
+
+    /// 4KB入出力の呼び出しコストを測るベンチマーク関数
+    benchmark-4k: func(input: benchmark-input-4k) -> benchmark-output-4k;
 }
 
 /// MoonBitプラグインのエントリーポイント

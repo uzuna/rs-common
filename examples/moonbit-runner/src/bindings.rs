@@ -9,7 +9,10 @@ use crate::context::ExecStore;
 // インターフェースアクセサ: instance.local_moonbit_control_api()
 wasmtime::component::bindgen!(in "wit/world.wit");
 
-pub use exports::local::moonbit_control::api::{MotorOutput, PluginStatus, SensorData};
+pub use exports::local::moonbit_control::api::{
+    BenchmarkInput128, BenchmarkInput1k, BenchmarkInput4k, BenchmarkOutput128,
+    BenchmarkOutput1k, BenchmarkOutput4k, MotorOutput, PluginStatus, SensorData,
+};
 
 /// MoonBitプラグインの呼び出しラッパー
 ///
@@ -37,5 +40,29 @@ impl PluginInst {
     pub fn get_status(&mut self) -> anyhow::Result<PluginStatus> {
         let ctrl = self.instance.local_moonbit_control_api();
         Ok(ctrl.call_get_status(&mut self.store)?)
+    }
+
+    /// 128バイトの benchmark 入出力関数を呼び出す
+    #[allow(dead_code)]
+    pub fn benchmark_128(
+        &mut self,
+        input: &BenchmarkInput128,
+    ) -> anyhow::Result<BenchmarkOutput128> {
+        let ctrl = self.instance.local_moonbit_control_api();
+        Ok(ctrl.call_benchmark_128(&mut self.store, input)?)
+    }
+
+    /// 1KBの benchmark 入出力関数を呼び出す
+    #[allow(dead_code)]
+    pub fn benchmark_1k(&mut self, input: &BenchmarkInput1k) -> anyhow::Result<BenchmarkOutput1k> {
+        let ctrl = self.instance.local_moonbit_control_api();
+        Ok(ctrl.call_benchmark_1k(&mut self.store, input)?)
+    }
+
+    /// 4KBの benchmark 入出力関数を呼び出す
+    #[allow(dead_code)]
+    pub fn benchmark_4k(&mut self, input: &BenchmarkInput4k) -> anyhow::Result<BenchmarkOutput4k> {
+        let ctrl = self.instance.local_moonbit_control_api();
+        Ok(ctrl.call_benchmark_4k(&mut self.store, input)?)
     }
 }

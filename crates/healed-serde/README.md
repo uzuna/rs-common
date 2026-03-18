@@ -13,6 +13,19 @@
 *   **整合性チェック**: CRC32によるデータ整合性の検証を行います。
 *   **柔軟な保護レベル**: データの重要度やサイズに応じて、保護レベル（オーバーヘッドと保護性能のトレードオフ）を選択可能です。
 *   **抽象化されたストレージ**: `StorageBackend` トレイトを実装することで、ファイルシステム以外のバックエンド（KVS、mmapなど）にも対応可能です。
+*   **透過圧縮（Phase4）**: `zstd` を既定で有効化し、データ種別（Small/Large）ごとに圧縮の有効/無効を切り替えできます。
+
+## Cargo Feature
+
+*   `zstd-compression`（default）: 透過圧縮を有効化します。
+
+```toml
+[dependencies]
+healed-serde = { version = "0.1.1" }
+
+# 圧縮を明示的に無効化する場合
+healed-serde = { version = "0.1.1", default-features = false }
+```
 
 ## 使用方法
 
@@ -59,6 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use healed_serde::vault::ReliableVault;
+use healed_serde::compression::CompressionPolicy;
 use healed_serde::ProtectionLevel;
 use serde::{Serialize, Deserialize};
 
@@ -72,7 +86,12 @@ struct DeviceConfig {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 保存先ディレクトリとファイル名のベースを指定
     // 例: ./data/device_config.0, ./data/device_config.1, ...
-    let vault = ReliableVault::new_with_fs("./data", "device_config");
+    let vault = ReliableVault::new_with_fs("./data", "device_config")
+        .with_compression_policy(
+            CompressionPolicy::enabled()
+                .with_small_enabled(true)
+                .with_large_enabled(true),
+        );
 
     let config = DeviceConfig {
         id: 12345,
@@ -90,6 +109,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Loaded: {:?}", loaded_config);
     Ok(())
 }
+```
+
+### スクラブ（自己修復）
+
+`scrub` は全スロットを走査し、復元可能な破損を再書き戻しします。
+`scrub_with_budget` は1回の実行で許可する修復書き込み数を制御できます。
+
+```rust
+use healed_serde::vault::ReliableVault;
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let vault = ReliableVault::<Vec<u8>>::new_with_fs("./data", "state");
+let report = vault.scrub_with_budget(2)?;
+println!(
+    "scanned={}, healthy={}, repaired={}, recoverable_error={}, budget_skipped={}",
+    report.scanned_slots,
+    report.healthy_slots,
+    report.repaired_slots,
+    report.recoverable_error_slots,
+    report.budget_skipped_slots,
+);
+# Ok(())
+# }
 ```
 
 ## 保護レベル (ProtectionLevel)
@@ -114,3 +156,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 2.  **Secondary Header (16 bytes)**: Primary Headerのバックアップコピー。
 3.  **Payload**: ユーザーデータ。指定された `ProtectionLevel` に基づいてブロック分割され、ECCエンコードされています。
 4.  **Footer (8 bytes)**: 全体のCRC32チェックサムとシーケンス番号の検証用データ。
+
+## 既知の制約
+
+*   `load_large_range` は非圧縮データでは必要セグメントのみ復元しますが、圧縮データでは展開のためにレコード全体の復元が必要です。
+*   圧縮後のデータ長が元データ以上になる場合は、圧縮せず元データを保存します。
+*   `zstd-compression` を無効化したビルドでは、圧縮済みペイロードの読み込みは `InvalidData` エラーになります。

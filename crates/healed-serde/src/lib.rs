@@ -1,12 +1,39 @@
+pub mod compression;
 pub mod ecc;
 pub mod error;
 pub mod frame;
 pub mod metadata;
+pub mod rs;
+pub mod tmr;
 pub mod vault;
+
+pub use bitflip;
 
 use error::Error;
 use frame::StorageFrame;
 use serde::{Deserialize, Serialize};
+
+pub const SMALL_DATA_THRESHOLD_BYTES: usize = 4 * 1024;
+
+/// 保護戦略の選択に用いるデータ分類です。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataClass {
+    /// 4KiB未満の小サイズデータ。Phase1ではTMRを適用します。
+    Small,
+    /// 4KiB以上の大サイズデータ。Phase2ではRSセグメント化を適用します。
+    Large,
+}
+
+impl DataClass {
+    /// ペイロード長からデータ分類を決定します。
+    pub const fn from_payload_len(payload_len: usize) -> Self {
+        if payload_len < SMALL_DATA_THRESHOLD_BYTES {
+            Self::Small
+        } else {
+            Self::Large
+        }
+    }
+}
 
 /// データ保護レベル。
 ///

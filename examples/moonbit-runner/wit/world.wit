@@ -1,0 +1,43 @@
+package local:moonbit-control@0.1.0;
+
+/// プラグイン制御APIインターフェース
+interface api {
+    /// モーター制御の入力データ（仮定義：別途確定予定）
+    record sensor-data {
+        /// モーター負荷
+        load: f32,
+        /// モーターポジション
+        position: f32,
+        /// 追加センサー値（省略可）
+        extra: option<f32>,
+    }
+
+    /// モーター制御の出力データ（仮定義：別途確定予定）
+    record motor-output {
+        /// 目標位置
+        position: f32,
+        /// 出力トルク
+        torque: f32,
+    }
+
+    /// プラグインの内部状態
+    record plugin-status {
+        /// 稼働中フラグ
+        running: bool,
+        /// エラーコード（0=正常）
+        error-code: u32,
+        /// 内部温度
+        temperature: f32,
+    }
+
+    /// センサーデータを受け取りモーター出力を返す制御関数
+    update: func(input: list<sensor-data>) -> list<motor-output>;
+
+    /// プラグインの内部状態を返す
+    get-status: func() -> plugin-status;
+}
+
+/// MoonBitプラグインのエントリーポイント
+world plugin {
+    export api;
+}

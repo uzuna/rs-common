@@ -448,7 +448,7 @@ impl RsStrategy {
         data_block[0..chunk.len()].copy_from_slice(chunk);
 
         let mut shards = vec![vec![0u8; RS_SHARD_BYTES]; RS_TOTAL_SHARDS];
-        for (shard_index, shard) in shards.iter_mut().enumerate() {
+        for (shard_index, shard) in shards.iter_mut().take(RS_DATA_SHARDS).enumerate() {
             let start = shard_index * RS_SHARD_BYTES;
             let end = start + RS_SHARD_BYTES;
             shard.copy_from_slice(&data_block[start..end]);

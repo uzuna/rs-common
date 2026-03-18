@@ -56,10 +56,18 @@ fn map_bitflip_writer_error(error: BitFlipWriterError) -> Error {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum SlotEncoding {
+    Tmr,
+    Rs,
+    Frame(ProtectionLevel),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct SlotPayload {
     sequence: u64,
     payload: Vec<u8>,
     data_class: DataClass,
+    encoding: SlotEncoding,
 }
 
 fn decode_slot_payload(bytes: &[u8]) -> Result<SlotPayload, Error> {
@@ -68,6 +76,7 @@ fn decode_slot_payload(bytes: &[u8]) -> Result<SlotPayload, Error> {
             sequence: slot.sequence,
             payload: slot.payload,
             data_class: DataClass::Small,
+            encoding: SlotEncoding::Tmr,
         });
     }
 
@@ -76,15 +85,29 @@ fn decode_slot_payload(bytes: &[u8]) -> Result<SlotPayload, Error> {
             sequence: slot.sequence,
             payload: slot.payload,
             data_class: DataClass::Large,
+            encoding: SlotEncoding::Rs,
         });
     }
 
     let frame = StorageFrame::recover(bytes)?;
+    let level = frame.meta.level;
     Ok(SlotPayload {
         sequence: frame.meta.sequence,
         payload: frame.payload,
         data_class: DataClass::Large,
+        encoding: SlotEncoding::Frame(level),
     })
+}
+
+fn encode_slot_payload(slot: &SlotPayload) -> Result<Vec<u8>, Error> {
+    match slot.encoding {
+        SlotEncoding::Tmr => Ok(TmrStrategy::encode_tmr(slot.sequence, &slot.payload)?),
+        SlotEncoding::Rs => Ok(RsStrategy::encode_record(slot.sequence, &slot.payload)?),
+        SlotEncoding::Frame(level) => {
+            let frame = StorageFrame::new(slot.payload.clone(), slot.sequence, level);
+            frame.to_bytes()
+        }
+    }
 }
 
 fn scan_slot_sequence(header_bytes: &[u8]) -> Option<u64> {
@@ -381,6 +404,16 @@ pub struct ReliableVault<T, B: StorageBackend = FileSystemBackend> {
     _phantom: std::marker::PhantomData<T>,
 }
 
+/// スクラブ実行結果の集計情報。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ScrubReport {
+    pub scanned_slots: usize,
+    pub healthy_slots: usize,
+    pub repaired_slots: usize,
+    pub recoverable_error_slots: usize,
+    pub budget_skipped_slots: usize,
+}
+
 impl<T> ReliableVault<T, FileSystemBackend>
 where
     T: Serialize + DeserializeOwned,
@@ -410,26 +443,53 @@ where
         }
     }
 
-    fn next_sequence(&self) -> u64 {
+    fn next_generation_target(&self) -> Result<(u64, usize), Error> {
         let mut max_sequence = 0;
         let mut found_any = false;
+        let mut sequenced_slots = Vec::with_capacity(self.num_slots);
+        let mut empty_slots = Vec::new();
 
         for index in 0..self.num_slots {
-            let Ok(buffer) = self.backend.read_header(index, SLOT_SCAN_BYTES) else {
-                continue;
+            let header = match self.backend.read_header(index, SLOT_SCAN_BYTES) {
+                Ok(header) => header,
+                Err(error) if error.is_recoverable() => {
+                    empty_slots.push(index);
+                    continue;
+                }
+                Err(error) => return Err(error),
             };
 
-            if let Some(sequence) = scan_slot_sequence(&buffer) {
+            if let Some(sequence) = scan_slot_sequence(&header) {
                 max_sequence = max_sequence.max(sequence);
                 found_any = true;
+                sequenced_slots.push((sequence, index));
+            } else {
+                empty_slots.push(index);
             }
         }
 
-        if found_any {
-            max_sequence + 1
+        let next_sequence = if found_any {
+            max_sequence.saturating_add(1)
         } else {
             1
-        }
+        };
+
+        let target_slot = if !empty_slots.is_empty() {
+            let preferred_slot = (next_sequence as usize) % self.num_slots;
+            if empty_slots.contains(&preferred_slot) {
+                preferred_slot
+            } else {
+                empty_slots[0]
+            }
+        } else {
+            sequenced_slots.sort_by_key(|(sequence, index)| (*sequence, *index));
+            sequenced_slots
+                .first()
+                .map(|(_, index)| *index)
+                .unwrap_or(0)
+        };
+
+        Ok((next_sequence, target_slot))
     }
 
     fn latest_slot(&self, expected_class: Option<DataClass>) -> Result<SlotPayload, Error> {
@@ -511,8 +571,7 @@ where
             .into());
         }
 
-        let sequence = self.next_sequence();
-        let target_slot = (sequence as usize) % self.num_slots;
+        let (sequence, target_slot) = self.next_generation_target()?;
         let bytes = TmrStrategy::encode_tmr(sequence, &payload)?;
         self.backend.write_slot(target_slot, &bytes)
     }
@@ -540,8 +599,7 @@ where
             .into());
         }
 
-        let sequence = self.next_sequence();
-        let target_slot = (sequence as usize) % self.num_slots;
+        let (sequence, target_slot) = self.next_generation_target()?;
         let mut writer = |sink: &mut dyn Write| -> Result<(), Error> {
             RsStrategy::encode_record_to_writer(sequence, &payload, sink)?;
             Ok(())
@@ -606,14 +664,64 @@ where
         .into())
     }
 
+    /// 全スロットを1巡し、復元可能な破損を再書き戻しで修復します。
+    pub fn scrub(&self) -> Result<ScrubReport, Error> {
+        self.scrub_with_budget(usize::MAX)
+    }
+
+    /// 全スロットを1巡し、復元可能な破損を修復します。
+    ///
+    /// `max_repair_writes` で1回のスクラブで許容する修復書き込み回数を制限できます。
+    pub fn scrub_with_budget(&self, max_repair_writes: usize) -> Result<ScrubReport, Error> {
+        self.backend.ensure_backend_exists()?;
+        let mut report = ScrubReport::default();
+
+        for index in 0..self.num_slots {
+            report.scanned_slots += 1;
+
+            let bytes = match self.backend.read_slot(index) {
+                Ok(bytes) => bytes,
+                Err(error) if error.is_recoverable() => {
+                    report.recoverable_error_slots += 1;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+
+            let decoded = match decode_slot_payload(&bytes) {
+                Ok(decoded) => decoded,
+                Err(error) if error.is_recoverable() => {
+                    report.recoverable_error_slots += 1;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+
+            let repaired_bytes = encode_slot_payload(&decoded)?;
+            if repaired_bytes == bytes {
+                report.healthy_slots += 1;
+                continue;
+            }
+
+            if report.repaired_slots >= max_repair_writes {
+                report.budget_skipped_slots += 1;
+                continue;
+            }
+
+            self.backend.write_slot(index, &repaired_bytes)?;
+            report.repaired_slots += 1;
+        }
+
+        Ok(report)
+    }
+
     /// データを保存します。
     ///
-    /// 現在の最大シーケンス番号を確認し、最も古いスロット（次のシーケンス番号 % スロット数）を上書きします。
+    /// 現在の最大シーケンス番号を確認し、最も古い世代を保持するスロットを上書きします。
     /// 大サイズデータはRSセグメント化を使用し、小サイズは従来フレーム形式を維持します。
     pub fn save(&self, data: &T, level: ProtectionLevel) -> Result<(), Error> {
         self.backend.ensure_backend_exists()?;
-        let new_sequence = self.next_sequence();
-        let target_slot = (new_sequence as usize) % self.num_slots;
+        let (new_sequence, target_slot) = self.next_generation_target()?;
 
         // ペイロードのシリアライズ
         let payload = bincode::serialize(data)?;
@@ -739,6 +847,65 @@ mod tests {
         for (offset, shard_index) in shard_indices.iter().enumerate() {
             let target = shard_data_start + (*shard_index * RS_SHARD_BYTES) + offset;
             bytes[target] ^= 1u8 << (offset % 8);
+        }
+    }
+
+    fn first_present_slot(backend: &MemoryBackend, num_slots: usize) -> (usize, Vec<u8>) {
+        for index in 0..num_slots {
+            if let Ok(bytes) = backend.read_slot(index) {
+                return (index, bytes);
+            }
+        }
+        panic!("no present slot found");
+    }
+
+    fn collect_slot_sequences(backend: &MemoryBackend, num_slots: usize) -> Vec<(usize, u64)> {
+        let mut entries = Vec::new();
+        for index in 0..num_slots {
+            let Ok(header) = backend.read_header(index, SLOT_SCAN_BYTES) else {
+                continue;
+            };
+            if let Some(sequence) = scan_slot_sequence(&header) {
+                entries.push((index, sequence));
+            }
+        }
+        entries
+    }
+
+    #[derive(Clone)]
+    struct WriteFailBackend {
+        inner: MemoryBackend,
+        fail_index: usize,
+    }
+
+    impl WriteFailBackend {
+        fn new(inner: MemoryBackend, fail_index: usize) -> Self {
+            Self { inner, fail_index }
+        }
+    }
+
+    impl StorageBackend for WriteFailBackend {
+        fn read_slot(&self, index: usize) -> Result<Vec<u8>, Error> {
+            self.inner.read_slot(index)
+        }
+
+        fn write_slot(&self, index: usize, data: &[u8]) -> Result<(), Error> {
+            if index == self.fail_index {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected write failure",
+                )
+                .into());
+            }
+            self.inner.write_slot(index, data)
+        }
+
+        fn read_header(&self, index: usize, len: usize) -> Result<Vec<u8>, Error> {
+            self.inner.read_header(index, len)
+        }
+
+        fn ensure_backend_exists(&self) -> Result<(), Error> {
+            self.inner.ensure_backend_exists()
         }
     }
 
@@ -1508,5 +1675,174 @@ mod tests {
             matches!(range_error, Error::Io(ref e) if e.kind() == std::io::ErrorKind::NotFound),
             "load_large_range too-many-erasures mismatch: {range_error:?}"
         );
+    }
+
+    /// Phase3の値域確認として、スクラブ修復予算の境界動作を検証。
+    #[test]
+    fn test_phase3_value_range() {
+        let cases = [
+            ("budget_zero", 0usize, 0usize, 1usize),
+            ("budget_one", 1usize, 1usize, 0usize),
+        ];
+
+        for (name, budget, expected_repaired, expected_budget_skipped) in cases {
+            let backend = MemoryBackend::new(3);
+            let vault = ReliableVault::<TestData, _>::new(backend.clone(), 3);
+            let data = TestData {
+                id: 300,
+                message: format!("phase3-{name}"),
+            };
+            vault
+                .save_small(&data)
+                .unwrap_or_else(|e| panic!("{name}: save_small failed: {e}"));
+
+            let (slot_index, original_bytes) = first_present_slot(&backend, 3);
+            backend
+                .mutate_slot(slot_index, |bytes| {
+                    bytes[0] ^= 0b0000_0001;
+                })
+                .unwrap_or_else(|e| panic!("{name}: mutate_slot failed: {e}"));
+            let corrupted_bytes = backend
+                .read_slot(slot_index)
+                .unwrap_or_else(|e| panic!("{name}: read_slot failed: {e}"));
+
+            let report = vault
+                .scrub_with_budget(budget)
+                .unwrap_or_else(|e| panic!("{name}: scrub_with_budget failed: {e}"));
+            assert_eq!(report.scanned_slots, 3, "{name}: scanned slots mismatch");
+            assert_eq!(
+                report.repaired_slots, expected_repaired,
+                "{name}: repaired slots mismatch"
+            );
+            assert_eq!(
+                report.budget_skipped_slots, expected_budget_skipped,
+                "{name}: budget skipped slots mismatch"
+            );
+
+            let loaded = vault
+                .load_small()
+                .unwrap_or_else(|e| panic!("{name}: load_small failed: {e}"));
+            assert_eq!(loaded, data, "{name}: load_small mismatch after scrub");
+
+            let current_bytes = backend
+                .read_slot(slot_index)
+                .unwrap_or_else(|e| panic!("{name}: read_slot after scrub failed: {e}"));
+            if expected_repaired == 0 {
+                assert_eq!(
+                    current_bytes, corrupted_bytes,
+                    "{name}: bytes should remain corrupted when budget is zero"
+                );
+            } else {
+                assert_eq!(
+                    current_bytes, original_bytes,
+                    "{name}: scrub should restore canonical bytes"
+                );
+            }
+        }
+    }
+
+    /// Phase3の正常系として、世代ローテーションとスクラブ修復を検証。
+    #[test]
+    fn test_phase3_ok_cases() {
+        let cases = [("rotation_and_scrub", 5usize, 7u64, 1usize)];
+
+        for (name, num_slots, save_count, budget) in cases {
+            let backend = MemoryBackend::new(num_slots);
+            let vault = ReliableVault::<TestData, _>::new(backend.clone(), num_slots);
+
+            for id in 1..=save_count {
+                let data = TestData {
+                    id: id as u32,
+                    message: format!("{name}-{id}"),
+                };
+                vault
+                    .save_small(&data)
+                    .unwrap_or_else(|e| panic!("{name}: save_small({id}) failed: {e}"));
+            }
+
+            let latest = vault
+                .load_small()
+                .unwrap_or_else(|e| panic!("{name}: load_small failed: {e}"));
+            assert_eq!(latest.id as u64, save_count, "{name}: latest id mismatch");
+
+            let mut sequence_entries = collect_slot_sequences(&backend, num_slots);
+            sequence_entries.sort_by_key(|(_, sequence)| *sequence);
+            let expected_sequences =
+                ((save_count - num_slots as u64 + 1)..=save_count).collect::<Vec<_>>();
+            let actual_sequences = sequence_entries
+                .iter()
+                .map(|(_, sequence)| *sequence)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                actual_sequences, expected_sequences,
+                "{name}: slot generation range mismatch"
+            );
+
+            let (latest_slot_index, _) = sequence_entries
+                .last()
+                .copied()
+                .unwrap_or_else(|| panic!("{name}: latest slot not found"));
+            let original_latest_bytes = backend
+                .read_slot(latest_slot_index)
+                .unwrap_or_else(|e| panic!("{name}: read latest slot failed: {e}"));
+
+            backend
+                .mutate_slot(latest_slot_index, |bytes| {
+                    bytes[0] ^= 0b0000_0010;
+                })
+                .unwrap_or_else(|e| panic!("{name}: mutate latest slot failed: {e}"));
+
+            let report = vault
+                .scrub_with_budget(budget)
+                .unwrap_or_else(|e| panic!("{name}: scrub_with_budget failed: {e}"));
+            assert_eq!(report.repaired_slots, 1, "{name}: repaired slots mismatch");
+
+            let repaired_latest_bytes = backend
+                .read_slot(latest_slot_index)
+                .unwrap_or_else(|e| panic!("{name}: read latest slot after scrub failed: {e}"));
+            assert_eq!(
+                repaired_latest_bytes, original_latest_bytes,
+                "{name}: scrub should restore latest slot bytes"
+            );
+        }
+    }
+
+    /// Phase3の異常系として、スクラブ再書き込み失敗時のエラー伝播を検証。
+    #[test]
+    fn test_phase3_error_cases() {
+        let cases = [("permission_denied", std::io::ErrorKind::PermissionDenied)];
+
+        for (name, expected_kind) in cases {
+            let backend = MemoryBackend::new(3);
+            let warmup_vault = ReliableVault::<TestData, _>::new(backend.clone(), 3);
+            let data = TestData {
+                id: 401,
+                message: format!("{name}-data"),
+            };
+            warmup_vault
+                .save_small(&data)
+                .unwrap_or_else(|e| panic!("{name}: save_small failed: {e}"));
+
+            let (slot_index, _) = first_present_slot(&backend, 3);
+            backend
+                .mutate_slot(slot_index, |bytes| {
+                    bytes[0] ^= 0b0000_0001;
+                })
+                .unwrap_or_else(|e| panic!("{name}: mutate_slot failed: {e}"));
+
+            let vault = ReliableVault::<TestData, _>::new(
+                WriteFailBackend::new(backend.clone(), slot_index),
+                3,
+            );
+            let scrub_error = match vault.scrub_with_budget(1) {
+                Ok(_) => panic!("{name}: scrub_with_budget should fail"),
+                Err(error) => error,
+            };
+
+            assert!(
+                matches!(scrub_error, Error::Io(ref e) if e.kind() == expected_kind),
+                "{name}: scrub error mismatch: {scrub_error:?}"
+            );
+        }
     }
 }

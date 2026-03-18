@@ -1,3 +1,4 @@
+pub mod compression;
 pub mod ecc;
 pub mod error;
 pub mod frame;

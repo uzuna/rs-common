@@ -1,3 +1,7 @@
+use crate::compression::{
+    is_compressed_payload, maybe_compress_payload, maybe_decompress_payload, CompressionPolicy,
+    COMPRESSED_HEADER_BYTES,
+};
 use crate::error::Error;
 use crate::frame::StorageFrame;
 use crate::metadata::MetaDataHeader;
@@ -91,10 +95,16 @@ fn decode_slot_payload(bytes: &[u8]) -> Result<SlotPayload, Error> {
 
     let frame = StorageFrame::recover(bytes)?;
     let level = frame.meta.level;
+    let original_len = if is_compressed_payload(&frame.payload) {
+        maybe_decompress_payload(&frame.payload)?.len()
+    } else {
+        frame.payload.len()
+    };
+    let data_class = DataClass::from_payload_len(original_len);
     Ok(SlotPayload {
         sequence: frame.meta.sequence,
         payload: frame.payload,
-        data_class: DataClass::Large,
+        data_class,
         encoding: SlotEncoding::Frame(level),
     })
 }
@@ -401,6 +411,7 @@ impl StorageBackend for MemoryBackend {
 pub struct ReliableVault<T, B: StorageBackend = FileSystemBackend> {
     backend: B,
     num_slots: usize,
+    compression_policy: CompressionPolicy,
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -439,8 +450,20 @@ where
         Self {
             backend,
             num_slots,
+            compression_policy: CompressionPolicy::default(),
             _phantom: std::marker::PhantomData,
         }
+    }
+
+    /// データ分類ごとの圧縮ポリシーを設定します。
+    pub fn with_compression_policy(mut self, compression_policy: CompressionPolicy) -> Self {
+        self.compression_policy = compression_policy;
+        self
+    }
+
+    /// 現在の圧縮ポリシーを返します。
+    pub fn compression_policy(&self) -> CompressionPolicy {
+        self.compression_policy
     }
 
     fn next_generation_target(&self) -> Result<(u64, usize), Error> {
@@ -551,25 +574,32 @@ where
     /// 全てのスロットを確認し、破損していないデータの中で最も新しいシーケンス番号を持つものを返します。
     pub fn load(&self) -> Result<T, Error> {
         let latest = self.latest_slot(None)?;
-        Ok(bincode::deserialize(&latest.payload)?)
+        let payload = maybe_decompress_payload(&latest.payload)?;
+        Ok(bincode::deserialize(&payload)?)
     }
 
     /// 小サイズデータをTMRで保存します。
     pub fn save_small(&self, data: &T) -> Result<(), Error> {
         self.backend.ensure_backend_exists()?;
 
-        let payload = bincode::serialize(data)?;
-        if DataClass::from_payload_len(payload.len()) != DataClass::Small {
+        let serialized_payload = bincode::serialize(data)?;
+        if DataClass::from_payload_len(serialized_payload.len()) != DataClass::Small {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!(
                     "Serialized payload size {} exceeds small-data threshold {}",
-                    payload.len(),
+                    serialized_payload.len(),
                     crate::SMALL_DATA_THRESHOLD_BYTES
                 ),
             )
             .into());
         }
+
+        let payload = maybe_compress_payload(
+            &serialized_payload,
+            DataClass::Small,
+            self.compression_policy,
+        )?;
 
         let (sequence, target_slot) = self.next_generation_target()?;
         let bytes = TmrStrategy::encode_tmr(sequence, &payload)?;
@@ -579,25 +609,32 @@ where
     /// TMRで保存された最新の小サイズデータを読み込みます。
     pub fn load_small(&self) -> Result<T, Error> {
         let latest = self.latest_slot(Some(DataClass::Small))?;
-        Ok(bincode::deserialize(&latest.payload)?)
+        let payload = maybe_decompress_payload(&latest.payload)?;
+        Ok(bincode::deserialize(&payload)?)
     }
 
     /// 大サイズデータをRSセグメント化で保存します。
     pub fn save_large(&self, data: &T) -> Result<(), Error> {
         self.backend.ensure_backend_exists()?;
 
-        let payload = bincode::serialize(data)?;
-        if DataClass::from_payload_len(payload.len()) != DataClass::Large {
+        let serialized_payload = bincode::serialize(data)?;
+        if DataClass::from_payload_len(serialized_payload.len()) != DataClass::Large {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!(
                     "Serialized payload size {} is below large-data threshold {}",
-                    payload.len(),
+                    serialized_payload.len(),
                     crate::SMALL_DATA_THRESHOLD_BYTES
                 ),
             )
             .into());
         }
+
+        let payload = maybe_compress_payload(
+            &serialized_payload,
+            DataClass::Large,
+            self.compression_policy,
+        )?;
 
         let (sequence, target_slot) = self.next_generation_target()?;
         let mut writer = |sink: &mut dyn Write| -> Result<(), Error> {
@@ -610,7 +647,8 @@ where
     /// RSまたは従来フレームで保存された最新の大サイズデータを読み込みます。
     pub fn load_large(&self) -> Result<T, Error> {
         let latest = self.latest_slot(Some(DataClass::Large))?;
-        Ok(bincode::deserialize(&latest.payload)?)
+        let payload = maybe_decompress_payload(&latest.payload)?;
+        Ok(bincode::deserialize(&payload)?)
     }
 
     /// 最新の大サイズスロットから、シリアライズ済みペイロードの指定バイト範囲を読み込みます。
@@ -642,8 +680,29 @@ where
                 Err(error) => return Err(error),
             };
 
-            if let Ok(partial) = RsStrategy::decode_payload_range(&bytes, range.clone()) {
-                return Ok(partial);
+            if let Ok(prefix) = RsStrategy::decode_payload_range(&bytes, 0..COMPRESSED_HEADER_BYTES)
+            {
+                if is_compressed_payload(&prefix) {
+                    let record = match RsStrategy::decode_record(&bytes) {
+                        Ok(record) => record,
+                        Err(error) => {
+                            let mapped: Error = error.into();
+                            if mapped.is_recoverable() {
+                                continue;
+                            }
+                            return Err(mapped);
+                        }
+                    };
+
+                    let payload = maybe_decompress_payload(&record.payload)?;
+                    let start = range.start.min(payload.len());
+                    let end = range.end.min(payload.len());
+                    return Ok(payload[start..end].to_vec());
+                }
+
+                if let Ok(partial) = RsStrategy::decode_payload_range(&bytes, range.clone()) {
+                    return Ok(partial);
+                }
             }
 
             let frame = match StorageFrame::recover(&bytes) {
@@ -652,9 +711,11 @@ where
                 Err(error) => return Err(error),
             };
 
-            let start = range.start.min(frame.payload.len());
-            let end = range.end.min(frame.payload.len());
-            return Ok(frame.payload[start..end].to_vec());
+            let payload = maybe_decompress_payload(&frame.payload)?;
+
+            let start = range.start.min(payload.len());
+            let end = range.end.min(payload.len());
+            return Ok(payload[start..end].to_vec());
         }
 
         Err(std::io::Error::new(
@@ -724,9 +785,12 @@ where
         let (new_sequence, target_slot) = self.next_generation_target()?;
 
         // ペイロードのシリアライズ
-        let payload = bincode::serialize(data)?;
+        let serialized_payload = bincode::serialize(data)?;
+        let data_class = DataClass::from_payload_len(serialized_payload.len());
+        let payload =
+            maybe_compress_payload(&serialized_payload, data_class, self.compression_policy)?;
 
-        if DataClass::from_payload_len(payload.len()) == DataClass::Large {
+        if data_class == DataClass::Large {
             let mut writer = |sink: &mut dyn Write| -> Result<(), Error> {
                 RsStrategy::encode_record_to_writer(new_sequence, &payload, sink)?;
                 Ok(())
@@ -746,7 +810,7 @@ mod tests {
     use crate::rs::{
         RS_DATA_BYTES_PER_SEGMENT, RS_RECORD_HEADER_BYTES, RS_SHARD_BYTES, RS_TOTAL_SHARDS,
     };
-    use bitflip::{BitFlipConfig, BitFlipTarget};
+    use bitflip::{BitFlipConfig, BitFlipTarget, TemporaryReadErrorReader, TreConfig};
     use serde::Deserialize;
     use std::path::Path;
 
@@ -1844,5 +1908,272 @@ mod tests {
                 "{name}: scrub error mismatch: {scrub_error:?}"
             );
         }
+    }
+
+    /// Phase4の値域確認として、データ種別ごとの圧縮有効/無効を検証。
+    #[test]
+    fn test_phase4_value_range() {
+        #[derive(Debug, Clone, Copy)]
+        enum SaveRoute {
+            SaveSmall,
+            SaveLarge,
+        }
+
+        let compression_available = cfg!(feature = "zstd-compression");
+        let cases = [
+            (
+                "small_compression_disabled",
+                CompressionPolicy::disabled(),
+                SaveRoute::SaveSmall,
+                false,
+            ),
+            (
+                "small_compression_enabled",
+                CompressionPolicy::enabled().with_large_enabled(false),
+                SaveRoute::SaveSmall,
+                compression_available,
+            ),
+            (
+                "large_compression_enabled",
+                CompressionPolicy::enabled().with_small_enabled(false),
+                SaveRoute::SaveLarge,
+                compression_available,
+            ),
+        ];
+
+        for (name, policy, route, expected_compressed) in cases {
+            let backend = MemoryBackend::new(3);
+
+            match route {
+                SaveRoute::SaveSmall => {
+                    let vault = ReliableVault::<TestData, _>::new(backend.clone(), 3)
+                        .with_compression_policy(policy);
+                    let data = TestData {
+                        id: 501,
+                        message: "a".repeat(2048),
+                    };
+
+                    vault
+                        .save_small(&data)
+                        .unwrap_or_else(|e| panic!("{name}: save_small failed: {e}"));
+
+                    let loaded = vault
+                        .load_small()
+                        .unwrap_or_else(|e| panic!("{name}: load_small failed: {e}"));
+                    assert_eq!(loaded, data, "{name}: load_small mismatch");
+
+                    let (slot_index, _) = first_present_slot(&backend, 3);
+                    let slot_bytes = backend
+                        .read_slot(slot_index)
+                        .unwrap_or_else(|e| panic!("{name}: read_slot failed: {e}"));
+                    let slot = decode_slot_payload(&slot_bytes)
+                        .unwrap_or_else(|e| panic!("{name}: decode_slot_payload failed: {e}"));
+                    assert_eq!(
+                        is_compressed_payload(&slot.payload),
+                        expected_compressed,
+                        "{name}: compressed marker mismatch"
+                    );
+                }
+                SaveRoute::SaveLarge => {
+                    let vault = ReliableVault::<LargeCaseData, _>::new(backend.clone(), 3)
+                        .with_compression_policy(policy);
+                    let data = LargeCaseData {
+                        id: 502,
+                        payload: vec![0u8; RS_DATA_BYTES_PER_SEGMENT + 4096],
+                    };
+
+                    vault
+                        .save_large(&data)
+                        .unwrap_or_else(|e| panic!("{name}: save_large failed: {e}"));
+
+                    let loaded = vault
+                        .load_large()
+                        .unwrap_or_else(|e| panic!("{name}: load_large failed: {e}"));
+                    assert_eq!(loaded, data, "{name}: load_large mismatch");
+
+                    let (slot_index, _) = first_present_slot(&backend, 3);
+                    let slot_bytes = backend
+                        .read_slot(slot_index)
+                        .unwrap_or_else(|e| panic!("{name}: read_slot failed: {e}"));
+                    let slot = decode_slot_payload(&slot_bytes)
+                        .unwrap_or_else(|e| panic!("{name}: decode_slot_payload failed: {e}"));
+                    assert_eq!(
+                        is_compressed_payload(&slot.payload),
+                        expected_compressed,
+                        "{name}: compressed marker mismatch"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Phase4の正常系として、圧縮維持とフォールト注入回復率を検証。
+    #[test]
+    fn test_phase4_ok_cases() {
+        let data = LargeCaseData {
+            id: 601,
+            payload: vec![7u8; RS_DATA_BYTES_PER_SEGMENT + 8192],
+        };
+
+        let backend = MemoryBackend::new(3);
+        let vault = ReliableVault::<LargeCaseData, _>::new(backend.clone(), 3)
+            .with_compression_policy(CompressionPolicy::enabled());
+        vault
+            .save_large(&data)
+            .unwrap_or_else(|e| panic!("phase4_large_compress: save_large failed: {e}"));
+
+        let serialized = bincode::serialize(&data).unwrap();
+        let range_start = RS_DATA_BYTES_PER_SEGMENT.saturating_sub(128);
+        let range_end = (range_start + 512).min(serialized.len());
+        let partial = vault
+            .load_large_range(range_start..range_end)
+            .unwrap_or_else(|e| panic!("phase4_large_compress: load_large_range failed: {e}"));
+        assert_eq!(
+            partial,
+            serialized[range_start..range_end].to_vec(),
+            "phase4_large_compress: load_large_range mismatch"
+        );
+
+        let small = TestData {
+            id: 602,
+            message: "x".repeat(1024),
+        };
+        let bitflip_cases = [
+            (
+                "independent",
+                BitFlipConfig::new(1, Some(7001), BitFlipTarget::FullFrame),
+            ),
+            (
+                "mbu",
+                BitFlipConfig::mbu(2, Some(7002), BitFlipTarget::FullFrame, 2),
+            ),
+        ];
+
+        for (name, config) in bitflip_cases {
+            let backend = MemoryBackend::new(3).with_bitflip_for_tests(config);
+            let vault = ReliableVault::<TestData, _>::new(backend, 3)
+                .with_compression_policy(CompressionPolicy::enabled());
+            vault
+                .save_small(&small)
+                .unwrap_or_else(|e| panic!("{name}: save_small failed: {e}"));
+            let loaded = vault
+                .load_small()
+                .unwrap_or_else(|e| panic!("{name}: load_small failed: {e}"));
+            assert_eq!(loaded, small, "{name}: bitflip recovery mismatch");
+        }
+
+        let backend = MemoryBackend::new(3);
+        let vault = ReliableVault::<TestData, _>::new(backend.clone(), 3)
+            .with_compression_policy(CompressionPolicy::enabled());
+        let tre_data = TestData {
+            id: 603,
+            message: "tre-source".repeat(200),
+        };
+        vault
+            .save_small(&tre_data)
+            .unwrap_or_else(|e| panic!("tre: save_small failed: {e}"));
+
+        let (slot_index, source_bytes) = first_present_slot(&backend, 3);
+        let source_snapshot = source_bytes.clone();
+        let tre_config = TreConfig::mbu(48, Some(9001), BitFlipTarget::HeaderOnly, 8, 3);
+        let mut reader = TemporaryReadErrorReader::from_bytes_idle(source_bytes, tre_config)
+            .unwrap_or_else(|e| panic!("tre: reader init failed: {e}"));
+
+        let mut saw_injected = false;
+        let mut recovered = false;
+        for attempt in 0..=tre_config.settle_reads {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut reader, &mut bytes)
+                .unwrap_or_else(|e| panic!("tre: read_to_end failed: {e}"));
+
+            if attempt == 0 && bytes != source_snapshot {
+                saw_injected = true;
+            }
+
+            if decode_slot_payload(&bytes).is_ok() {
+                recovered = true;
+                break;
+            }
+            reader.restart_read();
+        }
+        assert!(saw_injected, "tre: should inject transient bit flips");
+        assert!(recovered, "tre: slot should recover after retries");
+
+        backend
+            .mutate_slot(slot_index, |bytes| {
+                bytes[0..32].fill(0);
+            })
+            .unwrap();
+
+        vault
+            .save_small(&TestData {
+                id: 604,
+                message: "recovered".to_string(),
+            })
+            .unwrap();
+    }
+
+    /// Phase4の異常系として、破壊パターン別の失敗モードを検証。
+    #[test]
+    fn test_phase4_error_cases() {
+        let cases = [
+            ("all_slots_zeroed", 0u8),
+            ("all_slots_header_corrupt", 1u8),
+            ("all_slots_truncated", 2u8),
+        ];
+
+        for (name, mode) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let vault = ReliableVault::<TestData>::new_with_fs(dir.path(), "phase4-error")
+                .with_compression_policy(CompressionPolicy::enabled());
+
+            for id in 1..=3 {
+                vault
+                    .save_small(&TestData {
+                        id,
+                        message: format!("{name}-{id}"),
+                    })
+                    .unwrap_or_else(|e| panic!("{name}: save_small({id}) failed: {e}"));
+            }
+
+            for slot in 0..3 {
+                let path = dir.path().join(format!("phase4-error.{slot}"));
+                match mode {
+                    0 => {
+                        let mut bytes = fs::read(&path).unwrap();
+                        bytes.fill(0);
+                        fs::write(&path, bytes).unwrap();
+                    }
+                    1 => {
+                        let mut bytes = fs::read(&path).unwrap();
+                        let header_len = 32.min(bytes.len());
+                        bytes[0..header_len].fill(0);
+                        fs::write(&path, bytes).unwrap();
+                    }
+                    _ => {
+                        truncate_slot(&path, 8);
+                    }
+                }
+            }
+
+            let load_error = match vault.load_small() {
+                Ok(_) => panic!("{name}: load_small should fail"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(load_error, Error::Io(ref e) if e.kind() == std::io::ErrorKind::NotFound),
+                "{name}: expected NotFound, got {load_error:?}"
+            );
+        }
+
+        let invalid_tre = TreConfig::new(8, Some(1), BitFlipTarget::FullFrame, 0);
+        let tre_error = match TemporaryReadErrorReader::from_bytes(vec![0x11; 128], invalid_tre) {
+            Ok(_) => panic!("tre_invalid_settle: reader init should fail"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(tre_error, bitflip::TreError::InvalidSettleReads),
+            "tre_invalid_settle: unexpected error: {tre_error}"
+        );
     }
 }

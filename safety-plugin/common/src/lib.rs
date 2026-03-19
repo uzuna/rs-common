@@ -6,9 +6,7 @@
 //! `abi_stable` によってRustコンパイラバージョン差異を吸収する。
 
 use abi_stable::{
-    declare_root_module_statics,
-    library::RootModule,
-    package_version_strings,
+    declare_root_module_statics, library::RootModule, package_version_strings,
     sabi_types::VersionStrings,
     std_types::{ROption, RSlice, RString, RVec},
     StableAbi,
@@ -22,77 +20,80 @@ pub struct PluginContext {
     pub plugin_id: u64,
 }
 
-/// プラグインが `init` 時に宣言するトピック記述子。
-/// ホストはこの一覧にもとづいてDDSエンティティを作成する。
-#[repr(C)]
-#[derive(StableAbi)]
-pub struct TopicDescriptor {
-    /// トピック名（例: `"robot/cmd_vel"`）。
-    pub name: RString,
-    /// トピックのデータ方向。
-    pub direction: TopicDirection,
-    /// QoSプリセット。
-    pub qos: QosPreset,
-}
-
-/// トピックのデータ方向。
+/// プラグインの種類。ホストがどのインターフェースを呼び出すかを決定する。
+///
+/// プラグインは `kind()` でこの値を返し、ホストはそれに応じたメソッドのみを呼ぶ。
 #[repr(u8)]
 #[derive(StableAbi, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TopicDirection {
-    /// ホストが Publisher を作成し、プラグインが送信データを積む。
-    Publisher,
-    /// ホストが Subscriber を作成し、受信データをプラグインへ渡す。
-    Subscriber,
+pub enum PluginKind {
+    /// HTTP リクエストハンドラー（Phase 4）。
+    /// `init` が `RouteDescriptor` を返し、リクエスト時に `handle` が呼ばれる。
+    Http = 0,
+    // 将来追加予定:
+    // Dds = 1,        // DDS制御ループ（Phase 6）
+    // HttpAndDds = 2, // HTTP + DDS 両対応
 }
 
-/// QoSプリセット。
-#[repr(u8)]
-#[derive(StableAbi, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QosPreset {
-    /// 最新値のみ保持（センサーデータ向け）。
-    BestEffort,
-    /// 全データ保証・順序保証（コマンド向け）。
-    Reliable,
-}
-
-/// `update` 時のトピックデータ。受信（Host→Plugin）および送信（Plugin→Host）の両方に使う。
-/// ペイロードはCDRエンコード済みバイト列。エンコード形式はプラグインとホストで合わせること。
+/// プラグインが `init` 時に宣言する担当パス記述子（`PluginKind::Http` 用）。
 #[repr(C)]
 #[derive(StableAbi)]
-pub struct TopicData {
-    /// トピック名。`TopicDescriptor::name` に対応する。
-    pub name: RString,
-    /// CDRエンコード済みペイロード。
-    pub payload: RVec<u8>,
+pub struct RouteDescriptor {
+    /// 担当するパスプレフィックス（例: `"/api/sensor"`）。
+    /// ホストはこのプレフィックスで始まるリクエストをプラグインへ委譲する。
+    pub path_prefix: RString,
+}
+
+/// ホストからプラグインへ渡す HTTP リクエスト。
+#[repr(C)]
+#[derive(StableAbi)]
+pub struct HttpRequest {
+    /// HTTP メソッド（`"GET"`, `"POST"` など）。
+    pub method: RString,
+    /// リクエストパス（例: `"/api/sensor/data"`）。
+    pub path: RString,
+    /// クエリ文字列（例: `"id=1&fmt=json"`）。クエリなしは空文字列。
+    pub query: RString,
+    /// リクエストボディ（バイト列）。
+    pub body: RVec<u8>,
+}
+
+/// プラグインがホストへ返す HTTP レスポンス。
+#[repr(C)]
+#[derive(StableAbi)]
+pub struct HttpResponse {
+    /// HTTP ステータスコード（200, 404, 500 など）。
+    pub status: u16,
+    /// `Content-Type` ヘッダ値（例: `"application/json"`）。
+    pub content_type: RString,
+    /// レスポンスボディ（バイト列）。
+    pub body: RVec<u8>,
 }
 
 /// プラグインモジュールのABI定義。
 ///
 /// Prefixモジュール方式を採用しているため、末尾への新フィールド追加は後方互換。
+/// `last_prefix_field` を `shutdown` に付与しているため、Phase 6 でのDDS用フィールド追加が可能。
 #[repr(C)]
 #[derive(StableAbi)]
 #[sabi(kind(Prefix(prefix_ref = RobotPlugin_Ref)))]
 #[sabi(missing_field(panic))]
 pub struct RobotPlugin {
-    /// プラグインの初期化。必要なトピック一覧を返す。
+    /// プラグインの種類を返す。ホストはこれを確認してから対応するメソッドを呼ぶ。
+    pub kind: extern "C" fn() -> PluginKind,
+
+    /// プラグインの初期化。担当ルート一覧を返す（`PluginKind::Http` 用）。
     ///
     /// - `ctx`: ホストが渡す初期化コンテキスト。
     /// - `prev_state`: 直前の `shutdown` が返した状態バイト列。初回起動時は `RNone`。
-    ///
-    /// 戻り値のリストにもとづきホストがDDSエンティティを作成する。
     pub init: extern "C" fn(
         ctx: &PluginContext,
         prev_state: ROption<RSlice<'_, u8>>,
-    ) -> RVec<TopicDescriptor>,
+    ) -> RVec<RouteDescriptor>,
 
-    /// 制御ループの1ステップ。
+    /// HTTP リクエスト処理（`PluginKind::Http` のときのみ呼ばれる）。
     ///
-    /// - `received`: ホストがSubscriberから読み取ったデータ（全件Reliable）。
-    /// - `publish`: プラグインが送信したいデータを積む。ホストがPublisherへ書き込む。
-    ///
-    /// 戻り値: `0` = 正常、負値 = エラー（ホストはFallbackへ切り替える）。
-    pub update:
-        extern "C" fn(received: RSlice<'_, TopicData>, publish: &mut RVec<TopicData>) -> i32,
+    /// プラグイン内部でパニックを `catch_unwind` し、失敗時は `status=500` のレスポンスを返すこと。
+    pub handle: extern "C" fn(req: &HttpRequest) -> HttpResponse,
 
     /// プラグインの終了処理。内部状態をバイナリ列で返す。
     ///

@@ -15,9 +15,12 @@ path = "src/main.rs"
 abi_stable = "0.11"
 safety-plugin-common = { path = "../common" }
 anyhow = { workspace = true }
+axum = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+http-body-util = "0.1"
 notify = "8"
 signal-hook = "0.3"
+tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 

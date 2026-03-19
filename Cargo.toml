@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*", "jetson/*", "examples/*", "wasm-comp/*", "pycrates/*"]
+members = ["crates/*", "jetson/*", "examples/*", "wasm-comp/*", "pycrates/*", "safety-plugin/*"]
 resolver = "2"
 
 [workspace.package]

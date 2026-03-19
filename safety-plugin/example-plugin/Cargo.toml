@@ -1,0 +1,12 @@
+[package]
+name = "safety-plugin-example"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# cdylib: .soファイルとして出力する（ホストがdynamic loadする）
+crate-type = ["cdylib"]
+
+[dependencies]
+abi_stable = "0.11"
+safety-plugin-common = { path = "../common" }

@@ -3,6 +3,7 @@
 //! - プラグインのロード・アンロード・リロード
 //! - `update` 呼び出しとエラー検知
 //! - フォールバックロジックの実行
+//! - ホットリロード時の状態引き継ぎ
 
 use std::path::{Path, PathBuf};
 
@@ -28,7 +29,7 @@ struct LoadedPlugin {
     /// このプラグインが宣言したトピック記述子（Phase 4 でDDSエンティティを作成するために保持）。
     #[allow(dead_code)]
     topic_count: usize,
-    /// ロード元のパス（リロード時の参照用）。
+    /// ロード元のパス（リロード失敗時の旧バージョン復帰に使う）。
     path: PathBuf,
 }
 
@@ -48,33 +49,52 @@ impl PluginManager {
     ///
     /// すでにプラグインがロードされている場合は先に `shutdown` してからロードする。
     pub fn load(&mut self, path: &Path) -> anyhow::Result<()> {
-        // 旧プラグインをシャットダウンして状態を保存
         self.shutdown_current();
-
         self.load_internal(path)
     }
 
     /// 動作中に新しいプラグインへ切り替える（ホットリロード）。
     ///
-    /// ロードに失敗した場合は旧バージョンの状態で `init` し直す。
-    pub fn reload(&mut self, path: &Path) -> anyhow::Result<()> {
-        // 旧プラグインをシャットダウンして状態を保存
+    /// 新バイナリのロードに失敗した場合は、旧バイナリの saved_state で `init` し直す。
+    /// この場合でも `Err` を返すが、マネージャは旧プラグインで動作を継続する。
+    pub fn reload(&mut self, new_path: &Path) -> anyhow::Result<()> {
+        // 旧プラグインのパスを保持してからシャットダウン（状態を saved_state へ保存）
+        let old_path = self.current.as_ref().map(|l| l.path.clone());
         self.shutdown_current();
 
-        match self.load_internal(path) {
+        match self.load_internal(new_path) {
             Ok(()) => {
-                tracing::info!("リロード成功: {}", path.display());
+                tracing::info!("リロード成功: {}", new_path.display());
                 Ok(())
             }
             Err(e) => {
-                tracing::error!("リロード失敗: {e}");
-                // 旧状態を使って同じパスで再試行（前回のパスが残っている場合）
+                tracing::error!("リロード失敗 ({}): {e}", new_path.display());
+                // 旧バイナリで再起動を試みる（saved_state は保持されているので状態も復元される）
+                if let Some(old) = old_path {
+                    tracing::info!("旧バージョンで再起動: {}", old.display());
+                    if let Err(e2) = self.load_internal(&old) {
+                        tracing::error!("旧バージョンの再起動にも失敗: {e2}");
+                    }
+                }
                 Err(e)
             }
         }
     }
 
-    /// 現在のプラグインをシャットダウンし、状態を保存する。
+    /// 現在のプラグインをアンロードし、shutdown の戻り値を返す。
+    ///
+    /// ロードし直す予定がない場合に呼び出す。saved_state はクリアされる。
+    pub fn unload(&mut self) -> Option<Vec<u8>> {
+        self.shutdown_current();
+        self.saved_state.take()
+    }
+
+    /// 前回の `shutdown` が返した状態バイト列を参照する（テスト・デバッグ用）。
+    pub fn saved_state(&self) -> Option<&[u8]> {
+        self.saved_state.as_deref()
+    }
+
+    /// 現在のプラグインをシャットダウンし、状態を `saved_state` へ保存する。
     fn shutdown_current(&mut self) {
         if let Some(loaded) = self.current.take() {
             let state = (loaded.module.shutdown())();
@@ -94,8 +114,6 @@ impl PluginManager {
             .map_err(|e| anyhow::anyhow!("プラグインのロードに失敗: {e:?}"))?;
 
         let ctx = PluginContext { plugin_id: 0 };
-
-        // 保存済み状態があれば prev_state として渡す
         let prev = match self.saved_state.as_deref() {
             Some(bytes) => RSome(RSlice::from_slice(bytes)),
             None => RNone,
@@ -171,6 +189,7 @@ impl PluginManager {
 
 impl Drop for PluginManager {
     fn drop(&mut self) {
+        // Dropでシャットダウンして状態をプラグインが解放できるようにする
         self.shutdown_current();
     }
 }
@@ -179,8 +198,21 @@ impl Drop for PluginManager {
 mod tests {
     use super::*;
 
+    /// 値域確認: `StepResult` の各バリアントが比較できること。
     #[test]
-    /// プラグイン未ロード時は常にフォールバックが実行されることを確認する。
+    fn test_step_result_eq() {
+        let cases = [
+            (StepResult::Ok, StepResult::Ok, true),
+            (StepResult::Fallback, StepResult::Fallback, true),
+            (StepResult::Ok, StepResult::Fallback, false),
+        ];
+        for (a, b, expected) in cases {
+            assert_eq!(a == b, expected);
+        }
+    }
+
+    /// 正常系: プラグイン未ロード時は常にフォールバックが実行される。
+    #[test]
     fn test_step_without_plugin_runs_fallback() {
         let cases = [1u64, 2, 5];
         for &n in &cases {
@@ -195,5 +227,13 @@ mod tests {
             );
             assert_eq!(mgr.fallback_count, n, "フォールバック回数が一致しない");
         }
+    }
+
+    /// 正常系: 未ロード状態のアンロードは安全に何もしない。
+    #[test]
+    fn test_unload_without_plugin() {
+        let mut mgr = PluginManager::default();
+        let state = mgr.unload();
+        assert!(state.is_none());
     }
 }

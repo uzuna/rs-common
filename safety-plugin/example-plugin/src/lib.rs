@@ -1,10 +1,11 @@
 //! サンプルプラグイン実装。
 //!
-//! Phase 2 の検証用として以下の動作を実装する:
 //! - 通常動作: 受信データを無視し、空の送信リストを返す。
 //! - パニックモード: 環境変数 `PLUGIN_SHOULD_PANIC=1` が設定されている場合、
 //!   `update` 内でパニックを発生させる。ただし `catch_unwind` でラップされているため
 //!   ホストプロセスは停止せず、エラーコード `-1` が返る。
+//! - リセットモード: 環境変数 `PLUGIN_RESET=1` が設定されている場合、
+//!   `init` の冒頭で step_count を 0 にリセットする（テスト用）。
 
 use std::sync::Mutex;
 
@@ -45,8 +46,11 @@ extern "C" fn init(
 ) -> RVec<TopicDescriptor> {
     let mut state = STATE.lock().unwrap();
 
-    // 前回の状態（バイト列）を復元する
-    if let abi_stable::std_types::RSome(bytes) = prev_state {
+    // PLUGIN_RESET=1 が設定されている場合は状態を0にリセットする（テスト用）
+    if std::env::var("PLUGIN_RESET").as_deref() == Ok("1") {
+        state.step_count = 0;
+    } else if let abi_stable::std_types::RSome(bytes) = prev_state {
+        // 前回の状態（バイト列）を復元する
         if bytes.len() == 8 {
             let arr: [u8; 8] = bytes[..8].try_into().unwrap_or([0u8; 8]);
             state.step_count = u64::from_le_bytes(arr);

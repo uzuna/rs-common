@@ -10,11 +10,12 @@ rust-version = "1.93"
 
 [workspace.dependencies]
 anyhow = "1.0.102"
+approx = "0.5.1"
 axum = "0.8.8"
 bytemuck = "1.25.0"
 byteorder = "1.5"
 cfg-if = "1.0.4"
-clap = "4.5.60"
+clap = "4.6.0"
 criterion = "0.8.2"
 dsp = { path = "crates/dsp" }
 eframe = "0.33.3"
@@ -26,19 +27,21 @@ jetson-pixfmt = { path = "jetson/pixfmt" }
 khronos-egl = "6.0.0"
 mls-mpm = { path = "crates/mls-mpm" }
 nalgebra = "0.34.1"
+ndarray = "0.17.2"
 num-traits = "0.2.19"
 rand = "0.10.0"
 rawproc = { path = "crates/rawproc" }
 rhythm-core = { path = "crates/rhythm-core" }
 serde = "1.0.228"
+serde_json = "1.0"
 serde_yaml = "0.9.34"
-tempfile = "3.26.0"
+tempfile = "3.27.0"
 thiserror = "2.0.18"
 tokio = "1.50.0"
 tokio-util = "0.7.18"
 tower-http = "0.6.8"
 tracing = "0.1.44"
-tracing-subscriber = "0.3.22"
+tracing-subscriber = "0.3.23"
 v4l = { git = "ssh://git@github.com/uzuna/libv4l-rs.git", rev = "0bbbc4c5" }
 v4l-serve = { path = "crates/v4l-serve" }
 wasm-bindgen = "0.2.114"

@@ -91,7 +91,7 @@ impl CsiPixelFormat {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use rand::Rng;
+    use rand::RngExt;
 
     impl CsiPixelFormat {
         // Jetson PIXFMTの動作再現

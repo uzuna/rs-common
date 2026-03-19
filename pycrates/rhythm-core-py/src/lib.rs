@@ -10,7 +10,7 @@ use rhythm_core::{
 
 // --- Enums ---
 
-#[pyclass(name = "SyncState")]
+#[pyclass(name = "SyncState", skip_from_py_object)]
 #[derive(Clone, Copy)]
 pub enum PySyncState {
     Idle,
@@ -30,7 +30,7 @@ impl From<SyncStateRs> for PySyncState {
 
 // --- Param Structs ---
 
-#[pyclass(name = "BpmLimitParam")]
+#[pyclass(name = "BpmLimitParam", skip_from_py_object)]
 #[derive(Clone, Copy)]
 pub struct PyBpmLimitParam {
     pub inner: BpmLimitParamRs,
@@ -46,7 +46,7 @@ impl PyBpmLimitParam {
     }
 }
 
-#[pyclass(name = "PulseSyncParam")]
+#[pyclass(name = "PulseSyncParam", skip_from_py_object)]
 #[derive(Clone, Copy)]
 pub struct PyPulseSyncParam {
     pub inner: PulseSyncParamRs,
@@ -64,7 +64,7 @@ impl PyPulseSyncParam {
 
 // --- Core Structs ---
 
-#[pyclass(name = "RhythmMessage")]
+#[pyclass(name = "RhythmMessage", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyRhythmMessage {
     pub inner: RhythmMessageRs,
@@ -216,6 +216,9 @@ fn py_rhythm_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     fn bpm_q8_to_float_py(_py: Python, bpm_q8: u16) -> f64 {
         BpmQ8(bpm_q8).to_float()
     }
+
+    m.add_function(pyo3::wrap_pyfunction!(bpm_q8_from_int_py, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(bpm_q8_to_float_py, m)?)?;
 
     Ok(())
 }

@@ -74,8 +74,7 @@ fn handle_inner_ref(req: &HttpRequestRef<'_>, state: &mut PluginState) -> HttpRe
 
 /// 共通実装。`handle_inner` / `handle_inner_ref` 双方から呼ばれる。
 fn handle_core(method: &str, path: &str, body: &[u8], state: &mut PluginState) -> HttpResponse {
-    // パニックモード: 環境変数で制御
-    #[cfg(test)]
+    // パニックモード: 環境変数で制御（ホスト統合テストが PLUGIN_SHOULD_PANIC=1 を設定して使用）
     if std::env::var("PLUGIN_SHOULD_PANIC").as_deref() == Ok("1") {
         panic!("意図的なパニック（Phase 4 検証用）");
     }

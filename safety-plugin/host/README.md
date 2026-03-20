@@ -1,7 +1,14 @@
 # safety-plugin-host
 
-ロボット制御向けホットリロード可能プラグインホスト。
+停止を避けたい制御向けホットリロード可能プラグインホスト。
 プラグインがパニックしてもホストは停止せず、HTTP API でゼロダウンタイムのプラグイン更新が可能。
+
+## 所感
+
+- ホストに制御インスタンスを作ったままロジックをプラグインで切り替えることはできる
+- FFI 呼び出し自体のコストは < 1 ns。遅延の主因は Mutex・ルーティング・.so 非インライン化
+- release .so + `RStr` ゼロコピーインターフェース（`plugin_rstr`）なら native との差は **hello で 100 ns、add で 12 ns**
+- 参照渡し（`RStr<'a>` / `RSlice<'a>`）でホスト側のメモリコピーコストはゼロにできる
 
 ## アーキテクチャ概要
 
@@ -259,38 +266,160 @@ make bench
 cargo bench -p safety-plugin-host
 ```
 
-### 計測結果（`cargo bench` / debug ビルド）
+### 計測結果
 
-| ハンドラ  |   native |   plugin | plugin_pooled |  plugin_rstr |       rstr 改善 |
-| :-------- | -------: | -------: | ------------: | -----------: | --------------: |
-| **hello** |  40.1 ns | 381.5 ns |      364.6 ns | **313.6 ns** | −68 ns (−17.8%) |
-| **add**   | 147.0 ns | 1,622 ns |      1,588 ns | **1,565 ns** |  −57 ns (−3.5%) |
+#### debug .so（`cargo build`）× bench バイナリ
 
-計測環境: Linux x86-64、`--profile dev`
+| ハンドラ  |   native |   plugin | plugin_pooled |  plugin_rstr |
+| :-------- | -------: | -------: | ------------: | -----------: |
+| **hello** |  40.8 ns | 316.5 ns |      281.5 ns |     216.3 ns |
+| **add**   | 145.4 ns | 1,641 ns |      1,591 ns |    1,515 ns  |
+
+#### release .so（`cargo build --release`）× bench バイナリ
+
+```bash
+SAFETY_PLUGIN_EXAMPLE_PATH=target/release/libsafety_plugin_example.so \
+SAFETY_PLUGIN_SAMPLE_PATH=target/release/libsafety_plugin_sample.so \
+cargo bench -p safety-plugin-host --bench request_latency
+```
+
+| ハンドラ  |   native |   plugin | plugin_pooled |  plugin_rstr | plugin vs rstr |
+| :-------- | -------: | -------: | ------------: | -----------: | -------------: |
+| **hello** |  40.9 ns | 247.0 ns |      214.6 ns | **141.6 ns** | −105 ns (−43%) |
+| **add**   | 143.9 ns | 246.9 ns |      218.2 ns | **155.9 ns** |  −91 ns (−37%) |
+
+計測環境: Linux x86-64、bench バイナリは `--profile bench`（release 相当）
+
+**release .so による改善:**
+
+| ハンドラ | debug plugin | release plugin | debug rstr | release rstr |
+| :------- | -----------: | -------------: | ---------: | -----------: |
+| hello | 316.5 ns | 247.0 ns (−22%) | 216.3 ns | **141.6 ns (−35%)** |
+| add | 1,641 ns | 246.9 ns (**−85%**) | 1,515 ns | **155.9 ns (−90%)** |
+
+`add` の劇的な改善（−85%）は serde_json の最適化によるもの。
+release .so での `add/plugin_rstr`（156 ns）は `native`（144 ns）との差がわずか **12 ns** まで縮まる。
+
+### 要素ベンチマーク（`cargo bench --bench ffi_overhead`）
+
+native と plugin の差（〜175 ns）の各要因を個別に計測した結果:
+
+```bash
+cargo bench -p safety-plugin-host --bench ffi_overhead
+```
+
+#### call グループ: 呼び出し方式のオーバーヘッド
+
+| 計測項目 | 時間 | 備考 |
+| :------- | ---: | :--- |
+| `call/direct`（Rust 直接呼び出し） | 0.80 ns | ベースライン |
+| `call/rust_fn_ptr`（Rust 関数ポインタ） | 1.19 ns | +0.4 ns |
+| `call/extern_c_ptr`（`extern "C"` 関数ポインタ） | 1.26 ns | **+0.5 ns**（プラグイン FFI と同じ形式） |
+
+→ **FFI 呼び出し自体のオーバーヘッドは < 1 ns**。支配的要因ではない。
+
+#### mutex グループ: Mutex のロックコスト
+
+| 計測項目 | 時間 |
+| :------- | ---: |
+| `mutex/lock_only`（ロック+解放のみ） | 8.0 ns |
+| `mutex/lock_increment`（ロック+カウンタ更新） | 8.2 ns |
+
+→ **Mutex lock ≈ 8 ns**。プラグインの状態アクセスごとに発生。
+
+#### alloc グループ: 文字列表現の構築コスト（method / path / query × 3）
+
+| 計測項目 | 時間 | 説明 |
+| :------- | ---: | :--- |
+| `alloc/rstr_borrow`（`RStr` ゼロコピー） | **14.3 ns** | ポインタ+長さのみ、アロケーションなし |
+| `alloc/rstring_new`（`RString` 新規） | 21.0 ns | `plugin` 版のホスト側コスト |
+| `alloc/rstring_pool`（プール・コールド） | 40.6 ns | TLS + RefCell オーバーヘッドが malloc より大きい |
+| `alloc/rstring_pool_warm`（プール・ウォーム） | 46.1 ns | clear + push_str のみだが TLS 往復が重い |
+
+→ **debug ビルドでは `RString` 新規アロケーション（21 ns）がプール再利用（46 ns）より速い**。
+TLS アクセスと RefCell の borrow/unborrow コストが malloc のキャッシュヒットコストを上回るため。
+
+#### env グループ: `std::env::var` のコスト
+
+| 計測項目 | 時間 |
+| :------- | ---: |
+| `env/var_once` | 37.7 ns |
+| `env/var_twice` | 73.9 ns |
+
+→ `std::env::var` は **1 回あたり約 37 ns**。example-plugin が `PLUGIN_SHOULD_PANIC` を
+毎リクエスト参照していた頃は 74 ns のオーバーヘッドが発生していた（現在は `#[cfg(test)]` で除外済み）。
+
+#### routing グループ: プレフィックス検索コスト
+
+| 計測項目 | 時間 |
+| :------- | ---: |
+| `routing/prefix_1`（1 エントリ） | 19.0 ns |
+| `routing/prefix_2`（2 エントリ） | 22.7 ns |
+
+→ **ルーティング ≈ 22 ns**（2 プラグイン構成）。エントリ数増加の影響は小さい。
+
+#### catch_unwind グループ: パニック検知ラッパのコスト
+
+| 計測項目 | 時間 |
+| :------- | ---: |
+| `catch_unwind/direct_closure` | 0.20 ns |
+| `catch_unwind/wrapped`（catch_unwind のみ） | 0.30 ns |
+| `catch_unwind/wrapped_with_mutex` | 8.17 ns |
+
+→ **`catch_unwind` 自体のオーバーヘッドは +0.1 ns（実質ゼロ）**。コストはほぼ Mutex のみ。
+
+#### plugin_inner グループ: プラグイン処理をインライン再現したコスト
+
+| 計測項目 | 時間 | 説明 |
+| :------- | ---: | :--- |
+| `plugin_inner/response_build` | 37.5 ns | format! + HttpResponse 構築（native と同等） |
+| `plugin_inner/mutex_response` | 43.9 ns | OnceLock + Mutex + レスポンス構築 |
+| `plugin_inner/catch_unwind_full` | 36.7 ns | catch_unwind + Mutex + レスポンス構築 |
+
+→ **プラグインの処理ロジックをベンチバイナリ内で再現すると native（41 ns）とほぼ同等**。
+.so バウンダリを経由した場合（plugin_rstr）との差：
+
+| | plugin_rstr 実測値 | catch_unwind_full（インライン） | 差（.so バウンダリ分） |
+|:--|--:|--:|--:|
+| debug .so | 216 ns | 37 ns | **−179 ns** ← .so 非インライン化が主因 |
+| release .so | 141 ns | 37 ns | **−104 ns** ← ルーティング(23)+Mutex(8)+env_var(38)+PLT(31)≒100 ns |
+
+release .so での残差（104 ns）は測定コンポーネントでほぼ説明できる。
+debug .so での超過分（179 − 104 = **75 ns**）が .so 非インライン化によるオーバーヘッド。
+
+### hello/plugin_rstr のコスト積み上げ（debug .so / release .so 比較）
+
+| 要因 | debug .so | release .so | 計測元 |
+| :--- | --------: | ----------: | :----- |
+| native と同等の処理（format! + レスポンス構築） | 41 ns | 41 ns | `hello/native` |
+| プレフィックスルーティング（2 エントリ） | 23 ns | 23 ns | `routing/prefix_2` |
+| OnceLock + Mutex lock | 8 ns | 8 ns | `once_lock/get_or_init` |
+| `extern "C"` 関数ポインタ呼び出し | < 1 ns | < 1 ns | `call/extern_c_ptr` |
+| `catch_unwind` | < 1 ns | < 1 ns | `catch_unwind/wrapped` |
+| `PLUGIN_SHOULD_PANIC` env_var チェック | 38 ns | 38 ns | `env/var_once` |
+| **測定コンポーネント合計** | **〜111 ns** | **〜111 ns** | |
+| .so 非インライン化オーバーヘッド † | **〜105 ns** | **〜31 ns** | 差分 |
+| **hello/plugin_rstr 実測値** | **216 ns** | **141 ns** | |
+
+† .so 内の関数（format!、trait メソッド、RVec 操作等）は debug では非インライン化される。
+release .so ではこれらが最適化されて **74 ns 削減**。残る 31 ns は動的リンクの PLT 呼び出し（malloc 等）に起因。
+
+`plugin_inner/catch_unwind_full`（37 ns）はベンチバイナリ内でのインライン実行で、
+理論上の最小値に相当。実際の .so 境界を経由すると release でも +31 ns のオーバーヘッドが残る。
 
 ### 3 種類の FFI インターフェース比較
 
-| インターフェース                  | ホスト側アロケーション   | プラグイン側アロケーション | 特徴                        |
-| :-------------------------------- | :----------------------- | :------------------------- | :-------------------------- |
-| `plugin`（`HttpRequest`）         | `RString` × 3 + `String` | なし                       | 既存 ABI、最も実装が単純    |
-| `plugin_pooled`                   | `String` × 1（プール後） | なし                       | プール再利用で RString 節約 |
-| `plugin_rstr`（`HttpRequestRef`） | **ゼロ**                 | なし                       | `RStr<'_>` で完全ゼロコピー |
+| インターフェース                  | ホスト側アロケーション   | debug .so | release .so |
+| :-------------------------------- | :----------------------- | --------: | ----------: |
+| `plugin`（`HttpRequest`）         | `RString` × 3 + `String` |  316.5 ns |    247.0 ns |
+| `plugin_pooled`                   | `String` × 1（プール後） |  281.5 ns |    214.6 ns |
+| `plugin_rstr`（`HttpRequestRef`） | **ゼロ**                 |  216.3 ns | **141.6 ns** |
 
-### FFI オーバーヘッドの内訳（hello の場合）
-
-| 要因                              |       plugin |  plugin_rstr |
-| :-------------------------------- | -----------: | -----------: |
-| `RString`/`String` アロケーション |      〜60 ns |     **0 ns** |
-| HashMap 最長プレフィックス検索    |      〜10 ns |      〜10 ns |
-| `Mutex::lock`                     |      〜30 ns |      〜30 ns |
-| FFI 呼び出し                      |   〜〜270 ns |     〜270 ns |
-| **合計**                          | **〜381 ns** | **〜314 ns** |
-
-`plugin_rstr` の −68 ns はホスト側の文字列アロケーション（`RString` × 3 + プレフィックス除去 `String`）
-の完全排除によるもの。
-
-add の改善幅が小さい（−57 ns / −3.5%）のは serde_json による JSON パース/生成（〜1,450 ns）が
-全体の約 90% を占めるため。
+**pool に関する注意**: `ffi_overhead/alloc` ベンチが示すとおり、bench バイナリ内のプール操作（TLS + RefCell）は
+debug/release ともに 45 ns 程度かかり、新規 `malloc`（21 ns）より重い。
+にもかかわらず `plugin_pooled` が `plugin` より速いのは、PoolRouter 全体のフローで見ると
+`String::to_owned()` → `rstring_from_pool` のサイクルで割り当て済みメモリを再利用できるためで、
+特に release .so では serde_json 等の最適化と相まって −32 ns の効果がある。
 
 ### RStr インターフェースの設計
 

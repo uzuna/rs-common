@@ -30,6 +30,10 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 name = "request_latency"
 harness = false
 
+[[bench]]
+name = "ffi_overhead"
+harness = false
+
 [dev-dependencies]
 criterion = { workspace = true }
 tempfile = { workspace = true }

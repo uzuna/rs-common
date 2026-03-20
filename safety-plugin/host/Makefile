@@ -152,9 +152,20 @@ sample-status:
 test: build-example build-sample
 	cargo test -p safety-plugin-host -- --test-threads=1
 
-## criterion ベンチマークを実行する（native vs plugin レイテンシ比較）
+## criterion ベンチマークを実行する（native vs plugin レイテンシ比較、debug .so）
 bench: build-example build-sample
 	cargo bench -p safety-plugin-host
+
+## criterion ベンチマークを release .so で実行する（最適化効果を確認）
+bench-release:
+	cargo build -p safety-plugin-example -p safety-plugin-sample --release
+	SAFETY_PLUGIN_EXAMPLE_PATH=$(WORKSPACE_ROOT)/target/release/libsafety_plugin_example.so \
+	SAFETY_PLUGIN_SAMPLE_PATH=$(WORKSPACE_ROOT)/target/release/libsafety_plugin_sample.so \
+	cargo bench -p safety-plugin-host
+
+## FFI・Mutex・アロケーション等の要素ベンチマークを実行する
+bench-overhead:
+	cargo bench -p safety-plugin-host --bench ffi_overhead
 
 ## 10,000 回リロード時のメモリ使用量を計測する
 memory-check: build-example
@@ -185,7 +196,9 @@ help:
 	@echo "  add              POST /sample/add で加算確認"
 	@echo "  mul              POST /sample/mul で乗算確認"
 	@echo "  test             全テストを実行"
-	@echo "  bench            criterion ベンチマーク（native vs plugin）"
+	@echo "  bench            criterion ベンチマーク debug .so（native vs plugin）"
+	@echo "  bench-release    criterion ベンチマーク release .so（最適化効果を確認）"
+	@echo "  bench-overhead   FFI・Mutex・アロケーション等の要素ベンチマーク"
 	@echo "  memory-check     10,000 回リロードのメモリ計測"
 	@echo "  clean            ビルド成果物を削除"
 	@echo ""

@@ -31,24 +31,29 @@ define_http_plugin! {
 }
 
 /// 状態をバイト列へ変換する（request_count を little-endian 8バイトで保存）。
-fn save_state(state: &PluginState) -> Vec<u8> {
-    state.request_count.to_le_bytes().to_vec()
+fn save_state(state: &PluginState) -> Result<Vec<u8>, String> {
+    Ok(state.request_count.to_le_bytes().to_vec())
 }
 
 /// バイト列から状態を復元する。
 ///
 /// ただし `PLUGIN_RESET=1` が設定されている場合は 0 にリセットする（テスト用）。
-fn load_state(bytes: &[u8]) -> Option<PluginState> {
+fn load_state(bytes: &[u8]) -> Result<PluginState, String> {
     if std::env::var("PLUGIN_RESET").as_deref() == Ok("1") {
-        return Some(PluginState::default());
+        return Ok(PluginState::default());
     }
     if bytes.len() == 8 {
-        let arr: [u8; 8] = bytes[..8].try_into().ok()?;
-        Some(PluginState {
+        let arr: [u8; 8] = bytes[..8]
+            .try_into()
+            .map_err(|e| format!("スライス変換失敗: {e}"))?;
+        Ok(PluginState {
             request_count: u64::from_le_bytes(arr),
         })
     } else {
-        None
+        Err(format!(
+            "無効なバイト列長: {} バイト（期待値: 8）",
+            bytes.len()
+        ))
     }
 }
 

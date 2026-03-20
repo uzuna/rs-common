@@ -32,13 +32,13 @@ define_http_plugin! {
 }
 
 /// 状態をバイト列へ変換する（JSON シリアライズ）。
-fn save_state(state: &CalcState) -> Vec<u8> {
-    serde_json::to_vec(state).unwrap_or_default()
+fn save_state(state: &CalcState) -> Result<Vec<u8>, String> {
+    serde_json::to_vec(state).map_err(|e| format!("状態シリアライズ失敗: {e}"))
 }
 
 /// バイト列から状態を復元する（JSON デシリアライズ）。
-fn load_state(bytes: &[u8]) -> Option<CalcState> {
-    serde_json::from_slice(bytes).ok()
+fn load_state(bytes: &[u8]) -> Result<CalcState, String> {
+    serde_json::from_slice(bytes).map_err(|e| format!("状態デシリアライズ失敗: {e}"))
 }
 
 /// 演算リクエストのボディ。

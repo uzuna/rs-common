@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use abi_stable::std_types::{RNone, RSlice, RSome, RString, RVec};
+use abi_stable::std_types::{RNone, RResult, RSlice, RSome, RString, RVec};
 use safety_plugin_common::{
     HttpRequest, HttpRequestRef, HttpResponse, PluginContext, PluginKind, RobotPlugin_Ref,
 };
@@ -181,15 +181,28 @@ impl PluginManager {
     }
 
     /// 現在のプラグインをシャットダウンし、状態を `saved_state` へ保存する。
+    ///
+    /// シリアライズに失敗した場合はエラーをログに記録し `saved_state = None` とする。
+    /// 次の `init` にはフレッシュな状態（`RNone`）が渡される。
     fn shutdown_current(&mut self) {
         if let Some(loaded) = self.current.take() {
-            let state = (loaded.module.shutdown())();
-            let bytes = state.into_vec();
-            if !bytes.is_empty() {
-                tracing::debug!("プラグイン状態を保存: {} バイト", bytes.len());
-                self.saved_state = Some(bytes);
-            } else {
-                self.saved_state = None;
+            match (loaded.module.shutdown())() {
+                RResult::ROk(bytes) => {
+                    let bytes = bytes.into_vec();
+                    if !bytes.is_empty() {
+                        tracing::debug!("プラグイン状態を保存: {} バイト", bytes.len());
+                        self.saved_state = Some(bytes);
+                    } else {
+                        self.saved_state = None;
+                    }
+                }
+                RResult::RErr(msg) => {
+                    tracing::error!(
+                        "プラグイン状態のシリアライズ失敗: {}。次回はフレッシュ状態で起動します",
+                        msg
+                    );
+                    self.saved_state = None;
+                }
             }
         }
     }
@@ -230,7 +243,12 @@ impl PluginManager {
             None => RNone,
         };
 
-        (module.init())(&ctx, prev);
+        match (module.init())(&ctx, prev) {
+            RResult::ROk(()) => {}
+            RResult::RErr(msg) => {
+                anyhow::bail!("プラグイン init 失敗: {msg}");
+            }
+        }
 
         // `__plugin_handle_ref` シンボルをオプションでロードする。
         // `define_http_plugin!` で生成されるため通常は存在するが、

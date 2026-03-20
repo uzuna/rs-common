@@ -10,7 +10,7 @@ use abi_stable::{
     library::RootModule,
     package_version_strings,
     sabi_types::VersionStrings,
-    std_types::{ROption, RSlice, RStr, RString, RVec},
+    std_types::{ROption, RResult, RSlice, RStr, RString, RVec},
     StableAbi,
 };
 
@@ -105,8 +105,15 @@ pub struct RobotPlugin {
     /// - `ctx`: ホストが渡す初期化コンテキスト。
     /// - `prev_state`: 直前の `shutdown` が返した状態バイト列。初回起動時は `RNone`。
     ///
+    /// 成功時は `ROk(())` を返す。状態のデシリアライズに失敗し、かつプラグインが
+    /// `on_load_error: fail` を指定している場合は `RErr(message)` を返す。
+    /// ホストは `RErr` を受け取った場合、ロードを中断してエラーを返す。
+    ///
     /// パスプレフィックスはホスト側が管理するため、プラグインは宣言しない。
-    pub init: extern "C" fn(ctx: &PluginContext, prev_state: ROption<RSlice<'_, u8>>),
+    pub init: extern "C" fn(
+        ctx: &PluginContext,
+        prev_state: ROption<RSlice<'_, u8>>,
+    ) -> RResult<(), RString>,
 
     /// HTTP リクエスト処理（`PluginKind::Http` のときのみ呼ばれる）。
     ///
@@ -115,10 +122,11 @@ pub struct RobotPlugin {
 
     /// プラグインの終了処理。内部状態をバイナリ列で返す。
     ///
-    /// 返したバイト列はホストが保持し、次の `init` の `prev_state` に渡される。
-    /// 状態がない場合は空の `RVec` を返す。
+    /// 成功時は `ROk(bytes)` を返す。ホストは `bytes` を保持し、次の `init` の `prev_state` に渡す。
+    /// シリアライズに失敗した場合は `RErr(message)` を返す。
+    /// ホストはエラーをログに記録し、次回の `init` には `RNone`（新規状態）を渡す。
     #[sabi(last_prefix_field)]
-    pub shutdown: extern "C" fn() -> RVec<u8>,
+    pub shutdown: extern "C" fn() -> RResult<RVec<u8>, RString>,
 }
 
 impl RootModule for RobotPlugin_Ref {
@@ -135,17 +143,26 @@ impl RootModule for RobotPlugin_Ref {
 /// - `name`: ログ出力に使うプラグイン名（文字列リテラル）
 /// - `state`: 内部状態の型（`Default` を実装すること）
 /// - `handler`: リクエストハンドラ関数（`fn(&HttpRequest, &mut State) -> HttpResponse`）
-/// - `state_save`: 状態をバイト列に変換する関数（`fn(&State) -> Vec<u8>`）
-/// - `state_load`: バイト列から状態を復元する関数（`fn(&[u8]) -> Option<State>`）
+/// - `state_save`: 状態をバイト列に変換する関数（`fn(&State) -> Result<Vec<u8>, impl Display>`）
+/// - `state_load`: バイト列から状態を復元する関数（`fn(&[u8]) -> Result<State, impl Display>`）
+///
+/// # オプションパラメータ
+///
+/// - `handler_ref`: ゼロコピー版ハンドラ（`fn(&HttpRequestRef<'_>, &mut State) -> HttpResponse`）
+///   指定しない場合は `handler` への変換ラッパが自動生成される。
+/// - `on_load_error`: `state_load` が `Err` を返したときの動作（デフォルト: `fail`）
+///   - `fail`: `__init` が `RErr` を返しホストがロードを中断する（リロード時は旧バイナリで再起動）
+///   - `fallback`: `Default::default()` でフォールバックしてログを出力する
 ///
 /// # 生成されるコード
 ///
 /// - `#[export_root_module] fn get_library()` — abi_stable エントリポイント（互換性維持用）
 /// - `#[no_mangle] fn __plugin_create_ref()` — ホストがキャッシュを迂回して呼び出すエントリポイント
 /// - `extern "C" fn __kind()` — `PluginKind::Http` を返す
-/// - `extern "C" fn __init(ctx, prev_state)` — `state_load` で状態復元
+/// - `extern "C" fn __init(ctx, prev_state) -> RResult<(), RString>` — `state_load` で状態復元
 /// - `extern "C" fn __handle(req)` — `catch_unwind` ラッパ + `handler` 呼び出し
 /// - `extern "C" fn __shutdown()` — `state_save` で状態保存
+/// - `#[no_mangle] fn __plugin_handle_ref(req)` — ゼロコピー FFI エントリポイント
 ///
 /// # abi_stable キャッシュの迂回
 ///
@@ -162,15 +179,16 @@ impl RootModule for RobotPlugin_Ref {
 ///     handler: handle_inner,
 ///     state_save: save,
 ///     state_load: load,
+///     // on_load_error 未指定 → fail（ロード失敗時にホストがロードを中断）
 /// }
 ///
 /// fn handle_inner(req: &HttpRequest, state: &mut MyState) -> HttpResponse { ... }
-/// fn save(state: &MyState) -> Vec<u8> { ... }
-/// fn load(bytes: &[u8]) -> Option<MyState> { ... }
+/// fn save(state: &MyState) -> Result<Vec<u8>, String> { ... }
+/// fn load(bytes: &[u8]) -> Result<MyState, String> { ... }
 /// ```
 #[macro_export]
 macro_rules! define_http_plugin {
-    // ── `handler_ref` あり: HttpRequestRef<'_> を直接受け取るゼロコピー版ハンドラも生成 ──
+    // ── `handler_ref` あり + `on_load_error` なし（デフォルト: fail）──────────
     (
         name: $name:expr,
         state: $state:ty,
@@ -181,13 +199,65 @@ macro_rules! define_http_plugin {
     ) => {
         $crate::define_http_plugin! {
             @inner
-            name: $name,
-            state: $state,
-            handler: $handler,
-            state_save: $save,
-            state_load: $load,
+            name: $name, state: $state, handler: $handler,
+            state_save: $save, state_load: $load, on_load_error: fail,
         }
+        $crate::define_http_plugin!(@handle_ref_impl $name, $handler_ref);
+    };
 
+    // ── `handler_ref` あり + `on_load_error` あり ────────────────────────────
+    (
+        name: $name:expr,
+        state: $state:ty,
+        handler: $handler:ident,
+        handler_ref: $handler_ref:ident,
+        state_save: $save:ident,
+        state_load: $load:ident,
+        on_load_error: $on_load_error:ident $(,)?
+    ) => {
+        $crate::define_http_plugin! {
+            @inner
+            name: $name, state: $state, handler: $handler,
+            state_save: $save, state_load: $load, on_load_error: $on_load_error,
+        }
+        $crate::define_http_plugin!(@handle_ref_impl $name, $handler_ref);
+    };
+
+    // ── `handler_ref` なし + `on_load_error` なし（デフォルト: fail）──────────
+    (
+        name: $name:expr,
+        state: $state:ty,
+        handler: $handler:ident,
+        state_save: $save:ident,
+        state_load: $load:ident $(,)?
+    ) => {
+        $crate::define_http_plugin! {
+            @inner
+            name: $name, state: $state, handler: $handler,
+            state_save: $save, state_load: $load, on_load_error: fail,
+        }
+        $crate::define_http_plugin!(@handle_ref_fallback);
+    };
+
+    // ── `handler_ref` なし + `on_load_error` あり ────────────────────────────
+    (
+        name: $name:expr,
+        state: $state:ty,
+        handler: $handler:ident,
+        state_save: $save:ident,
+        state_load: $load:ident,
+        on_load_error: $on_load_error:ident $(,)?
+    ) => {
+        $crate::define_http_plugin! {
+            @inner
+            name: $name, state: $state, handler: $handler,
+            state_save: $save, state_load: $load, on_load_error: $on_load_error,
+        }
+        $crate::define_http_plugin!(@handle_ref_fallback);
+    };
+
+    // ── ゼロコピー FFI エントリポイント（handler_ref あり版）─────────────────
+    (@handle_ref_impl $name:expr, $handler_ref:ident) => {
         /// ゼロコピー FFI エントリポイント。
         ///
         /// `HttpRequestRef<'_>` は `RStr<'a>` を使うため、ホスト側の文字列アロケーションが不要。
@@ -204,8 +274,7 @@ macro_rules! define_http_plugin {
                 Ok(resp) => resp,
                 Err(_) => {
                     eprintln!(
-                        "[{}] panic を捕捉しました（handle_ref）。500 を返します",
-                        $name
+                        "[plugin] panic を捕捉しました（handle_ref）。500 を返します"
                     );
                     $crate::HttpResponse {
                         status: 500,
@@ -217,23 +286,8 @@ macro_rules! define_http_plugin {
         }
     };
 
-    // ── `handler_ref` なし: 変換ラッパで __plugin_handle_ref を生成 ──
-    (
-        name: $name:expr,
-        state: $state:ty,
-        handler: $handler:ident,
-        state_save: $save:ident,
-        state_load: $load:ident $(,)?
-    ) => {
-        $crate::define_http_plugin! {
-            @inner
-            name: $name,
-            state: $state,
-            handler: $handler,
-            state_save: $save,
-            state_load: $load,
-        }
-
+    // ── 変換ラッパ版 FFI エントリポイント（handler_ref なし版）──────────────
+    (@handle_ref_fallback) => {
         /// 変換ラッパ版の FFI エントリポイント。
         ///
         /// `HttpRequestRef<'_>` を `HttpRequest`（所有型）へ変換してから既存ハンドラを呼ぶ。
@@ -252,6 +306,34 @@ macro_rules! define_http_plugin {
         }
     };
 
+    // ── on_load_error: fail ── state_load 失敗時に RErr を返して起動を中断 ───
+    (@init_load fail, $name:expr, $state:ty, $load:ident, $bytes:ident) => {
+        match $load($bytes.as_slice()) {
+            Ok(state) => state,
+            Err(e) => {
+                eprintln!(
+                    "[{}] init: 状態ロード失敗: {}。起動を中止します",
+                    $name, e
+                );
+                return abi_stable::std_types::RResult::RErr(e.to_string().into());
+            }
+        }
+    };
+
+    // ── on_load_error: fallback ── state_load 失敗時に Default で起動 ────────
+    (@init_load fallback, $name:expr, $state:ty, $load:ident, $bytes:ident) => {
+        match $load($bytes.as_slice()) {
+            Ok(state) => state,
+            Err(e) => {
+                eprintln!(
+                    "[{}] init: 状態ロード失敗: {}。デフォルト状態で起動します",
+                    $name, e
+                );
+                <$state>::default()
+            }
+        }
+    };
+
     // ── 内部実装（共通コード） ──────────────────────────────────────────────────
     (
         @inner
@@ -259,7 +341,8 @@ macro_rules! define_http_plugin {
         state: $state:ty,
         handler: $handler:ident,
         state_save: $save:ident,
-        state_load: $load:ident $(,)?
+        state_load: $load:ident,
+        on_load_error: $on_load_error:ident $(,)?
     ) => {
         static __PLUGIN_STATE: std::sync::OnceLock<std::sync::Mutex<$state>> =
             std::sync::OnceLock::new();
@@ -304,14 +387,18 @@ macro_rules! define_http_plugin {
         extern "C" fn __init(
             _ctx: &$crate::PluginContext,
             prev_state: abi_stable::std_types::ROption<abi_stable::std_types::RSlice<'_, u8>>,
-        ) {
+        ) -> abi_stable::std_types::RResult<(), abi_stable::std_types::RString> {
             let new_state = if let abi_stable::std_types::RSome(bytes) = prev_state {
-                $load(bytes.as_slice()).unwrap_or_default()
+                // `@init_load` サブアームで `on_load_error` ポリシーに応じた処理を展開する。
+                // fail の場合: Err 時に `return RErr(...)` で早期リターンする。
+                // fallback の場合: Err 時に `Default::default()` で継続する。
+                $crate::define_http_plugin!(@init_load $on_load_error, $name, $state, $load, bytes)
             } else {
                 <$state>::default()
             };
             *__get_state().lock().unwrap_or_else(|e| e.into_inner()) = new_state;
             eprintln!("[{}] init 完了", $name);
+            abi_stable::std_types::RResult::ROk(())
         }
 
         extern "C" fn __handle(req: &$crate::HttpRequest) -> $crate::HttpResponse {
@@ -334,10 +421,19 @@ macro_rules! define_http_plugin {
             }
         }
 
-        extern "C" fn __shutdown() -> abi_stable::std_types::RVec<u8> {
+        extern "C" fn __shutdown() -> abi_stable::std_types::RResult<
+            abi_stable::std_types::RVec<u8>,
+            abi_stable::std_types::RString,
+        > {
             let state = __get_state().lock().unwrap_or_else(|e| e.into_inner());
             eprintln!("[{}] shutdown", $name);
-            abi_stable::std_types::RVec::from($save(&*state))
+            match $save(&*state) {
+                Ok(bytes) => abi_stable::std_types::RResult::ROk(bytes.into()),
+                Err(e) => {
+                    eprintln!("[{}] shutdown: 状態シリアライズ失敗: {}", $name, e);
+                    abi_stable::std_types::RResult::RErr(e.to_string().into())
+                }
+            }
         }
     };
 }

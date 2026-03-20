@@ -128,32 +128,28 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // バージョンマネージャを prefix ごとに初期化
+    let mut versions = state.versions.lock().unwrap_or_else(|e| e.into_inner());
+
     for (prefix, _) in &plugin_specs {
         let dir = prefix_to_dir(&cli.plugin_dir, prefix);
         let vm = VersionManager::new(dir, cli.max_versions)
             .with_context(|| format!("バージョンマネージャの初期化に失敗: {prefix}"))?;
-        state
-            .versions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(prefix.clone(), vm);
+        versions.insert(prefix.clone(), vm);
     }
+    drop(versions);
 
     // 初回プラグインロード
     if plugin_specs.is_empty() {
         tracing::warn!("--plugin が未指定のためフォールバックモードで起動します");
     }
+    let mut router = state.router.lock().unwrap_or_else(|e| e.into_inner());
     for (prefix, path) in &plugin_specs {
-        if let Err(e) = state
-            .router
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .load(prefix, path)
-        {
+        if let Err(e) = router.load(prefix, path) {
             tracing::error!("初回プラグインロード失敗 ({prefix}): {e}");
             tracing::warn!("プレフィックス {prefix} はフォールバックモードで起動します");
         }
     }
+    drop(router);
 
     let (tx, mut rx) = mpsc::channel::<ReloadEvent>(32);
 
@@ -314,17 +310,12 @@ async fn api_status(
 ) -> Response {
     let prefix = format!("/{prefix_param}");
 
-    let loaded = state
-        .router
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .is_loaded(&prefix);
-
-    let fallback_count = state
-        .router
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .fallback_count;
+    let (loaded, fallback_count) = {
+        let router = state.router.lock().unwrap_or_else(|e| e.into_inner());
+        let loaded = router.is_loaded(&prefix);
+        let fallback_count = router.fallback_count;
+        (loaded, fallback_count)
+    };
 
     let current_version = state
         .versions
@@ -377,16 +368,14 @@ async fn api_rollback(
 ) -> Response {
     let prefix = format!("/{prefix_param}");
 
-    let path = {
-        let versions = state.versions.lock().unwrap_or_else(|e| e.into_inner());
-        match versions.get(&prefix).and_then(|vm| vm.path_of(version)) {
-            Some(p) => p.to_path_buf(),
-            None => {
-                return api_error(
-                    StatusCode::NOT_FOUND,
-                    format!("バージョン {version} は存在しません (prefix: {prefix})"),
-                )
-            }
+    let mut versions = state.versions.lock().unwrap_or_else(|e| e.into_inner());
+    let path = match versions.get(&prefix).and_then(|vm| vm.path_of(version)) {
+        Some(p) => p.to_path_buf(),
+        None => {
+            return api_error(
+                StatusCode::NOT_FOUND,
+                format!("バージョン {version} は存在しません (prefix: {prefix})"),
+            )
         }
     };
 
@@ -398,15 +387,11 @@ async fn api_rollback(
         .is_ok();
 
     if reload_ok {
-        if let Some(vm) = state
-            .versions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get_mut(&prefix)
-        {
+        if let Some(vm) = versions.get_mut(&prefix) {
             vm.mark_current(version);
         }
     }
+    drop(versions);
 
     let status = if reload_ok { "loaded" } else { "fallback" };
     tracing::info!("API ロールバック ({prefix}): v{version} → {status}");

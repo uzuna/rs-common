@@ -311,17 +311,15 @@ impl PluginRouter {
     /// スレッドローカルプールへ返却する。[`rstring_from_pool`] でプールを活用すると
     /// 定常状態でアロケーションを削減できる。
     pub fn handle(&mut self, req: HttpRequest) -> HttpResponse {
+        let path_str = req.path.as_str();
         // 最長一致プレフィックスを検索（不変借用スコープを限定）
-        let matched = {
-            let path_str = req.path.as_str();
-            self.plugins
-                .keys()
-                .filter(|prefix| path_str.starts_with(prefix.as_str()))
-                .max_by_key(|prefix| prefix.len())
-                .cloned()
-        };
-
-        let Some(prefix) = matched else {
+        let Some((prefix, manager)) = self.plugins.iter_mut().find_map(|(path, manager)| {
+            if path_str.starts_with(path.as_str()) {
+                Some((path, manager))
+            } else {
+                None
+            }
+        }) else {
             return HttpResponse {
                 status: 404,
                 content_type: "text/plain".into(),
@@ -330,13 +328,7 @@ impl PluginRouter {
         };
 
         // is_loaded の確認（借用を早期解放するため先に取得）
-        let loaded = self
-            .plugins
-            .get(&prefix)
-            .map(|m| m.is_loaded())
-            .unwrap_or(false);
-
-        if !loaded {
+        if !manager.is_loaded() {
             self.fallback_count += 1;
             tracing::warn!(
                 "フォールバック実行 ({}): プラグイン未ロード (prefix: {})",
@@ -367,7 +359,7 @@ impl PluginRouter {
             body,
         };
 
-        let resp = self.plugins.get(&prefix).unwrap().handle(&req);
+        let resp = manager.handle(&req);
 
         // 処理済みの文字列フィールドをプールへ返却する。
         let HttpRequest {
@@ -388,16 +380,20 @@ impl PluginRouter {
     /// ホスト側で `RString` / `RVec` のアロケーションを一切行わず、
     /// `RStr<'_>` / `RSlice<'_>` としてプラグインへ渡す。
     /// プラグインが `__plugin_handle_ref` をエクスポートしている場合はゼロコピー FFI を使う。
-    pub fn handle_ref(&self, method: &str, path: &str, query: &str, body: &[u8]) -> HttpResponse {
-        // 最長一致プレフィックスを検索
-        let matched = self
-            .plugins
-            .keys()
-            .filter(|prefix| path.starts_with(prefix.as_str()))
-            .max_by_key(|prefix| prefix.len())
-            .cloned();
-
-        let Some(prefix) = matched else {
+    pub fn handle_ref(
+        &mut self,
+        method: &str,
+        path: &str,
+        query: &str,
+        body: &[u8],
+    ) -> HttpResponse {
+        let Some((prefix, manager)) = self.plugins.iter().find_map(|(path, manager)| {
+            if path.starts_with(path.as_str()) {
+                Some((path, manager))
+            } else {
+                None
+            }
+        }) else {
             return HttpResponse {
                 status: 404,
                 content_type: "text/plain".into(),
@@ -405,13 +401,13 @@ impl PluginRouter {
             };
         };
 
-        let loaded = self
-            .plugins
-            .get(&prefix)
-            .map(|m| m.is_loaded())
-            .unwrap_or(false);
-
-        if !loaded {
+        if !manager.is_loaded() {
+            self.fallback_count += 1;
+            tracing::warn!(
+                "フォールバック実行 ({}): プラグイン未ロード (prefix: {})",
+                self.fallback_count,
+                prefix
+            );
             return service_unavailable("プラグイン未ロード");
         }
 
@@ -424,7 +420,7 @@ impl PluginRouter {
             body: body.into(),
         };
 
-        self.plugins.get(&prefix).unwrap().handle_ref(&req)
+        manager.handle_ref(&req)
     }
 
     /// 登録済みプレフィックスの一覧を返す（順序不定）。

@@ -330,14 +330,12 @@ impl PluginRouter {
     /// 定常状態でアロケーションを削減できる。
     pub fn handle(&mut self, req: HttpRequest) -> HttpResponse {
         let path_str = req.path.as_str();
-        // 最長一致プレフィックスを検索（不変借用スコープを限定）
-        let Some((prefix, manager)) = self.plugins.iter_mut().find_map(|(path, manager)| {
-            if path_str.starts_with(path.as_str()) {
-                Some((path, manager))
-            } else {
-                None
-            }
-        }) else {
+        // 一致プレフィックスを検索（不変借用スコープを限定）
+        let Some((prefix, manager)) = self
+            .plugins
+            .iter_mut()
+            .find(|(pfx, _manager)| path_matches_prefix(path_str, pfx.as_str()))
+        else {
             return HttpResponse {
                 status: 404,
                 content_type: "text/plain".into(),
@@ -405,13 +403,11 @@ impl PluginRouter {
         query: &str,
         body: &[u8],
     ) -> HttpResponse {
-        let Some((prefix, manager)) = self.plugins.iter().find_map(|(path, manager)| {
-            if path.starts_with(path.as_str()) {
-                Some((path, manager))
-            } else {
-                None
-            }
-        }) else {
+        let Some((prefix, manager)) = self
+            .plugins
+            .iter()
+            .find(|(pfx, _manager)| path_matches_prefix(path, pfx.as_str()))
+        else {
             return HttpResponse {
                 status: 404,
                 content_type: "text/plain".into(),
@@ -472,6 +468,21 @@ impl PluginRouter {
 
 // ─── 共通ユーティリティ ───────────────────────────────────────────────────────
 
+/// リクエストパスがプレフィックスに一致するか判定する。
+///
+/// 一致条件:
+/// - `path == prefix`（完全一致）
+/// - `path` が `"<prefix>/"` で始まる（プレフィックス配下のパス）
+///
+/// これにより `/api` プレフィックスが `/api2` にマッチしてしまう誤検知を防ぐ。
+fn path_matches_prefix(path: &str, prefix: &str) -> bool {
+    path == prefix
+        || path
+            .strip_prefix(prefix)
+            .map(|rest| rest.starts_with('/'))
+            .unwrap_or(false)
+}
+
 fn service_unavailable(reason: &str) -> HttpResponse {
     HttpResponse {
         status: 503,
@@ -485,6 +496,26 @@ fn service_unavailable(reason: &str) -> HttpResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// path_matches_prefix: 一致条件（完全一致 / prefix/ 配下）の確認。
+    #[test]
+    fn test_path_matches_prefix() {
+        // 完全一致
+        assert!(path_matches_prefix("/api", "/api"));
+        // prefix 配下
+        assert!(path_matches_prefix("/api/hello", "/api"));
+        assert!(path_matches_prefix("/api/hello/world", "/api"));
+        // prefix の後が '/' でない → 不一致
+        assert!(!path_matches_prefix("/api2", "/api"));
+        assert!(!path_matches_prefix("/api2/hello", "/api"));
+        // 全く関係ないパス
+        assert!(!path_matches_prefix("/other", "/api"));
+        assert!(!path_matches_prefix("/", "/api"));
+        // ルートプレフィックス（完全一致のみ）
+        // NOTE: "/" は特殊で strip_prefix("/") が先頭の "/" を除去するため
+        // "/anything" はマッチしない。ルートプレフィックスは現状未使用。
+        assert!(path_matches_prefix("/", "/"));
+    }
 
     /// 値域確認: HttpResponse のステータスコードが正しく設定できること。
     #[test]

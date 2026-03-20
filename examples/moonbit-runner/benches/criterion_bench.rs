@@ -3,9 +3,10 @@ use moonbit_runner::bindings::{
     BenchmarkInput128, BenchmarkInput1k, BenchmarkInput4k, PluginInst, SensorData,
 };
 use moonbit_runner::context::ExecStore;
+use moonbit_runner::engine;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
-use wasmtime::{component::Component, Engine, Instance, Linker, Memory, Module, Store, TypedFunc};
+use wasmtime::{component::Component, Instance, Linker, Memory, Module, Store, TypedFunc};
 
 const PAGE_SIZE_BYTES: usize = 65_536;
 const RAW_EXPORT_128: &str = "benchmark_raw_128";
@@ -13,11 +14,25 @@ const RAW_EXPORT_1K: &str = "benchmark_raw_1k";
 const RAW_EXPORT_4K: &str = "benchmark_raw_4k";
 const RAW_EXPORT_ADD: &str = "add_raw";
 const ADD_RAW_TRANSFER_BYTES: usize = 16;
+const RAW_WASM_PATH_ENV: &str = "MOONBIT_RUNNER_RAW_WASM_PATH";
+
+fn new_wasmtime_engine() -> wasmtime::Engine {
+    engine::create_engine_from_env()
+        .unwrap_or_else(|err| panic!("Wasmtime engine initialization failed: {err:#}"))
+}
 
 fn plugin_path(file_name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("plugins")
         .join(file_name)
+}
+
+fn raw_plugin_path() -> PathBuf {
+    if let Ok(path) = std::env::var(RAW_WASM_PATH_ENV) {
+        PathBuf::from(path)
+    } else {
+        plugin_path("control.core.wasm")
+    }
 }
 
 struct WitHarness {
@@ -30,7 +45,7 @@ struct WitHarness {
 
 impl WitHarness {
     fn new(component_path: &Path) -> Self {
-        let engine = Engine::default();
+        let engine = new_wasmtime_engine();
         let bytes = std::fs::read(component_path).unwrap_or_else(|err| {
             panic!(
                 "component Wasm の読み込みに失敗しました: {}: {err}",
@@ -149,7 +164,7 @@ impl NativeHarness {
 
 impl RawHarness {
     fn new(raw_wasm_path: &Path) -> Self {
-        let engine = Engine::default();
+        let engine = new_wasmtime_engine();
         let module = Module::from_file(&engine, raw_wasm_path).unwrap_or_else(|err| {
             panic!(
                 "raw Wasm の読み込みに失敗しました: {}: {err}",
@@ -184,7 +199,7 @@ impl RawHarness {
             .get_typed_func::<(i32, i32), i32>(&mut store, RAW_EXPORT_ADD)
             .expect("add_raw export がありません");
 
-        Self {
+        let mut harness = Self {
             store,
             memory,
             ptr,
@@ -200,7 +215,20 @@ impl RawHarness {
             output_1k: vec![0u8; 1024],
             output_4k: vec![0u8; 4096],
             add_transfer: [0u8; ADD_RAW_TRANSFER_BYTES],
-        }
+        };
+
+        // call-only(loop=0) の初期条件を固定化しておく。
+        harness.refresh_add_transfer(0);
+        harness
+            .memory
+            .write(
+                &mut harness.store,
+                harness.ptr as usize,
+                &harness.add_transfer,
+            )
+            .expect("raw add(call-only, loop=0): 初期 memory write に失敗しました");
+
+        harness
     }
 
     fn bench_128_once(&mut self) {
@@ -257,68 +285,87 @@ impl RawHarness {
         black_box(self.output_4k[0]);
     }
 
-    fn bench_add_raw_loop1_once(&mut self) {
+    fn refresh_add_transfer(&mut self, loop_count: i32) {
         self.tick = self.tick.wrapping_add(1);
         let a = (self.tick % 1024) as i32;
         let b = ((self.tick * 3) % 1024) as i32;
-        let loop_count = 1i32;
         self.add_transfer[0..4].copy_from_slice(&a.to_le_bytes());
         self.add_transfer[4..8].copy_from_slice(&b.to_le_bytes());
         self.add_transfer[8..12].copy_from_slice(&loop_count.to_le_bytes());
         self.add_transfer[12..16].copy_from_slice(&0i32.to_le_bytes());
+    }
 
-        self.memory
-            .write(&mut self.store, self.ptr as usize, &self.add_transfer)
-            .expect("raw add(loop=1): memory write に失敗しました");
+    fn call_add_once(&mut self) {
         let out_len = self
             .call_add
             .call(&mut self.store, (self.ptr, ADD_RAW_TRANSFER_BYTES as i32))
-            .expect("raw add(loop=1): 関数呼び出しに失敗しました");
+            .expect("raw add: 関数呼び出しに失敗しました");
         assert_eq!(
             out_len as usize, ADD_RAW_TRANSFER_BYTES,
-            "raw add(loop=1): output length mismatch"
+            "raw add: output length mismatch"
         );
-        self.memory
-            .read(&self.store, self.ptr as usize, &mut self.add_transfer)
-            .expect("raw add(loop=1): memory read に失敗しました");
-        let result = i32::from_le_bytes(
+    }
+
+    fn decode_add_result(&self) -> i32 {
+        i32::from_le_bytes(
             self.add_transfer[12..16]
                 .try_into()
-                .expect("raw add(loop=1): result decode に失敗しました"),
-        );
+                .expect("raw add: result decode に失敗しました"),
+        )
+    }
+
+    fn bench_add_raw_write16_once(&mut self) {
+        self.refresh_add_transfer(0);
+        self.memory
+            .write(&mut self.store, self.ptr as usize, &self.add_transfer)
+            .expect("raw add(write16B): memory write に失敗しました");
+        black_box(self.add_transfer[0]);
+    }
+
+    fn bench_add_raw_read16_once(&mut self) {
+        self.memory
+            .read(&self.store, self.ptr as usize, &mut self.add_transfer)
+            .expect("raw add(read16B): memory read に失敗しました");
+        black_box(self.add_transfer[0]);
+    }
+
+    fn bench_add_raw_call_only_loop0_once(&mut self) {
+        self.call_add_once();
+        black_box(self.add_transfer[12]);
+    }
+
+    fn bench_add_raw_loop0_roundtrip_once(&mut self) {
+        self.refresh_add_transfer(0);
+        self.memory
+            .write(&mut self.store, self.ptr as usize, &self.add_transfer)
+            .expect("raw add(loop=0): memory write に失敗しました");
+        self.call_add_once();
+        self.memory
+            .read(&self.store, self.ptr as usize, &mut self.add_transfer)
+            .expect("raw add(loop=0): memory read に失敗しました");
+        let result = self.decode_add_result();
         black_box(result);
     }
 
-    fn bench_add_raw_loop2000_once(&mut self) {
-        self.tick = self.tick.wrapping_add(1);
-        let a = (self.tick % 1024) as i32;
-        let b = ((self.tick * 3) % 1024) as i32;
-        let loop_count = 2000i32;
-        self.add_transfer[0..4].copy_from_slice(&a.to_le_bytes());
-        self.add_transfer[4..8].copy_from_slice(&b.to_le_bytes());
-        self.add_transfer[8..12].copy_from_slice(&loop_count.to_le_bytes());
-        self.add_transfer[12..16].copy_from_slice(&0i32.to_le_bytes());
-
+    fn bench_add_raw_roundtrip_once(&mut self, loop_count: i32) {
+        self.refresh_add_transfer(loop_count);
         self.memory
             .write(&mut self.store, self.ptr as usize, &self.add_transfer)
-            .expect("raw add(loop=2000): memory write に失敗しました");
-        let out_len = self
-            .call_add
-            .call(&mut self.store, (self.ptr, ADD_RAW_TRANSFER_BYTES as i32))
-            .expect("raw add(loop=2000): 関数呼び出しに失敗しました");
-        assert_eq!(
-            out_len as usize, ADD_RAW_TRANSFER_BYTES,
-            "raw add(loop=2000): output length mismatch"
-        );
+            .expect("raw add: memory write に失敗しました");
+        self.call_add_once();
         self.memory
             .read(&self.store, self.ptr as usize, &mut self.add_transfer)
-            .expect("raw add(loop=2000): memory read に失敗しました");
-        let result = i32::from_le_bytes(
-            self.add_transfer[12..16]
-                .try_into()
-                .expect("raw add(loop=2000): result decode に失敗しました"),
-        );
+            .expect("raw add: memory read に失敗しました");
+        let result = self.decode_add_result();
         black_box(result);
+    }
+
+    fn bench_add_raw_loop1_once(&mut self) {
+        self.bench_add_raw_roundtrip_once(1);
+    }
+
+    fn bench_add_raw_loop2000_once(&mut self) {
+        self.bench_add_raw_roundtrip_once(2000);
     }
 }
 
@@ -414,11 +461,12 @@ fn bench_raw_linear_memory(c: &mut Criterion) {
         return;
     }
 
-    let raw_path = plugin_path("control.core.wasm");
+    let raw_path = raw_plugin_path();
     if !raw_path.exists() {
         eprintln!(
-            "raw Wasm が存在しないため raw benchmark をスキップします: {}",
-            raw_path.display()
+            "raw Wasm が存在しないため raw benchmark をスキップします: {} ({} で上書き可能)",
+            raw_path.display(),
+            RAW_WASM_PATH_ENV
         );
         return;
     }
@@ -445,6 +493,34 @@ fn bench_raw_linear_memory(c: &mut Criterion) {
         BenchmarkId::new("benchmark_raw", "4KB"),
         &4096usize,
         |b, _| b.iter(|| harness.bench_4k_once()),
+    );
+
+    group.throughput(Throughput::Bytes(ADD_RAW_TRANSFER_BYTES as u64));
+    group.bench_with_input(
+        BenchmarkId::new("add_raw_breakdown", "write16B"),
+        &ADD_RAW_TRANSFER_BYTES,
+        |b, _| b.iter(|| harness.bench_add_raw_write16_once()),
+    );
+
+    group.throughput(Throughput::Bytes(ADD_RAW_TRANSFER_BYTES as u64));
+    group.bench_with_input(
+        BenchmarkId::new("add_raw_breakdown", "read16B"),
+        &ADD_RAW_TRANSFER_BYTES,
+        |b, _| b.iter(|| harness.bench_add_raw_read16_once()),
+    );
+
+    group.throughput(Throughput::Bytes(ADD_RAW_TRANSFER_BYTES as u64));
+    group.bench_with_input(
+        BenchmarkId::new("add_raw_breakdown", "call-only-loop0"),
+        &ADD_RAW_TRANSFER_BYTES,
+        |b, _| b.iter(|| harness.bench_add_raw_call_only_loop0_once()),
+    );
+
+    group.throughput(Throughput::Bytes(ADD_RAW_TRANSFER_BYTES as u64));
+    group.bench_with_input(
+        BenchmarkId::new("add_raw_breakdown", "roundtrip-loop0-16B"),
+        &ADD_RAW_TRANSFER_BYTES,
+        |b, _| b.iter(|| harness.bench_add_raw_loop0_roundtrip_once()),
     );
 
     group.throughput(Throughput::Bytes(ADD_RAW_TRANSFER_BYTES as u64));

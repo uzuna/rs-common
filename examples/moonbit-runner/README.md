@@ -30,6 +30,42 @@ make -C examples/moonbit-runner bench-raw
 make -C examples/moonbit-runner bench-raw BENCH_ARGS='--sample-size=10 --measurement-time=1'
 ```
 
+## 対応付プロファイル用ビルド
+
+`add_raw/loop2000-16B` の perf 結果で `wasm[0]::function[54]` のような関数 index を追跡しやすくするため、
+name section を含む debug core Wasm を使うターゲットを追加しています。
+
+### 対応付用 core Wasm を生成
+
+```bash
+make -C examples/moonbit-runner build-plugin-raw-symbolized
+```
+
+生成物:
+- `examples/moonbit-runner/plugins/control.core.symbolized.wasm`
+
+### 対応付用ビルドで perf 収集
+
+```bash
+make -C examples/moonbit-runner perf-add-loop2000-symbolized PERF_DATA=/tmp/moonbit-runner-add-loop2000.symbolized.perf.data
+perf report -i /tmp/moonbit-runner-add-loop2000.symbolized.perf.data --stdio --no-children --sort overhead,comm,dso,symbol
+```
+
+必要に応じて profiler 形式を変更:
+
+```bash
+make -C examples/moonbit-runner perf-add-loop2000-symbolized WASMTIME_PROFILER=jitdump
+```
+
+### raw Wasm の明示指定（任意）
+
+benchmark 側は `MOONBIT_RUNNER_RAW_WASM_PATH` で raw Wasm パスを上書きできます。
+
+```bash
+MOONBIT_RUNNER_RAW_BENCH=1 MOONBIT_RUNNER_RAW_WASM_PATH=examples/moonbit-runner/plugins/control.core.symbolized.wasm \
+	cargo bench -p moonbit-runner --bench criterion_bench -- moonbit-runner/raw/add_raw/loop2000-16B
+```
+
 ## 今回のベンチマーク結果（criterion）
 
 計測コマンド:

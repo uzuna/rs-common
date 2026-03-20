@@ -4,3 +4,5 @@
 composed.wasm
 PLAN.md
 .venv
+
+*.dump

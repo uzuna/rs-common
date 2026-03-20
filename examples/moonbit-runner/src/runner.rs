@@ -14,6 +14,7 @@ use crate::bindings::{
     SensorData,
 };
 use crate::context::ExecStore;
+use crate::engine;
 use crate::raw_runner;
 
 const FLOAT_EPSILON: f32 = 1.0e-6;
@@ -211,7 +212,7 @@ pub fn run(config: &RunnerConfig) -> anyhow::Result<RunReport> {
     config.validate()?;
     ensure_supported_wasi(config.wasi)?;
 
-    let engine = Engine::default();
+    let engine = engine::create_engine_from_env()?;
     let component = load_component(&engine, &config.wasm)?;
     let mut inst = instantiate_plugin(&engine, &component, config.wasi)?;
 

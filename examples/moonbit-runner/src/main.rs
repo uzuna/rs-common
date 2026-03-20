@@ -21,6 +21,14 @@ struct Opt {
     /// PPS計測で `update` を呼び出す回数
     #[arg(long, default_value_t = 10_000)]
     iterations: usize,
+
+    /// `/status` エンドポイントを起動する
+    #[arg(long, default_value_t = false)]
+    serve_status: bool,
+
+    /// `/status` エンドポイントの待ち受けアドレス
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    status_addr: std::net::SocketAddr,
 }
 
 fn try_main() -> anyhow::Result<()> {
@@ -32,6 +40,11 @@ fn try_main() -> anyhow::Result<()> {
     };
     let report = runner::run(&config)?;
     runner::print_report(&config, &report);
+
+    if opt.serve_status {
+        runner::serve_status_endpoint(&config, &report, opt.status_addr)?;
+    }
+
     Ok(())
 }
 

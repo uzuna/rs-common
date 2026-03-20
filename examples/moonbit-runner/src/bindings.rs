@@ -10,8 +10,8 @@ use crate::context::ExecStore;
 wasmtime::component::bindgen!(in "wit/world.wit");
 
 pub use exports::local::moonbit_control::api::{
-    BenchmarkInput128, BenchmarkInput1k, BenchmarkInput4k, BenchmarkOutput128,
-    BenchmarkOutput1k, BenchmarkOutput4k, MotorOutput, PluginStatus, SensorData,
+    BenchmarkInput128, BenchmarkInput1k, BenchmarkInput4k, BenchmarkOutput128, BenchmarkOutput1k,
+    BenchmarkOutput4k, MotorOutput, PluginStatus, SensorData,
 };
 
 /// MoonBitプラグインの呼び出しラッパー

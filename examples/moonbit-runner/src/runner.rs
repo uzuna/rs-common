@@ -3,11 +3,16 @@
 use anyhow::{bail, ensure, Context};
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use wasmtime::{component::Component, Engine};
 
-use crate::bindings::{MotorOutput, PluginInst, PluginStatus, SensorData};
+use crate::bindings::{
+    BenchmarkInput128, BenchmarkInput1k, BenchmarkInput4k, MotorOutput, PluginInst, PluginStatus,
+    SensorData,
+};
 use crate::context::ExecStore;
 
 const FLOAT_EPSILON: f32 = 1.0e-6;
@@ -80,6 +85,33 @@ impl BenchmarkResult {
     }
 }
 
+/// サイズ別ベンチマーク計測結果（ns レベル統計付き）
+#[derive(Debug, Clone, Serialize)]
+pub struct SizeBenchmarkResult {
+    /// ペイロードサイズ (バイト)
+    pub payload_bytes: usize,
+    /// 呼び出し回数
+    pub iterations: usize,
+    /// 総経過時間
+    #[serde(skip)]
+    #[allow(dead_code)]
+    pub elapsed: Duration,
+    /// 1呼び出しあたり平均 ns
+    pub avg_ns: u64,
+    /// 1呼び出しあたり最大 ns
+    pub max_ns: u64,
+    /// 1秒あたりの処理回数
+    pub pps: f64,
+}
+
+/// 3サイズ分のベンチマーク結果をまとめた構造体
+#[derive(Debug, Clone, Serialize)]
+pub struct SizeBenchmarkReport {
+    pub b128: SizeBenchmarkResult,
+    pub b1k: SizeBenchmarkResult,
+    pub b4k: SizeBenchmarkResult,
+}
+
 /// 実行結果のサマリ
 #[derive(Debug, Clone)]
 pub struct RunReport {
@@ -93,6 +125,79 @@ pub struct RunReport {
     pub benchmark: BenchmarkResult,
     /// ベンチマーク後の最終ステータス
     pub final_status: PluginStatus,
+    /// サイズ別ベンチマーク結果
+    pub size_benchmarks: SizeBenchmarkReport,
+}
+
+// ── /status エンドポイント向け JSON 構造体 ────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+struct StatusResponse {
+    plugin_status: PluginStatusJson,
+    update_benchmark: UpdateBenchmarkJson,
+    size_benchmarks: SizeBenchmarksJson,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PluginStatusJson {
+    running: bool,
+    error_code: u32,
+    temperature: f32,
+}
+
+impl From<&PluginStatus> for PluginStatusJson {
+    fn from(s: &PluginStatus) -> Self {
+        Self {
+            running: s.running,
+            error_code: s.error_code,
+            temperature: s.temperature,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct UpdateBenchmarkJson {
+    iterations: usize,
+    elapsed_ms: f64,
+    pps: f64,
+}
+
+impl From<&BenchmarkResult> for UpdateBenchmarkJson {
+    fn from(b: &BenchmarkResult) -> Self {
+        Self {
+            iterations: b.iterations,
+            elapsed_ms: b.elapsed.as_secs_f64() * 1_000.0,
+            pps: b.pps,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SizeBenchmarkEntryJson {
+    payload_bytes: usize,
+    iterations: usize,
+    avg_ns: u64,
+    max_ns: u64,
+    pps: f64,
+}
+
+impl From<&SizeBenchmarkResult> for SizeBenchmarkEntryJson {
+    fn from(r: &SizeBenchmarkResult) -> Self {
+        Self {
+            payload_bytes: r.payload_bytes,
+            iterations: r.iterations,
+            avg_ns: r.avg_ns,
+            max_ns: r.max_ns,
+            pps: r.pps,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SizeBenchmarksJson {
+    b128: SizeBenchmarkEntryJson,
+    b1k: SizeBenchmarkEntryJson,
+    b4k: SizeBenchmarkEntryJson,
 }
 
 /// Phase3 で必要な単発検証と PPS ベンチマークを順に実行する
@@ -123,12 +228,15 @@ pub fn run(config: &RunnerConfig) -> anyhow::Result<RunReport> {
         .get_status()
         .context("ベンチマーク後ステータスの取得に失敗しました")?;
 
+    let size_benchmarks = run_size_benchmarks(&mut inst, config.benchmark_iterations)?;
+
     Ok(RunReport {
         initial_status,
         probe_outputs,
         probe_status,
         benchmark,
         final_status,
+        size_benchmarks,
     })
 }
 
@@ -170,6 +278,66 @@ pub fn print_report(config: &RunnerConfig, report: &RunReport) {
         report.final_status.error_code,
         report.final_status.temperature
     );
+
+    fn print_size_result(label: &str, r: &SizeBenchmarkResult) {
+        println!(
+            "サイズ別ベンチ[{label}]: payload={}B, avg_ns={}, max_ns={}, pps={:.2}",
+            r.payload_bytes, r.avg_ns, r.max_ns, r.pps
+        );
+    }
+    print_size_result("128B", &report.size_benchmarks.b128);
+    print_size_result("1KB ", &report.size_benchmarks.b1k);
+    print_size_result("4KB ", &report.size_benchmarks.b4k);
+}
+
+/// ベンチマーク完了済みの `report` を JSON で返す HTTP `/status` エンドポイントを起動する。
+/// 関数は Ctrl-C など OS シグナルを受けるまでブロックする。
+pub fn serve_status_endpoint(
+    _config: &RunnerConfig,
+    report: &RunReport,
+    addr: SocketAddr,
+) -> anyhow::Result<()> {
+    use axum::{extract::State, routing::get, Json, Router};
+    use tokio::net::TcpListener;
+
+    let response = build_status_response(report);
+    let shared = Arc::new(response);
+
+    async fn handle_status(State(state): State<Arc<StatusResponse>>) -> Json<StatusResponse> {
+        Json((*state).clone())
+    }
+
+    let app = Router::new()
+        .route("/status", get(handle_status))
+        .with_state(shared);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .context("tokio ランタイムの構築に失敗しました")?;
+
+    rt.block_on(async move {
+        let listener = TcpListener::bind(addr)
+            .await
+            .with_context(|| format!("アドレス {addr} への bind に失敗しました"))?;
+        println!("ステータスサーバー起動: http://{addr}/status");
+        axum::serve(listener, app)
+            .await
+            .context("HTTP サーバーがエラー終了しました")
+    })
+}
+
+fn build_status_response(report: &RunReport) -> StatusResponse {
+    StatusResponse {
+        plugin_status: PluginStatusJson::from(&report.final_status),
+        update_benchmark: UpdateBenchmarkJson::from(&report.benchmark),
+        size_benchmarks: SizeBenchmarksJson {
+            b128: SizeBenchmarkEntryJson::from(&report.size_benchmarks.b128),
+            b1k: SizeBenchmarkEntryJson::from(&report.size_benchmarks.b1k),
+            b4k: SizeBenchmarkEntryJson::from(&report.size_benchmarks.b4k),
+        },
+    }
 }
 
 fn ensure_supported_wasi(wasi: WasiSupport) -> anyhow::Result<()> {
@@ -245,6 +413,116 @@ fn benchmark_updates(
             .context("PPSベンチマーク中の update 呼び出しに失敗しました")?;
     }
     Ok(BenchmarkResult::from_elapsed(iterations, started.elapsed()))
+}
+
+/// 3サイズ分のサイズ別ベンチマークを実行する
+fn run_size_benchmarks(
+    inst: &mut PluginInst,
+    iterations: usize,
+) -> anyhow::Result<SizeBenchmarkReport> {
+    Ok(SizeBenchmarkReport {
+        b128: benchmark_size_128(inst, iterations)?,
+        b1k: benchmark_size_1k(inst, iterations)?,
+        b4k: benchmark_size_4k(inst, iterations)?,
+    })
+}
+
+fn benchmark_size_128(
+    inst: &mut PluginInst,
+    iterations: usize,
+) -> anyhow::Result<SizeBenchmarkResult> {
+    const SIZE: usize = 128;
+    let payload = vec![0u8; SIZE];
+    let input = BenchmarkInput128 {
+        payload: payload.clone(),
+    };
+    let mut max_ns: u64 = 0;
+    let total_start = Instant::now();
+    for _ in 0..iterations {
+        let call_start = Instant::now();
+        inst.benchmark_128(&input)
+            .context("benchmark_128 の呼び出しに失敗しました")?;
+        let ns = call_start.elapsed().as_nanos() as u64;
+        if ns > max_ns {
+            max_ns = ns;
+        }
+    }
+    let elapsed = total_start.elapsed();
+    Ok(size_result(SIZE, iterations, elapsed, max_ns))
+}
+
+fn benchmark_size_1k(
+    inst: &mut PluginInst,
+    iterations: usize,
+) -> anyhow::Result<SizeBenchmarkResult> {
+    const SIZE: usize = 1024;
+    let payload = vec![0u8; SIZE];
+    let input = BenchmarkInput1k {
+        payload: payload.clone(),
+    };
+    let mut max_ns: u64 = 0;
+    let total_start = Instant::now();
+    for _ in 0..iterations {
+        let call_start = Instant::now();
+        inst.benchmark_1k(&input)
+            .context("benchmark_1k の呼び出しに失敗しました")?;
+        let ns = call_start.elapsed().as_nanos() as u64;
+        if ns > max_ns {
+            max_ns = ns;
+        }
+    }
+    let elapsed = total_start.elapsed();
+    Ok(size_result(SIZE, iterations, elapsed, max_ns))
+}
+
+fn benchmark_size_4k(
+    inst: &mut PluginInst,
+    iterations: usize,
+) -> anyhow::Result<SizeBenchmarkResult> {
+    const SIZE: usize = 4096;
+    let payload = vec![0u8; SIZE];
+    let input = BenchmarkInput4k {
+        payload: payload.clone(),
+    };
+    let mut max_ns: u64 = 0;
+    let total_start = Instant::now();
+    for _ in 0..iterations {
+        let call_start = Instant::now();
+        inst.benchmark_4k(&input)
+            .context("benchmark_4k の呼び出しに失敗しました")?;
+        let ns = call_start.elapsed().as_nanos() as u64;
+        if ns > max_ns {
+            max_ns = ns;
+        }
+    }
+    let elapsed = total_start.elapsed();
+    Ok(size_result(SIZE, iterations, elapsed, max_ns))
+}
+
+fn size_result(
+    payload_bytes: usize,
+    iterations: usize,
+    elapsed: Duration,
+    max_ns: u64,
+) -> SizeBenchmarkResult {
+    let avg_ns = if iterations == 0 {
+        0
+    } else {
+        (elapsed.as_nanos() as u64) / (iterations as u64)
+    };
+    let pps = if elapsed.is_zero() {
+        0.0
+    } else {
+        iterations as f64 / elapsed.as_secs_f64()
+    };
+    SizeBenchmarkResult {
+        payload_bytes,
+        iterations,
+        elapsed,
+        avg_ns,
+        max_ns,
+        pps,
+    }
 }
 
 fn verify_probe_result(outputs: &[MotorOutput], status: &PluginStatus) -> anyhow::Result<()> {

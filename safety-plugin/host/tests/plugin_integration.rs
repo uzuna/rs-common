@@ -1,27 +1,28 @@
-//! 統合テスト: プラグインのロード・HTTP処理・パニック隔離・ホットリロード・状態引き継ぎの検証。
+//! 統合テスト（example-plugin）: ロード・HTTP処理・パニック隔離・ホットリロード・状態引き継ぎ。
 //!
 //! 前提: `cargo build -p safety-plugin-example` でプラグインをビルド済みであること。
 //!
-//! # abi_stable のキャッシュ仕様
-//! `abi_stable` の `load_from_file` はプロセス内で最初の成功ロードをキャッシュする。
-//! そのため、一度でも正常ロードが成功すると、以降は同じモジュールが返される。
-//! テスト間での `STATE`（request_count）汚染を防ぐため、環境変数 `PLUGIN_RESET=1` を使う。
+//! # プラグインロード方式について  
+//! 旧実装では `abi_stable::load_from_file` のプロセス内キャッシュ仕様を前提としていたが、  
+//! 現在のホスト実装は `libloading` で `.so` をロードし、`__plugin_create_ref` を直接呼び出す。  
+//! これにより、`abi_stable` のプロセスグローバルなキャッシュを迂回しつつ、複数の .so を同一  
+//! プロセス内にロードできる設計になっている。  
+//!  
+//! このテストバイナリでは example-plugin のみを対象としているが、これはテストの見通しと  
+//! 状態管理を単純にするためであり、「同一プロセスに複数 .so をロードできない」ためではない。  
 //!
 //! # テスト並列実行について
-//! 環境変数や `STATE` の競合を防ぐため、`ENV_MUTEX` で全テストを直列化している。
+//! 環境変数や STATE の競合を防ぐため、`ENV_MUTEX` で全テストを直列化している。
 
 use std::{path::PathBuf, sync::Mutex};
 
 use abi_stable::std_types::RVec;
 use safety_plugin_common::HttpRequest;
-use safety_plugin_host::plugin_manager::PluginManager;
+use safety_plugin_host::plugin_manager::PluginRouter;
 
 /// 環境変数と STATE を排他操作するための Mutex。
-/// パニックで毒化されても `unwrap_or_else` で回復する。
 static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
-/// ビルド済みの example-plugin .so のパスを返す。
-/// `SAFETY_PLUGIN_EXAMPLE_PATH` 環境変数で上書き可能。
 fn example_plugin_path() -> PathBuf {
     if let Ok(p) = std::env::var("SAFETY_PLUGIN_EXAMPLE_PATH") {
         return PathBuf::from(p);
@@ -29,34 +30,27 @@ fn example_plugin_path() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     PathBuf::from(manifest_dir)
         .parent()
-        .unwrap() // safety-plugin/
+        .unwrap()
         .parent()
-        .unwrap() // ワークスペースルート
+        .unwrap()
         .join("target/debug/libsafety_plugin_example.so")
 }
 
-/// プラグインが未ビルドの場合はテストをスキップし `None` を返す。
 fn plugin_path_or_skip() -> Option<PathBuf> {
     let path = example_plugin_path();
     if !path.exists() {
-        eprintln!(
-            "スキップ: `cargo build -p safety-plugin-example` を実行してください。\nパス: {}",
-            path.display()
-        );
+        eprintln!("スキップ: `cargo build -p safety-plugin-example` を実行してください。");
         None
     } else {
         Some(path)
     }
 }
 
-/// 環境変数を一時的に設定し、クロージャ終了後に除去する。
-/// パニックで毒化されたミューテックスも `unwrap_or_else` で回復する。
 fn with_env<F: FnOnce()>(vars: &[(&str, &str)], f: F) {
     let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     for (k, v) in vars {
         std::env::set_var(k, v);
     }
-    // パニックが起きてもenv varをクリーンアップできるよう catch_unwind でラップ
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
     for (k, _) in vars {
         std::env::remove_var(k);
@@ -66,27 +60,6 @@ fn with_env<F: FnOnce()>(vars: &[(&str, &str)], f: F) {
     }
 }
 
-/// テスト用の GET /api/hello リクエストを作成する。
-fn make_get_hello() -> HttpRequest {
-    HttpRequest {
-        method: "GET".into(),
-        path: "/api/hello".into(),
-        query: "".into(),
-        body: RVec::new(),
-    }
-}
-
-/// テスト用の POST /api/echo リクエストを作成する。
-fn make_post_echo(body: &[u8]) -> HttpRequest {
-    HttpRequest {
-        method: "POST".into(),
-        path: "/api/echo".into(),
-        query: "".into(),
-        body: RVec::from(body.to_vec()),
-    }
-}
-
-/// テスト用の指定パスへの GET リクエストを作成する。
 fn make_get(path: &str) -> HttpRequest {
     HttpRequest {
         method: "GET".into(),
@@ -96,36 +69,49 @@ fn make_get(path: &str) -> HttpRequest {
     }
 }
 
+fn make_post(path: &str, body: &[u8]) -> HttpRequest {
+    HttpRequest {
+        method: "POST".into(),
+        path: path.into(),
+        query: "".into(),
+        body: RVec::from(body.to_vec()),
+    }
+}
+
 // ─── 正常系テスト ────────────────────────────────────────────────────────────
 
-/// 正常系: プラグインが GET /api/hello に 200 を返すことを確認する。
+/// 正常系: GET /api/hello に 200 が返ること。
 #[test]
 fn test_normal_handle() {
     let Some(path) = plugin_path_or_skip() else {
         return;
     };
 
-    // (リクエスト数, 期待ステータス)
     let cases = [(1usize, 200u16), (3, 200), (5, 200)];
 
-    with_env(&[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "0")], || {
-        for (n, expected_status) in &cases {
-            let mut mgr = PluginManager::default();
-            mgr.load(&path).expect("プラグインのロードに失敗");
-            let mut last_status = 0u16;
-            for _ in 0..*n {
-                last_status = mgr.handle(&make_get_hello()).status;
+    with_env(
+        &[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "0")],
+        || {
+            for (n, expected_status) in &cases {
+                let mut router = PluginRouter::default();
+                router
+                    .load("/api", &path)
+                    .expect("プラグインのロードに失敗");
+                let mut last_status = 0u16;
+                for _ in 0..*n {
+                    last_status = router.handle(make_get("/api/hello")).status;
+                }
+                assert_eq!(
+                    last_status, *expected_status,
+                    "{n}回リクエスト後のステータスが不正"
+                );
+                assert_eq!(router.fallback_count, 0);
             }
-            assert_eq!(
-                last_status, *expected_status,
-                "{n}回リクエスト後のステータスが不正"
-            );
-            assert_eq!(mgr.fallback_count, 0, "正常時はフォールバックしないこと");
-        }
-    });
+        },
+    );
 }
 
-/// 正常系: POST /api/echo がリクエストボディをそのまま返すことを確認する。
+/// 正常系: POST /api/echo がボディをそのまま返すこと。
 #[test]
 fn test_echo_handle() {
     let Some(path) = plugin_path_or_skip() else {
@@ -134,22 +120,23 @@ fn test_echo_handle() {
 
     let cases: &[&[u8]] = &[b"hello", b"", b"\x00\x01\x02"];
 
-    with_env(&[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "0")], || {
-        let mut mgr = PluginManager::default();
-        mgr.load(&path).expect("プラグインのロードに失敗");
-        for body in cases {
-            let resp = mgr.handle(&make_post_echo(body));
-            assert_eq!(resp.status, 200, "echo は 200 を返すべき");
-            assert_eq!(
-                resp.body.as_slice(),
-                *body,
-                "echo はボディをそのまま返すべき"
-            );
-        }
-    });
+    with_env(
+        &[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "0")],
+        || {
+            let mut router = PluginRouter::default();
+            router
+                .load("/api", &path)
+                .expect("プラグインのロードに失敗");
+            for body in cases {
+                let resp = router.handle(make_post("/api/echo", body));
+                assert_eq!(resp.status, 200);
+                assert_eq!(resp.body.as_slice(), *body);
+            }
+        },
+    );
 }
 
-/// 正常系: プラグインが担当しないパスは 404 が返ることを確認する（プラグイン処理）。
+/// 正常系: プラグイン内で未知のパスは 404 が返ること。
 #[test]
 fn test_unmatched_path_in_plugin_returns_404() {
     let Some(path) = plugin_path_or_skip() else {
@@ -158,259 +145,251 @@ fn test_unmatched_path_in_plugin_returns_404() {
 
     let cases = ["/api/unknown", "/api/foo/bar"];
 
-    with_env(&[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "0")], || {
-        let mut mgr = PluginManager::default();
-        mgr.load(&path).expect("プラグインのロードに失敗");
-        for req_path in &cases {
-            let resp = mgr.handle(&make_get(req_path));
-            assert_eq!(
-                resp.status, 404,
-                "パス {req_path} は 404 を返すべき（プラグイン内）"
-            );
-        }
-        assert_eq!(mgr.fallback_count, 0, "404 はフォールバックではない");
-    });
+    with_env(
+        &[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "0")],
+        || {
+            let mut router = PluginRouter::default();
+            router
+                .load("/api", &path)
+                .expect("プラグインのロードに失敗");
+            for req_path in &cases {
+                let resp = router.handle(make_get(req_path));
+                assert_eq!(resp.status, 404, "パス {req_path} は 404 が返るべき");
+            }
+            assert_eq!(router.fallback_count, 0);
+        },
+    );
 }
 
-/// 正常系: プラグインが担当しないルートプレフィックスは 404 が返ることを確認する（ホスト処理）。
+/// 正常系: 未登録プレフィックスはホストが 404 を返すこと。
 #[test]
 fn test_unregistered_route_returns_404() {
     let Some(path) = plugin_path_or_skip() else {
         return;
     };
 
-    // /api 以外のプレフィックスはホストが 404 を返す
     let cases = ["/other", "/metrics", "/healthz", "/"];
 
-    with_env(&[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "0")], || {
-        let mut mgr = PluginManager::default();
-        mgr.load(&path).expect("プラグインのロードに失敗");
-        for req_path in &cases {
-            let resp = mgr.handle(&make_get(req_path));
-            assert_eq!(
-                resp.status, 404,
-                "未登録パス {req_path} はホストが 404 を返すべき"
-            );
-        }
-        assert_eq!(mgr.fallback_count, 0, "ルート未マッチはフォールバックではない");
-    });
+    with_env(
+        &[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "0")],
+        || {
+            let mut router = PluginRouter::default();
+            router
+                .load("/api", &path)
+                .expect("プラグインのロードに失敗");
+            for req_path in &cases {
+                let resp = router.handle(make_get(req_path));
+                assert_eq!(resp.status, 404, "未登録パス {req_path} は 404 が返るべき");
+            }
+            assert_eq!(router.fallback_count, 0);
+        },
+    );
 }
 
-/// 異常系: プラグイン未ロード時は 503 が返り、fallback_count が加算される。
-/// この テストは env var を使わないため ENV_MUTEX 外で実行できる。
+/// 異常系: プレフィックス未登録時は 404 が返り fallback_count に加算されないこと。
 #[test]
 fn test_handle_without_plugin() {
     let cases = [1usize, 3, 10];
     for n in cases {
-        let mut mgr = PluginManager::default();
+        let mut router = PluginRouter::default();
         for _ in 0..n {
-            let resp = mgr.handle(&make_get_hello());
-            assert_eq!(resp.status, 503, "未ロード時は 503 が返るべき");
+            let resp = router.handle(make_get("/api/hello"));
+            assert_eq!(resp.status, 404);
         }
-        assert_eq!(mgr.fallback_count, n as u64, "fallback_count が一致しない");
+        assert_eq!(router.fallback_count, 0);
     }
 }
 
 // ─── 異常系テスト ────────────────────────────────────────────────────────────
 
-/// 異常系: プラグインがパニックした場合に 500 が返り、ホストが継続することを確認する。
+/// 異常系: プラグインがパニックした場合に 500 が返り、ホストが継続すること。
 #[test]
 fn test_panic_returns_500() {
     let Some(path) = plugin_path_or_skip() else {
         return;
     };
 
-    // (リクエスト数, 期待ステータス, 期待fallback_count)
     let cases = [(1usize, 500u16, 0u64), (3, 500, 0)];
 
     for (n, expected_status, expected_fc) in &cases {
-        with_env(&[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "1")], || {
-            let mut mgr = PluginManager::default();
-            mgr.load(&path).unwrap();
-            let mut last_status = 0u16;
-            for _ in 0..*n {
-                last_status = mgr.handle(&make_get_hello()).status;
-            }
-            assert_eq!(
-                last_status, *expected_status,
-                "パニック時は 500 が返るべき（{n}回目）"
-            );
-            assert_eq!(
-                mgr.fallback_count, *expected_fc,
-                "パニック時は fallback_count が増えないこと（500 はプラグイン側処理）"
-            );
-        });
+        with_env(
+            &[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "1")],
+            || {
+                let mut router = PluginRouter::default();
+                router.load("/api", &path).unwrap();
+                let mut last_status = 0u16;
+                for _ in 0..*n {
+                    last_status = router.handle(make_get("/api/hello")).status;
+                }
+                assert_eq!(last_status, *expected_status);
+                assert_eq!(router.fallback_count, *expected_fc);
+            },
+        );
     }
 }
 
 // ─── ホットリロードテスト ─────────────────────────────────────────────────────
 
-/// 正常系: ホットリロード後もプラグインが動作を継続することを確認する。
+/// 正常系: ホットリロード後もプラグインが動作を継続すること。
 #[test]
 fn test_hot_reload_continues() {
     let Some(path) = plugin_path_or_skip() else {
         return;
     };
 
-    with_env(&[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "0")], || {
-        let mut mgr = PluginManager::default();
-        mgr.load(&path).unwrap();
+    with_env(
+        &[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "0")],
+        || {
+            let mut router = PluginRouter::default();
+            router.load("/api", &path).unwrap();
 
-        for _ in 0..5 {
-            assert_eq!(mgr.handle(&make_get_hello()).status, 200);
-        }
-        assert!(mgr.is_loaded());
+            for _ in 0..5 {
+                assert_eq!(router.handle(make_get("/api/hello")).status, 200);
+            }
 
-        // ホットリロード
-        let result = mgr.reload(&path);
-        assert!(result.is_ok(), "リロードが失敗した: {result:?}");
-        assert!(mgr.is_loaded(), "リロード後もロード済みであるべき");
+            router.reload("/api", &path).expect("リロードが失敗");
+            assert!(router.is_loaded("/api"));
 
-        for _ in 0..3 {
-            assert_eq!(
-                mgr.handle(&make_get_hello()).status,
-                200,
-                "リロード後も 200 が返るべき"
-            );
-        }
-        assert_eq!(mgr.fallback_count, 0, "正常リロードではフォールバックしない");
-    });
+            for _ in 0..3 {
+                assert_eq!(router.handle(make_get("/api/hello")).status, 200);
+            }
+            assert_eq!(router.fallback_count, 0);
+        },
+    );
 }
 
-/// 正常系: ホットリロード時に内部状態（request_count）が引き継がれることを確認する。
+/// 正常系: ホットリロード時に request_count が引き継がれること。
 #[test]
 fn test_hot_reload_state_transfer() {
     let Some(path) = plugin_path_or_skip() else {
         return;
     };
 
-    with_env(&[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "0")], || {
-        let mut mgr = PluginManager::default();
-        mgr.load(&path).unwrap(); // init: PLUGIN_RESET=1 → request_count=0
+    with_env(
+        &[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "0")],
+        || {
+            let mut router = PluginRouter::default();
+            router.load("/api", &path).unwrap();
 
-        let first_requests = 7u64;
-        for _ in 0..first_requests {
-            mgr.handle(&make_get_hello()); // request_count: 0→7
-        }
+            let first_requests = 7u64;
+            for _ in 0..first_requests {
+                router.handle(make_get("/api/hello"));
+            }
 
-        // PLUGIN_RESET を解除してリロード（状態が引き継がれることを確認）
-        std::env::remove_var("PLUGIN_RESET");
-        mgr.reload(&path).unwrap(); // init: prev_state=[7] → request_count=7
+            std::env::remove_var("PLUGIN_RESET");
+            router.reload("/api", &path).unwrap();
 
-        let second_requests = 3u64;
-        for _ in 0..second_requests {
-            mgr.handle(&make_get_hello()); // request_count: 7→10
-        }
+            let second_requests = 3u64;
+            for _ in 0..second_requests {
+                router.handle(make_get("/api/hello"));
+            }
 
-        let state = mgr.unload().expect("状態が保存されていない");
-        assert_eq!(state.len(), 8, "request_count は 8バイト(u64)のはず");
-        let request_count = u64::from_le_bytes(state[..8].try_into().unwrap());
-        assert_eq!(
-            request_count,
-            first_requests + second_requests,
-            "リロードをまたいで request_count が引き継がれていない（got {request_count}）"
-        );
-    });
+            let state = router.unload("/api").expect("状態が保存されていない");
+            assert_eq!(state.len(), 8);
+            let request_count = u64::from_le_bytes(state[..8].try_into().unwrap());
+            assert_eq!(
+                request_count,
+                first_requests + second_requests,
+                "リロードをまたいで request_count が引き継がれていない（got {request_count}）"
+            );
+        },
+    );
 }
 
-/// 正常系: 複数回リロードにわたって状態が累積されることを確認する。
+/// 正常系: 複数回リロードにわたって状態が累積されること。
 #[test]
 fn test_multi_reload_state_accumulation() {
     let Some(path) = plugin_path_or_skip() else {
         return;
     };
 
-    with_env(&[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "0")], || {
-        let mut mgr = PluginManager::default();
-        mgr.load(&path).unwrap(); // request_count=0
+    with_env(
+        &[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "0")],
+        || {
+            let mut router = PluginRouter::default();
+            router.load("/api", &path).unwrap();
 
-        // PLUGIN_RESET を解除して以降のリロードは状態を引き継ぐ
-        std::env::remove_var("PLUGIN_RESET");
+            std::env::remove_var("PLUGIN_RESET");
 
-        let rounds = [5u64, 3, 2]; // 各ラウンドのリクエスト数
-        let mut total = 0u64;
+            let rounds = [5u64, 3, 2];
+            let mut total = 0u64;
 
-        for requests in rounds {
-            for _ in 0..requests {
-                mgr.handle(&make_get_hello());
+            for requests in rounds {
+                for _ in 0..requests {
+                    router.handle(make_get("/api/hello"));
+                }
+                total += requests;
+                router.reload("/api", &path).unwrap();
             }
-            total += requests;
-            mgr.reload(&path).unwrap();
-        }
 
-        let state = mgr.unload().expect("状態が保存されていない");
-        let request_count = u64::from_le_bytes(state[..8].try_into().unwrap());
-        assert_eq!(
-            request_count, total,
-            "複数リロードにわたる累積 request_count が不正（got {request_count}）"
-        );
-    });
+            let state = router.unload("/api").expect("状態が保存されていない");
+            let request_count = u64::from_le_bytes(state[..8].try_into().unwrap());
+            assert_eq!(
+                request_count, total,
+                "累積 request_count が不正（got {request_count}）"
+            );
+        },
+    );
 }
 
-/// 異常系: 壊れた .so をリロードしても旧プラグインで継続することを確認する。
+/// 異常系: 壊れた .so をリロードしても旧プラグインで継続すること。
 #[test]
 fn test_reload_failure_falls_back_to_old() {
     let Some(path) = plugin_path_or_skip() else {
         return;
     };
 
-    with_env(&[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "0")], || {
-        let mut mgr = PluginManager::default();
-        mgr.load(&path).unwrap();
+    with_env(
+        &[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "0")],
+        || {
+            let mut router = PluginRouter::default();
+            router.load("/api", &path).unwrap();
 
-        for _ in 0..5 {
-            mgr.handle(&make_get_hello());
-        }
+            for _ in 0..5 {
+                router.handle(make_get("/api/hello"));
+            }
 
-        // 存在しないパスでリロード → 失敗するが旧バージョンで継続
-        let result =
-            mgr.reload(std::path::Path::new("/nonexistent/plugin_that_does_not_exist.so"));
+            let _result = router.reload("/api", std::path::Path::new("/nonexistent/plugin.so"));
 
-        assert!(mgr.is_loaded(), "リロード後（成否問わず）ロード済みであるべき");
-        assert_eq!(
-            mgr.handle(&make_get_hello()).status,
-            200,
-            "旧プラグインで 200 が返るべき"
-        );
-        assert_eq!(mgr.fallback_count, 0, "フォールバックしないこと");
-        let _ = result; // Ok/Err どちらでも許容
-    });
+            assert!(router.is_loaded("/api"));
+            assert_eq!(router.handle(make_get("/api/hello")).status, 200);
+            assert_eq!(router.fallback_count, 0);
+        },
+    );
 }
 
-/// 安定性テスト: 100回リロードを繰り返しても動作が安定することを確認する。
+/// 安定性テスト: 100回リロードを繰り返しても動作が安定すること。
 #[test]
 fn test_100_reload_stability() {
     let Some(path) = plugin_path_or_skip() else {
         return;
     };
 
-    with_env(&[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "0")], || {
-        let mut mgr = PluginManager::default();
-        mgr.load(&path).unwrap(); // request_count=0
+    with_env(
+        &[("PLUGIN_RESET", "1"), ("PLUGIN_SHOULD_PANIC", "0")],
+        || {
+            let mut router = PluginRouter::default();
+            router.load("/api", &path).unwrap();
 
-        // リロード後は状態を引き継ぐ（PLUGIN_RESET解除）
-        std::env::remove_var("PLUGIN_RESET");
+            std::env::remove_var("PLUGIN_RESET");
 
-        for i in 0..100u32 {
-            let status = mgr.handle(&make_get_hello()).status;
-            assert_eq!(status, 200, "リロード {i} 回目のリクエストが失敗");
-            mgr.reload(&path)
-                .unwrap_or_else(|e| panic!("リロード {i} 回目が失敗: {e}"));
-        }
+            for i in 0..100u32 {
+                let status = router.handle(make_get("/api/hello")).status;
+                assert_eq!(status, 200, "リロード {i} 回目のリクエストが失敗");
+                router
+                    .reload("/api", &path)
+                    .unwrap_or_else(|e| panic!("リロード {i} 回目が失敗: {e}"));
+            }
 
-        assert_eq!(
-            mgr.handle(&make_get_hello()).status,
-            200,
-            "100回リロード後のリクエストが失敗"
-        );
-        assert_eq!(mgr.fallback_count, 0, "安定性テストでフォールバックが発生");
+            assert_eq!(router.handle(make_get("/api/hello")).status, 200);
+            assert_eq!(router.fallback_count, 0);
 
-        // 100リクエスト（各ラウンド1回）+ 最後の1リクエスト = 101
-        let state = mgr.unload().expect("状態が保存されていない");
-        let request_count = u64::from_le_bytes(state[..8].try_into().unwrap());
-        assert_eq!(
-            request_count, 101,
-            "100回リロード後の request_count が不正（got {request_count}）"
-        );
-    });
+            let state = router.unload("/api").expect("状態が保存されていない");
+            let request_count = u64::from_le_bytes(state[..8].try_into().unwrap());
+            assert_eq!(
+                request_count, 101,
+                "request_count が不正（got {request_count}）"
+            );
+        },
+    );
 }

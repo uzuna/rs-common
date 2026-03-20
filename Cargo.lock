@@ -5080,13 +5080,25 @@ dependencies = [
  "axum",
  "clap",
  "http-body-util",
+ "libloading 0.8.9",
  "notify",
  "safety-plugin-common",
+ "serde_json",
  "signal-hook",
  "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "safety-plugin-sample"
+version = "0.1.0"
+dependencies = [
+ "abi_stable",
+ "safety-plugin-common",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

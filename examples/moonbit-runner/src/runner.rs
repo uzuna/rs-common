@@ -1,27 +1,18 @@
-//! MoonBitプラグインの実行手順とベンチマークをまとめる
+//! MoonBit Wasm プラグインへ HTTP 経由で処理を委譲するランナー
 
 use anyhow::{bail, ensure, Context};
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
 use wasmtime::{component::Component, Engine};
 
-use crate::bindings::{
-    BenchmarkInput128, BenchmarkInput1k, BenchmarkInput4k, MotorOutput, PluginInst, PluginStatus,
-    SensorData,
-};
+use crate::bindings::{MotorOutput, PluginInst, PluginStatus, SensorData};
 use crate::context::ExecStore;
 use crate::engine;
-use crate::raw_runner;
 
-const FLOAT_EPSILON: f32 = 1.0e-6;
-const PROBE_VALID_POSITION: f32 = 30.0;
-const PROBE_VALID_TORQUE: f32 = 10.0;
-
-/// 利用するWASIサポートの種類
+/// 利用する WASI サポートの種類
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum WasiSupport {
@@ -39,320 +30,133 @@ impl WasiSupport {
     }
 }
 
-/// ランナーの設定値
+/// サーバー起動設定
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunnerConfig {
-    /// 読み込むWasmコンポーネントのパス
+    /// 読み込む Wasm コンポーネントのパス
     pub wasm: PathBuf,
-    /// 利用を要求するWASIサポート
+    /// 利用を要求する WASI サポート
     pub wasi: WasiSupport,
-    /// PPS計測時の `update` 呼び出し回数
-    pub benchmark_iterations: usize,
-    /// plain core Wasm を用いた線形メモリ benchmark 用ファイル
-    pub raw_wasm: Option<PathBuf>,
+    /// HTTP サーバー待ち受けアドレス
+    pub bind_addr: SocketAddr,
+    /// Wasm プラグインへ委譲する URL プレフィックス
+    pub plugin_prefix: String,
 }
 
 impl RunnerConfig {
     /// 実行前に最低限の設定値を検証する
     pub fn validate(&self) -> anyhow::Result<()> {
-        ensure!(
-            self.benchmark_iterations > 0,
-            "ベンチマーク回数は1以上である必要があります"
-        );
+        let _ = normalize_plugin_prefix(&self.plugin_prefix)?;
         Ok(())
     }
 }
 
-/// ベンチマーク計測結果
-#[derive(Debug, Clone)]
-pub struct BenchmarkResult {
-    /// `update` を呼び出した回数
-    pub iterations: usize,
-    /// 計測にかかった総時間
-    pub elapsed: Duration,
-    /// 1秒あたりの処理回数
-    pub pps: f64,
+struct AppState {
+    plugin: Mutex<PluginInst>,
+    plugin_prefix: String,
+    wasm_path: String,
+    wasi: WasiSupport,
 }
 
-impl BenchmarkResult {
-    fn from_elapsed(iterations: usize, elapsed: Duration) -> Self {
-        let pps = if elapsed.is_zero() {
-            0.0
-        } else {
-            iterations as f64 / elapsed.as_secs_f64()
-        };
+#[derive(Debug, Clone, Serialize)]
+struct ServerStatusResponse {
+    service: &'static str,
+    plugin_prefix: String,
+    wasm: String,
+    wasi: &'static str,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SensorDataRequest {
+    load: f32,
+    position: f32,
+    extra: Option<f32>,
+}
+
+impl From<SensorDataRequest> for SensorData {
+    fn from(value: SensorDataRequest) -> Self {
         Self {
-            iterations,
-            elapsed,
-            pps,
+            load: value.load,
+            position: value.position,
+            extra: value.extra,
         }
     }
 }
 
-/// サイズ別ベンチマーク計測結果（ns レベル統計付き）
 #[derive(Debug, Clone, Serialize)]
-pub struct SizeBenchmarkResult {
-    /// ペイロードサイズ (バイト)
-    pub payload_bytes: usize,
-    /// 呼び出し回数
-    pub iterations: usize,
-    /// 総経過時間
-    #[serde(skip)]
-    #[allow(dead_code)]
-    pub elapsed: Duration,
-    /// 1呼び出しあたり平均 ns
-    pub avg_ns: u64,
-    /// 1呼び出しあたり最大 ns
-    pub max_ns: u64,
-    /// 1秒あたりの処理回数
-    pub pps: f64,
+struct MotorOutputResponse {
+    position: f32,
+    torque: f32,
 }
 
-/// 3サイズ分のベンチマーク結果をまとめた構造体
-#[derive(Debug, Clone, Serialize)]
-pub struct SizeBenchmarkReport {
-    pub b128: SizeBenchmarkResult,
-    pub b1k: SizeBenchmarkResult,
-    pub b4k: SizeBenchmarkResult,
-}
-
-/// 実行結果のサマリ
-#[derive(Debug, Clone)]
-pub struct RunReport {
-    /// 実行開始時のステータス
-    pub initial_status: PluginStatus,
-    /// 検証用入力に対する出力
-    pub probe_outputs: Vec<MotorOutput>,
-    /// 検証用入力実行後のステータス
-    pub probe_status: PluginStatus,
-    /// PPSベンチマーク結果
-    pub benchmark: BenchmarkResult,
-    /// ベンチマーク後の最終ステータス
-    pub final_status: PluginStatus,
-    /// サイズ別ベンチマーク結果
-    pub size_benchmarks: SizeBenchmarkReport,
-    /// plain core Wasm を用いた線形メモリ benchmark 結果
-    pub raw_benchmarks: Option<SizeBenchmarkReport>,
-}
-
-// ── /status エンドポイント向け JSON 構造体 ────────────────────────────────
-
-#[derive(Debug, Clone, Serialize)]
-struct StatusResponse {
-    plugin_status: PluginStatusJson,
-    update_benchmark: UpdateBenchmarkJson,
-    size_benchmarks: SizeBenchmarksJson,
-    raw_benchmarks: Option<SizeBenchmarksJson>,
+impl From<MotorOutput> for MotorOutputResponse {
+    fn from(value: MotorOutput) -> Self {
+        Self {
+            position: value.position,
+            torque: value.torque,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct PluginStatusJson {
+struct PluginStatusResponse {
     running: bool,
     error_code: u32,
     temperature: f32,
 }
 
-impl From<&PluginStatus> for PluginStatusJson {
-    fn from(s: &PluginStatus) -> Self {
+impl From<PluginStatus> for PluginStatusResponse {
+    fn from(value: PluginStatus) -> Self {
         Self {
-            running: s.running,
-            error_code: s.error_code,
-            temperature: s.temperature,
+            running: value.running,
+            error_code: value.error_code,
+            temperature: value.temperature,
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct UpdateBenchmarkJson {
-    iterations: usize,
-    elapsed_ms: f64,
-    pps: f64,
-}
-
-impl From<&BenchmarkResult> for UpdateBenchmarkJson {
-    fn from(b: &BenchmarkResult) -> Self {
-        Self {
-            iterations: b.iterations,
-            elapsed_ms: b.elapsed.as_secs_f64() * 1_000.0,
-            pps: b.pps,
-        }
-    }
+#[derive(Debug, Clone, Deserialize)]
+struct UpdateRequest {
+    input: Vec<SensorDataRequest>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct SizeBenchmarkEntryJson {
-    payload_bytes: usize,
-    iterations: usize,
-    avg_ns: u64,
-    max_ns: u64,
-    pps: f64,
+struct UpdateResponse {
+    output: Vec<MotorOutputResponse>,
 }
 
-impl From<&SizeBenchmarkResult> for SizeBenchmarkEntryJson {
-    fn from(r: &SizeBenchmarkResult) -> Self {
-        Self {
-            payload_bytes: r.payload_bytes,
-            iterations: r.iterations,
-            avg_ns: r.avg_ns,
-            max_ns: r.max_ns,
-            pps: r.pps,
-        }
-    }
-}
+type HttpError = (axum::http::StatusCode, String);
 
-#[derive(Debug, Clone, Serialize)]
-struct SizeBenchmarksJson {
-    b128: SizeBenchmarkEntryJson,
-    b1k: SizeBenchmarkEntryJson,
-    b4k: SizeBenchmarkEntryJson,
-}
+type HttpResult<T> = Result<T, HttpError>;
 
-/// Phase3 で必要な単発検証と PPS ベンチマークを順に実行する
-pub fn run(config: &RunnerConfig) -> anyhow::Result<RunReport> {
+/// HTTP サーバーを起動し、指定パス以下の処理を Wasm プラグインへ委譲する
+pub fn serve_http(config: RunnerConfig) -> anyhow::Result<()> {
+    use axum::{routing::get, routing::post, Router};
+    use tokio::net::TcpListener;
+
     config.validate()?;
     ensure_supported_wasi(config.wasi)?;
 
+    let plugin_prefix = normalize_plugin_prefix(&config.plugin_prefix)?;
     let engine = engine::create_engine_from_env()?;
     let component = load_component(&engine, &config.wasm)?;
-    let mut inst = instantiate_plugin(&engine, &component, config.wasi)?;
+    let plugin = instantiate_plugin(&engine, &component, config.wasi)?;
 
-    let initial_status = inst
-        .get_status()
-        .context("初期ステータスの取得に失敗しました")?;
+    let state = Arc::new(AppState {
+        plugin: Mutex::new(plugin),
+        plugin_prefix: plugin_prefix.clone(),
+        wasm_path: config.wasm.display().to_string(),
+        wasi: config.wasi,
+    });
 
-    let probe_input = build_probe_input();
-    let probe_outputs = inst
-        .update(&probe_input)
-        .context("検証用の update 呼び出しに失敗しました")?;
-    let probe_status = inst
-        .get_status()
-        .context("検証後ステータスの取得に失敗しました")?;
-    verify_probe_result(&probe_outputs, &probe_status)?;
-
-    let benchmark_input = build_benchmark_input();
-    let benchmark = benchmark_updates(&mut inst, config.benchmark_iterations, &benchmark_input)?;
-    let final_status = inst
-        .get_status()
-        .context("ベンチマーク後ステータスの取得に失敗しました")?;
-
-    let size_benchmarks = run_size_benchmarks(&mut inst, config.benchmark_iterations)?;
-    let raw_benchmarks = match config.raw_wasm.as_deref() {
-        Some(path) => Some(
-            raw_runner::run_size_benchmarks(path, config.benchmark_iterations).with_context(
-                || format!("raw Wasm ベンチマークに失敗しました: {}", path.display()),
-            )?,
-        ),
-        None => None,
-    };
-
-    Ok(RunReport {
-        initial_status,
-        probe_outputs,
-        probe_status,
-        benchmark,
-        final_status,
-        size_benchmarks,
-        raw_benchmarks,
-    })
-}
-
-/// 実行結果を標準出力へ整形して表示する
-pub fn print_report(config: &RunnerConfig, report: &RunReport) {
-    println!(
-        "実行設定: wasm={}, wasi={}, iterations={}",
-        config.wasm.display(),
-        config.wasi.as_str(),
-        config.benchmark_iterations
-    );
-    println!(
-        "初期ステータス: running={}, error_code={}, temperature={}",
-        report.initial_status.running,
-        report.initial_status.error_code,
-        report.initial_status.temperature
-    );
-    for (index, output) in report.probe_outputs.iter().enumerate() {
-        println!(
-            "検証出力[{index}]: position={}, torque={}",
-            output.position, output.torque
-        );
-    }
-    println!(
-        "検証後ステータス: running={}, error_code={}, temperature={}",
-        report.probe_status.running,
-        report.probe_status.error_code,
-        report.probe_status.temperature
-    );
-    println!(
-        "PPSベンチマーク: iterations={}, elapsed_ms={:.3}, pps={:.2}",
-        report.benchmark.iterations,
-        report.benchmark.elapsed.as_secs_f64() * 1_000.0,
-        report.benchmark.pps
-    );
-    println!(
-        "最終ステータス: running={}, error_code={}, temperature={}",
-        report.final_status.running,
-        report.final_status.error_code,
-        report.final_status.temperature
-    );
-
-    fn print_size_result(label: &str, r: &SizeBenchmarkResult) {
-        println!(
-            "サイズ別ベンチ[{label}]: payload={}B, avg_ns={}, max_ns={}, pps={:.2}",
-            r.payload_bytes, r.avg_ns, r.max_ns, r.pps
-        );
-    }
-    fn print_comparison(label: &str, wit: &SizeBenchmarkResult, raw: &SizeBenchmarkResult) {
-        let avg_speedup = if raw.avg_ns == 0 {
-            0.0
-        } else {
-            wit.avg_ns as f64 / raw.avg_ns as f64
-        };
-        let pps_speedup = if wit.pps == 0.0 {
-            0.0
-        } else {
-            raw.pps / wit.pps
-        };
-        println!(
-            "比較[{label}]: wit_avg_ns={}, raw_avg_ns={}, avg_speedup={:.2}x, wit_pps={:.2}, raw_pps={:.2}, pps_speedup={:.2}x",
-            wit.avg_ns, raw.avg_ns, avg_speedup, wit.pps, raw.pps, pps_speedup
-        );
-    }
-
-    print_size_result("128B", &report.size_benchmarks.b128);
-    print_size_result("1KB ", &report.size_benchmarks.b1k);
-    print_size_result("4KB ", &report.size_benchmarks.b4k);
-
-    if let Some(raw) = &report.raw_benchmarks {
-        println!("線形メモリ benchmark（plain core Wasm）:");
-        print_size_result("raw-128B", &raw.b128);
-        print_size_result("raw-1KB ", &raw.b1k);
-        print_size_result("raw-4KB ", &raw.b4k);
-        print_comparison("128B", &report.size_benchmarks.b128, &raw.b128);
-        print_comparison("1KB", &report.size_benchmarks.b1k, &raw.b1k);
-        print_comparison("4KB", &report.size_benchmarks.b4k, &raw.b4k);
-    }
-}
-
-/// ベンチマーク完了済みの `report` を JSON で返す HTTP `/status` エンドポイントを起動する。
-/// 関数は Ctrl-C など OS シグナルを受けるまでブロックする。
-pub fn serve_status_endpoint(
-    _config: &RunnerConfig,
-    report: &RunReport,
-    addr: SocketAddr,
-) -> anyhow::Result<()> {
-    use axum::{extract::State, routing::get, Json, Router};
-    use tokio::net::TcpListener;
-
-    let response = build_status_response(report);
-    let shared = Arc::new(response);
-
-    async fn handle_status(State(state): State<Arc<StatusResponse>>) -> Json<StatusResponse> {
-        Json((*state).clone())
-    }
+    let plugin_router = Router::new()
+        .route("/status", get(handle_plugin_status))
+        .route("/update", post(handle_plugin_update));
 
     let app = Router::new()
-        .route("/status", get(handle_status))
-        .with_state(shared);
+        .route("/status", get(handle_server_status))
+        .nest(&plugin_prefix, plugin_router)
+        .with_state(state);
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -361,34 +165,36 @@ pub fn serve_status_endpoint(
         .context("tokio ランタイムの構築に失敗しました")?;
 
     rt.block_on(async move {
-        let listener = TcpListener::bind(addr)
+        let listener = TcpListener::bind(config.bind_addr)
             .await
-            .with_context(|| format!("アドレス {addr} への bind に失敗しました"))?;
-        println!("ステータスサーバー起動: http://{addr}/status");
+            .with_context(|| format!("アドレス {} への bind に失敗しました", config.bind_addr))?;
+        println!("サーバー起動: http://{}/status", config.bind_addr);
+        println!(
+            "Wasm 委譲エンドポイント: http://{}{}/*",
+            config.bind_addr, plugin_prefix
+        );
         axum::serve(listener, app)
             .await
             .context("HTTP サーバーがエラー終了しました")
     })
 }
 
-fn build_status_response(report: &RunReport) -> StatusResponse {
-    StatusResponse {
-        plugin_status: PluginStatusJson::from(&report.final_status),
-        update_benchmark: UpdateBenchmarkJson::from(&report.benchmark),
-        size_benchmarks: SizeBenchmarksJson {
-            b128: SizeBenchmarkEntryJson::from(&report.size_benchmarks.b128),
-            b1k: SizeBenchmarkEntryJson::from(&report.size_benchmarks.b1k),
-            b4k: SizeBenchmarkEntryJson::from(&report.size_benchmarks.b4k),
-        },
-        raw_benchmarks: report
-            .raw_benchmarks
-            .as_ref()
-            .map(|raw| SizeBenchmarksJson {
-                b128: SizeBenchmarkEntryJson::from(&raw.b128),
-                b1k: SizeBenchmarkEntryJson::from(&raw.b1k),
-                b4k: SizeBenchmarkEntryJson::from(&raw.b4k),
-            }),
-    }
+fn normalize_plugin_prefix(prefix: &str) -> anyhow::Result<String> {
+    let trimmed = prefix.trim();
+    ensure!(!trimmed.is_empty(), "plugin_prefix は空にできません");
+
+    let prefixed = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    };
+    let normalized = prefixed.trim_end_matches('/').to_string();
+
+    ensure!(
+        !normalized.is_empty(),
+        "plugin_prefix に `/` は指定できません"
+    );
+    Ok(normalized)
 }
 
 fn ensure_supported_wasi(wasi: WasiSupport) -> anyhow::Result<()> {
@@ -424,388 +230,175 @@ fn instantiate_plugin(
     }
 }
 
-fn build_probe_input() -> Vec<SensorData> {
-    vec![
-        SensorData {
-            load: PROBE_VALID_TORQUE,
-            position: PROBE_VALID_POSITION,
-            extra: Some(1.0),
-        },
-        SensorData {
-            load: 200.0,
-            position: 999.0,
-            extra: None,
-        },
-    ]
-}
-
-fn build_benchmark_input() -> Vec<SensorData> {
-    (0..64)
-        .map(|index| SensorData {
-            load: (index as f32) * 0.5,
-            position: index as f32 - 32.0,
-            extra: if index % 2 == 0 {
-                Some(index as f32 * 0.25)
-            } else {
-                None
-            },
-        })
-        .collect()
-}
-
-fn benchmark_updates(
-    inst: &mut PluginInst,
-    iterations: usize,
-    input: &[SensorData],
-) -> anyhow::Result<BenchmarkResult> {
-    let started = Instant::now();
-    for _ in 0..iterations {
-        inst.update(input)
-            .context("PPSベンチマーク中の update 呼び出しに失敗しました")?;
-    }
-    Ok(BenchmarkResult::from_elapsed(iterations, started.elapsed()))
-}
-
-/// 3サイズ分のサイズ別ベンチマークを実行する
-fn run_size_benchmarks(
-    inst: &mut PluginInst,
-    iterations: usize,
-) -> anyhow::Result<SizeBenchmarkReport> {
-    Ok(SizeBenchmarkReport {
-        b128: benchmark_size_128(inst, iterations)?,
-        b1k: benchmark_size_1k(inst, iterations)?,
-        b4k: benchmark_size_4k(inst, iterations)?,
+async fn handle_server_status(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<ServerStatusResponse> {
+    axum::Json(ServerStatusResponse {
+        service: "moonbit-runner",
+        plugin_prefix: state.plugin_prefix.clone(),
+        wasm: state.wasm_path.clone(),
+        wasi: state.wasi.as_str(),
     })
 }
 
-fn benchmark_size_128(
-    inst: &mut PluginInst,
-    iterations: usize,
-) -> anyhow::Result<SizeBenchmarkResult> {
-    const SIZE: usize = 128;
-    let payload = vec![0u8; SIZE];
-    let input = BenchmarkInput128 {
-        payload: payload.clone(),
-    };
-    let mut max_ns: u64 = 0;
-    let total_start = Instant::now();
-    for _ in 0..iterations {
-        let call_start = Instant::now();
-        inst.benchmark_128(&input)
-            .context("benchmark_128 の呼び出しに失敗しました")?;
-        let ns = call_start.elapsed().as_nanos() as u64;
-        if ns > max_ns {
-            max_ns = ns;
-        }
-    }
-    let elapsed = total_start.elapsed();
-    Ok(size_result(SIZE, iterations, elapsed, max_ns))
+async fn handle_plugin_status(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> HttpResult<axum::Json<PluginStatusResponse>> {
+    let mut plugin = state.plugin.lock().map_err(|_| {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "プラグイン状態ロックの取得に失敗しました".to_string(),
+        )
+    })?;
+
+    let status = plugin.get_status().map_err(|err| {
+        (
+            axum::http::StatusCode::BAD_GATEWAY,
+            format!("Wasm プラグインの status 取得に失敗しました: {err}"),
+        )
+    })?;
+
+    Ok(axum::Json(PluginStatusResponse::from(status)))
 }
 
-fn benchmark_size_1k(
-    inst: &mut PluginInst,
-    iterations: usize,
-) -> anyhow::Result<SizeBenchmarkResult> {
-    const SIZE: usize = 1024;
-    let payload = vec![0u8; SIZE];
-    let input = BenchmarkInput1k {
-        payload: payload.clone(),
-    };
-    let mut max_ns: u64 = 0;
-    let total_start = Instant::now();
-    for _ in 0..iterations {
-        let call_start = Instant::now();
-        inst.benchmark_1k(&input)
-            .context("benchmark_1k の呼び出しに失敗しました")?;
-        let ns = call_start.elapsed().as_nanos() as u64;
-        if ns > max_ns {
-            max_ns = ns;
-        }
-    }
-    let elapsed = total_start.elapsed();
-    Ok(size_result(SIZE, iterations, elapsed, max_ns))
-}
+async fn handle_plugin_update(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::Json(request): axum::Json<UpdateRequest>,
+) -> HttpResult<axum::Json<UpdateResponse>> {
+    let input: Vec<SensorData> = request.input.into_iter().map(SensorData::from).collect();
 
-fn benchmark_size_4k(
-    inst: &mut PluginInst,
-    iterations: usize,
-) -> anyhow::Result<SizeBenchmarkResult> {
-    const SIZE: usize = 4096;
-    let payload = vec![0u8; SIZE];
-    let input = BenchmarkInput4k {
-        payload: payload.clone(),
-    };
-    let mut max_ns: u64 = 0;
-    let total_start = Instant::now();
-    for _ in 0..iterations {
-        let call_start = Instant::now();
-        inst.benchmark_4k(&input)
-            .context("benchmark_4k の呼び出しに失敗しました")?;
-        let ns = call_start.elapsed().as_nanos() as u64;
-        if ns > max_ns {
-            max_ns = ns;
-        }
-    }
-    let elapsed = total_start.elapsed();
-    Ok(size_result(SIZE, iterations, elapsed, max_ns))
-}
+    let mut plugin = state.plugin.lock().map_err(|_| {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "プラグイン状態ロックの取得に失敗しました".to_string(),
+        )
+    })?;
 
-fn size_result(
-    payload_bytes: usize,
-    iterations: usize,
-    elapsed: Duration,
-    max_ns: u64,
-) -> SizeBenchmarkResult {
-    let avg_ns = if iterations == 0 {
-        0
-    } else {
-        (elapsed.as_nanos() as u64) / (iterations as u64)
-    };
-    let pps = if elapsed.is_zero() {
-        0.0
-    } else {
-        iterations as f64 / elapsed.as_secs_f64()
-    };
-    SizeBenchmarkResult {
-        payload_bytes,
-        iterations,
-        elapsed,
-        avg_ns,
-        max_ns,
-        pps,
-    }
-}
+    let outputs = plugin.update(&input).map_err(|err| {
+        (
+            axum::http::StatusCode::BAD_GATEWAY,
+            format!("Wasm プラグインの update 呼び出しに失敗しました: {err}"),
+        )
+    })?;
 
-fn verify_probe_result(outputs: &[MotorOutput], status: &PluginStatus) -> anyhow::Result<()> {
-    ensure!(
-        outputs.len() == 2,
-        "検証出力数が想定外です: expected=2 actual={}",
-        outputs.len()
-    );
-
-    let first = &outputs[0];
-    ensure!(
-        approx_eq(first.position, PROBE_VALID_POSITION),
-        "正常出力の位置が想定外です: actual={}",
-        first.position
-    );
-    ensure!(
-        approx_eq(first.torque, PROBE_VALID_TORQUE),
-        "正常出力のトルクが想定外です: actual={}",
-        first.torque
-    );
-
-    let second = &outputs[1];
-    ensure!(
-        approx_eq(second.position, 0.0),
-        "安全側出力の位置が想定外です: actual={}",
-        second.position
-    );
-    ensure!(
-        approx_eq(second.torque, 0.0),
-        "安全側出力のトルクが想定外です: actual={}",
-        second.torque
-    );
-
-    ensure!(
-        !status.running,
-        "検証後ステータスが停止状態になっていません"
-    );
-    ensure!(
-        status.error_code == 1,
-        "検証後エラーコードが想定外です: actual={}",
-        status.error_code
-    );
-    ensure!(
-        status.temperature.is_finite(),
-        "検証後温度が有限値ではありません: actual={}",
-        status.temperature
-    );
-    Ok(())
-}
-
-fn approx_eq(left: f32, right: f32) -> bool {
-    (left - right).abs() <= FLOAT_EPSILON
+    let output = outputs.into_iter().map(MotorOutputResponse::from).collect();
+    Ok(axum::Json(UpdateResponse { output }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    struct ConfigCase {
+    struct PrefixCase {
         name: &'static str,
-        iterations: usize,
+        input: &'static str,
         expect_ok: bool,
-        expected_message: &'static str,
+        expected: &'static str,
     }
 
-    struct ProbeCase {
-        name: &'static str,
-        outputs: Vec<MotorOutput>,
-        status: PluginStatus,
-        expect_ok: bool,
-        expected_message: &'static str,
-    }
-
-    fn assert_config_case(case: ConfigCase) {
-        let config = RunnerConfig {
-            wasm: PathBuf::from("plugins/control.component.wasm"),
-            wasi: WasiSupport::None,
-            benchmark_iterations: case.iterations,
-            raw_wasm: None,
-        };
-        let result = config.validate();
+    fn assert_prefix_case(case: PrefixCase) {
+        let result = normalize_plugin_prefix(case.input);
         assert_eq!(
             result.is_ok(),
             case.expect_ok,
-            "設定検証ケース `{}` の成否が想定と異なります",
+            "prefix ケース `{}` の成否が想定と異なります",
             case.name
         );
-        if let Err(err) = result {
-            assert!(
-                err.to_string().contains(case.expected_message),
-                "設定検証ケース `{}` のエラー内容が想定と異なります: {}",
-                case.name,
-                err
-            );
-        }
-    }
 
-    fn assert_probe_case(case: ProbeCase) {
-        let result = verify_probe_result(&case.outputs, &case.status);
-        assert_eq!(
-            result.is_ok(),
-            case.expect_ok,
-            "プローブ検証ケース `{}` の成否が想定と異なります",
-            case.name
-        );
-        if let Err(err) = result {
-            assert!(
-                err.to_string().contains(case.expected_message),
-                "プローブ検証ケース `{}` のエラー内容が想定と異なります: {}",
-                case.name,
-                err
-            );
+        match result {
+            Ok(actual) => {
+                assert_eq!(
+                    actual, case.expected,
+                    "prefix ケース `{}` の正規化結果が想定と異なります",
+                    case.name
+                );
+            }
+            Err(err) => {
+                assert!(
+                    err.to_string().contains(case.expected),
+                    "prefix ケース `{}` のエラー内容が想定と異なります: {}",
+                    case.name,
+                    err
+                );
+            }
         }
     }
 
     #[test]
-    fn 設定検証_値域確認() {
+    fn prefix正規化_値域確認() {
         let cases = [
-            ConfigCase {
-                name: "最小有効回数",
-                iterations: 1,
+            PrefixCase {
+                name: "1文字プレフィックス",
+                input: "a",
                 expect_ok: true,
-                expected_message: "",
+                expected: "/a",
             },
-            ConfigCase {
-                name: "通常回数",
-                iterations: 10_000,
+            PrefixCase {
+                name: "前後空白付き",
+                input: "  /api  ",
                 expect_ok: true,
-                expected_message: "",
+                expected: "/api",
             },
-            ConfigCase {
-                name: "ゼロ回は不可",
-                iterations: 0,
-                expect_ok: false,
-                expected_message: "ベンチマーク回数は1以上",
+            PrefixCase {
+                name: "末尾スラッシュ付き",
+                input: "/service/",
+                expect_ok: true,
+                expected: "/service",
             },
         ];
 
         for case in cases {
-            assert_config_case(case);
+            assert_prefix_case(case);
         }
     }
 
     #[test]
-    fn プローブ検証_正常系() {
-        let cases = [ProbeCase {
-            name: "正常出力と異常検知が混在する想定ケース",
-            outputs: vec![
-                MotorOutput {
-                    position: PROBE_VALID_POSITION,
-                    torque: PROBE_VALID_TORQUE,
-                },
-                MotorOutput {
-                    position: 0.0,
-                    torque: 0.0,
-                },
-            ],
-            status: PluginStatus {
-                running: false,
-                error_code: 1,
-                temperature: 0.0,
-            },
-            expect_ok: true,
-            expected_message: "",
-        }];
-
-        for case in cases {
-            assert_probe_case(case);
-        }
-    }
-
-    #[test]
-    fn プローブ検証_異常系() {
+    fn prefix正規化_正常系() {
         let cases = [
-            ProbeCase {
-                name: "出力数不足",
-                outputs: vec![MotorOutput {
-                    position: PROBE_VALID_POSITION,
-                    torque: PROBE_VALID_TORQUE,
-                }],
-                status: PluginStatus {
-                    running: false,
-                    error_code: 1,
-                    temperature: 0.0,
-                },
-                expect_ok: false,
-                expected_message: "検証出力数が想定外",
+            PrefixCase {
+                name: "先頭スラッシュなし",
+                input: "api/v1",
+                expect_ok: true,
+                expected: "/api/v1",
             },
-            ProbeCase {
-                name: "安全側出力のトルク不一致",
-                outputs: vec![
-                    MotorOutput {
-                        position: PROBE_VALID_POSITION,
-                        torque: PROBE_VALID_TORQUE,
-                    },
-                    MotorOutput {
-                        position: 0.0,
-                        torque: 0.5,
-                    },
-                ],
-                status: PluginStatus {
-                    running: false,
-                    error_code: 1,
-                    temperature: 0.0,
-                },
-                expect_ok: false,
-                expected_message: "安全側出力のトルクが想定外",
-            },
-            ProbeCase {
-                name: "エラーコード未反映",
-                outputs: vec![
-                    MotorOutput {
-                        position: PROBE_VALID_POSITION,
-                        torque: PROBE_VALID_TORQUE,
-                    },
-                    MotorOutput {
-                        position: 0.0,
-                        torque: 0.0,
-                    },
-                ],
-                status: PluginStatus {
-                    running: true,
-                    error_code: 0,
-                    temperature: 0.0,
-                },
-                expect_ok: false,
-                expected_message: "検証後ステータスが停止状態になっていません",
+            PrefixCase {
+                name: "先頭スラッシュあり",
+                input: "/api/v1",
+                expect_ok: true,
+                expected: "/api/v1",
             },
         ];
 
         for case in cases {
-            assert_probe_case(case);
+            assert_prefix_case(case);
+        }
+    }
+
+    #[test]
+    fn prefix正規化_異常系() {
+        let cases = [
+            PrefixCase {
+                name: "空文字",
+                input: "",
+                expect_ok: false,
+                expected: "plugin_prefix は空にできません",
+            },
+            PrefixCase {
+                name: "ルートのみ",
+                input: "/",
+                expect_ok: false,
+                expected: "plugin_prefix に `/` は指定できません",
+            },
+            PrefixCase {
+                name: "空白のみ",
+                input: "   ",
+                expect_ok: false,
+                expected: "plugin_prefix は空にできません",
+            },
+        ];
+
+        for case in cases {
+            assert_prefix_case(case);
         }
     }
 }

@@ -3,6 +3,22 @@
 MoonBit 製 Wasm プラグインを Rust ホスト（Wasmtime）から実行し、
 WIT 経路と線形メモリ直接書き込み経路（raw）を比較計測するサンプルです。
 
+通常起動は HTTP サーバーモードのみを提供します。
+benchmark 実行は CLI から外し、Criterion (`cargo bench`) に統一しています。
+
+## HTTP サーバー起動
+
+```bash
+make -C examples/moonbit-runner run
+```
+
+主なエンドポイント:
+- `GET /status`（ホスト状態）
+- `GET /api/status`（Wasm `get-status`）
+- `POST /api/update`（Wasm `update`）
+
+`/api` は `--prefix` で変更できます。
+
 ## 所感
 
 - add_loop の比較では `native < raw < WIT` の順でオーバーヘッドが大きくなる

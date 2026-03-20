@@ -152,6 +152,14 @@ sample-status:
 test: build-example build-sample
 	cargo test -p safety-plugin-host -- --test-threads=1
 
+## criterion ベンチマークを実行する（native vs plugin レイテンシ比較）
+bench: build-example build-sample
+	cargo bench -p safety-plugin-host
+
+## 10,000 回リロード時のメモリ使用量を計測する
+memory-check: build-example
+	cargo test -p safety-plugin-host reload_memory_check_10000 -- --ignored --nocapture
+
 ## ビルド成果物を削除する
 clean:
 	cargo clean -p safety-plugin-host -p safety-plugin-example -p safety-plugin-sample
@@ -176,7 +184,9 @@ help:
 	@echo "  hello            GET /api/hello で動作確認"
 	@echo "  add              POST /sample/add で加算確認"
 	@echo "  mul              POST /sample/mul で乗算確認"
-	@echo "  test             全テストを実行"
+	@echo "  test             全テストを実行
+  bench            criterion ベンチマーク（native vs plugin）
+  memory-check     10,000 回リロードのメモリ計測"
 	@echo "  clean            ビルド成果物を削除"
 	@echo ""
 	@echo "環境変数:"

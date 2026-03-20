@@ -26,5 +26,10 @@ tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
+[[bench]]
+name = "request_latency"
+harness = false
+
 [dev-dependencies]
+criterion = { workspace = true }
 tempfile = { workspace = true }

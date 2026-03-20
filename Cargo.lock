@@ -5079,6 +5079,7 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "criterion",
  "http-body-util",
  "libloading 0.8.9",
  "notify",

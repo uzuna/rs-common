@@ -42,6 +42,12 @@ impl PluginInst {
         Ok(ctrl.call_get_status(&mut self.store)?)
     }
 
+    /// 純粋な計算負荷を測る加算関数を呼び出す
+    pub fn add(&mut self, a: i32, b: i32, loop_count: i32) -> anyhow::Result<i32> {
+        let ctrl = self.instance.local_moonbit_control_api();
+        Ok(ctrl.call_add(&mut self.store, a, b, loop_count)?)
+    }
+
     /// 128バイトの benchmark 入出力関数を呼び出す
     #[allow(dead_code)]
     pub fn benchmark_128(

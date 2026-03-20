@@ -60,7 +60,7 @@ bench: build-plugin
 	cargo bench -p $(RUNNER_CRATE) --bench criterion_bench -- $(BENCH_ARGS)
 
 .PHONY: bench-raw
-bench-raw: build-plugin-all
+bench-raw: build-plugin build-plugin-raw
 	MOONBIT_RUNNER_RAW_BENCH=1 cargo bench -p $(RUNNER_CRATE) --bench criterion_bench -- $(BENCH_ARGS)
 
 .PHONY: serve-status

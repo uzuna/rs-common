@@ -78,6 +78,11 @@ interface api {
     /// プラグインの内部状態を返す
     get-status: func() -> plugin-status;
 
+    /// 純粋な計算負荷を測る加算関数
+    ///
+    /// `loop-count` 回だけ `a + b` を累積して返す。
+    add: func(a: s32, b: s32, loop-count: s32) -> s32;
+
     /// 128バイト入出力の呼び出しコストを測るベンチマーク関数
     benchmark-128: func(input: benchmark-input-128) -> benchmark-output-128;
 

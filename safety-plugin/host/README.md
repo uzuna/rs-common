@@ -240,12 +240,12 @@ kill -USR1 $(pgrep safety-plugin-host)
 
 ## フォールバック動作
 
-| 状況 | レスポンス |
-|:-----|:----------|
-| プレフィックス未登録 | 404 Not Found（fallback_count に加算しない） |
+| 状況                             | レスポンス                                     |
+| :------------------------------- | :--------------------------------------------- |
+| プレフィックス未登録             | 404 Not Found（fallback_count に加算しない）   |
 | プレフィックス登録済み・未ロード | 503 Service Unavailable（fallback_count 加算） |
-| プラグイン内でパニック | 500 Internal Server Error（ホストは継続） |
-| リロード失敗 | 旧バージョンで継続（Err を返すが動作継続） |
+| プラグイン内でパニック           | 500 Internal Server Error（ホストは継続）      |
+| リロード失敗                     | 旧バージョンで継続（Err を返すが動作継続）     |
 
 ---
 
@@ -261,43 +261,71 @@ cargo bench -p safety-plugin-host
 
 ### 計測結果（`cargo bench` / debug ビルド）
 
-| ハンドラ  | native | plugin（FFI 経由） | plugin_pooled | pool 改善 |
-|:----------|-------:|------------------:|--------------:|----------:|
-| **hello** | 44.9 ns |          377.9 ns |      356.9 ns | −21 ns (−5.6%) |
-| **add**   |  153 ns |        1,632 ns   |    1,593 ns   | −39 ns (−2.4%) |
+| ハンドラ  |   native |   plugin | plugin_pooled |  plugin_rstr |       rstr 改善 |
+| :-------- | -------: | -------: | ------------: | -----------: | --------------: |
+| **hello** |  40.1 ns | 381.5 ns |      364.6 ns | **313.6 ns** | −68 ns (−17.8%) |
+| **add**   | 147.0 ns | 1,622 ns |      1,588 ns | **1,565 ns** |  −57 ns (−3.5%) |
 
 計測環境: Linux x86-64、`--profile dev`
 
-### FFI オーバーヘッドの内訳
+### 3 種類の FFI インターフェース比較
 
-plugin 経由の追加コスト（hello の場合: 約 333 ns）:
+| インターフェース                  | ホスト側アロケーション   | プラグイン側アロケーション | 特徴                        |
+| :-------------------------------- | :----------------------- | :------------------------- | :-------------------------- |
+| `plugin`（`HttpRequest`）         | `RString` × 3 + `String` | なし                       | 既存 ABI、最も実装が単純    |
+| `plugin_pooled`                   | `String` × 1（プール後） | なし                       | プール再利用で RString 節約 |
+| `plugin_rstr`（`HttpRequestRef`） | **ゼロ**                 | なし                       | `RStr<'_>` で完全ゼロコピー |
 
-| 要因 | 説明 |
-|:-----|:-----|
-| `RString` アロケーション × 3 | method / path / query の変換 |
-| `String::to_owned()` | プレフィックス除去のための中間コピー |
-| HashMap 最長プレフィックス検索 | PluginRouter のルーティング |
-| `Mutex::lock` | プラグイン内部状態の排他制御 |
-| 関数ポインタ経由 FFI 呼び出し | `extern "C" fn handle(req)` |
-| `std::env::var` × 2 | example-plugin 実装固有（`PLUGIN_SHOULD_PANIC` 確認等） |
+### FFI オーバーヘッドの内訳（hello の場合）
 
-add の場合は上記に加えて serde_json による JSON パース/生成が含まれる（約 1,448 ns）。
+| 要因                              |       plugin |  plugin_rstr |
+| :-------------------------------- | -----------: | -----------: |
+| `RString`/`String` アロケーション |      〜60 ns |     **0 ns** |
+| HashMap 最長プレフィックス検索    |      〜10 ns |      〜10 ns |
+| `Mutex::lock`                     |      〜30 ns |      〜30 ns |
+| FFI 呼び出し                      |   〜〜270 ns |     〜270 ns |
+| **合計**                          | **〜381 ns** | **〜314 ns** |
 
-### RString プールの効果と限界
+`plugin_rstr` の −68 ns はホスト側の文字列アロケーション（`RString` × 3 + プレフィックス除去 `String`）
+の完全排除によるもの。
 
-`rstring_from_pool` / `rstring_to_pool` によるスレッドローカルプールを使うと、
-定常状態で `method` / `query` の `RString` アロケーション（各 10–15 ns）を節約できる。
+add の改善幅が小さい（−57 ns / −3.5%）のは serde_json による JSON パース/生成（〜1,450 ns）が
+全体の約 90% を占めるため。
 
-- **hello**: −21 ns (−5.6%) — `method`・`query` の 2 アロケーションを削減
-- **add**: −39 ns (−2.4%) — 同上だが serde_json の JSON 処理（〜1,448 ns）が支配的
+### RStr インターフェースの設計
 
-改善幅が限られる理由:
-1. プレフィックス除去時に `String::to_owned()` が必要（`RString` 1 個分の節約と相殺）
-2. `Mutex::lock` / FFI / `std::env::var` は削減できない
-3. add では JSON パース/生成が全体の約 92% を占める
+`HttpRequestRef<'a>` は `RStr<'a>` フィールドを持つ借用型で、`&str` と同じABI安定レイアウト:
 
-より抜本的なゼロアロケーションを目指す場合は `RStr<'a>`（借用 FFI 文字列型）を
-使う設計変更が有効だが、`extern "C"` 関数ポインタ型の ABI 変更が必要になる。
+```rust
+#[repr(C)]
+#[derive(StableAbi)]
+pub struct HttpRequestRef<'a> {
+    pub method: RStr<'a>,   // ポインタ + 長さのみ（アロケーションなし）
+    pub path:   RStr<'a>,
+    pub query:  RStr<'a>,
+    pub body:   RSlice<'a, u8>,
+}
+```
+
+プラグイン側は `define_http_plugin!` に `handler_ref: fn_name` を追加するだけで対応できる:
+
+```rust
+define_http_plugin! {
+    name: "my-plugin",
+    state: MyState,
+    handler: handle_inner,        // HttpRequest（所有型）版: 後方互換
+    handler_ref: handle_ref_inner, // HttpRequestRef（借用型）版: ゼロコピー
+    state_save: save,
+    state_load: load,
+}
+
+fn handle_ref_inner(req: &HttpRequestRef<'_>, state: &mut MyState) -> HttpResponse {
+    match req.path.as_str() { ... }  // RStr も .as_str() で &str を得られる
+}
+```
+
+`handler_ref` を省略した場合はマクロが変換ラッパを自動生成するため、
+古いプラグインでも `handle_ref` エンドポイントへのフォールバックが可能。
 
 ---
 
@@ -346,12 +374,12 @@ cargo test -p safety-plugin-host -- --test-threads=1
 
 テストは直列実行が必要（環境変数 `PLUGIN_RESET` / `PLUGIN_SHOULD_PANIC` の競合を避けるため）。
 
-| テストファイル | 内容 | テスト数 |
-|:---|:---|:---:|
-| `tests/plugin_integration.rs` | example-plugin: 正常系・異常系・ホットリロード | 11 |
-| `tests/sample_integration.rs` | sample-plugin: add/mul/status・状態引き継ぎ | 6 |
-| `tests/multi_plugin_integration.rs` | 複数プラグイン同時運用・状態独立性 | 3 |
-| `src/lib.rs` (unit) | PluginRouter / VersionManager ユニットテスト | 9 |
+| テストファイル                      | 内容                                           | テスト数 |
+| :---------------------------------- | :--------------------------------------------- | :------: |
+| `tests/plugin_integration.rs`       | example-plugin: 正常系・異常系・ホットリロード |    11    |
+| `tests/sample_integration.rs`       | sample-plugin: add/mul/status・状態引き継ぎ    |    6     |
+| `tests/multi_plugin_integration.rs` | 複数プラグイン同時運用・状態独立性             |    3     |
+| `src/lib.rs` (unit)                 | PluginRouter / VersionManager ユニットテスト   |    9     |
 
 ---
 
@@ -424,10 +452,10 @@ cargo run -p safety-plugin-host -- \
 
 ## 環境変数（example-plugin 用）
 
-| 変数 | 値 | 説明 |
-|:-----|:---|:-----|
-| `PLUGIN_SHOULD_PANIC` | `1` | `handle()` 内で意図的にパニック（テスト用） |
-| `PLUGIN_RESET` | `1` | `init()` で request_count を 0 にリセット（テスト用） |
+| 変数                  | 値   | 説明                                                  |
+| :-------------------- | :--- | :---------------------------------------------------- |
+| `PLUGIN_SHOULD_PANIC` | `1`  | `handle()` 内で意図的にパニック（テスト用）           |
+| `PLUGIN_RESET`        | `1`  | `init()` で request_count を 0 にリセット（テスト用） |
 
 ---
 

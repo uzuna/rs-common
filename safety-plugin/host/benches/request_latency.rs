@@ -25,6 +25,7 @@ use abi_stable::std_types::RVec;
 use criterion::{criterion_group, criterion_main, Criterion};
 use safety_plugin_common::{HttpRequest, HttpResponse};
 use safety_plugin_host::plugin_manager::{rstring_from_pool, PluginRouter};
+// PluginRouter::handle_ref は &str スライスのみで呼べるためインポート不要
 use std::hint::black_box;
 
 // ─── プラグインパス ───────────────────────────────────────────────────────────
@@ -174,6 +175,11 @@ fn bench_hello(c: &mut Criterion) {
         group.bench_function("plugin_pooled", |b| {
             b.iter(|| black_box(router.handle(make_get_pooled("/api/hello"))));
         });
+
+        // plugin_rstr: RStr<'_> ゼロコピー FFI 呼び出し（ホスト側アロケーション完全ゼロ）
+        group.bench_function("plugin_rstr", |b| {
+            b.iter(|| black_box(router.handle_ref("GET", "/api/hello", "", b"")));
+        });
     } else {
         eprintln!(
             "[bench_hello] スキップ: {} が見つかりません",
@@ -211,9 +217,12 @@ fn bench_add(c: &mut Criterion) {
 
         // plugin_pooled: プールから RString を再利用して FFI 呼び出し
         group.bench_function("plugin_pooled", |b| {
-            b.iter(|| {
-                black_box(router.handle(make_post_pooled("/sample/add", black_box(body))))
-            });
+            b.iter(|| black_box(router.handle(make_post_pooled("/sample/add", black_box(body)))));
+        });
+
+        // plugin_rstr: RStr<'_> ゼロコピー FFI 呼び出し（ホスト側アロケーション完全ゼロ）
+        group.bench_function("plugin_rstr", |b| {
+            b.iter(|| black_box(router.handle_ref("POST", "/sample/add", "", black_box(body))));
         });
     } else {
         eprintln!("[bench_add] スキップ: {} が見つかりません", path.display());

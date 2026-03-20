@@ -13,7 +13,9 @@ use std::{
 };
 
 use abi_stable::std_types::{RNone, RSlice, RSome, RString, RVec};
-use safety_plugin_common::{HttpRequest, HttpResponse, PluginContext, PluginKind, RobotPlugin_Ref};
+use safety_plugin_common::{
+    HttpRequest, HttpRequestRef, HttpResponse, PluginContext, PluginKind, RobotPlugin_Ref,
+};
 
 // ─── RString プール（スレッドローカル） ──────────────────────────────────────
 
@@ -52,10 +54,19 @@ pub fn rstring_to_pool(rs: RString) {
 
 // ─── PluginManager（単一プラグインのライフサイクル管理） ─────────────────────
 
+/// `__plugin_handle_ref` 関数ポインタの型。
+///
+/// `HttpRequestRef<'_>` を受け取り `HttpResponse` を返す ABI 安定 FFI 関数。
+type HandleRefFn = extern "C" fn(req: &HttpRequestRef<'_>) -> HttpResponse;
+
 /// ロード済みプラグインの情報。
 struct LoadedPlugin {
     /// プラグインのモジュール参照（関数ポインタ群）。
     module: RobotPlugin_Ref,
+    /// ゼロコピー FFI エントリポイント（`__plugin_handle_ref` シンボル）。
+    ///
+    /// `None` の場合は `handle_ref` 呼び出し時に `handle` へフォールバックする。
+    handle_ref_fn: Option<HandleRefFn>,
     /// ロード元のパス（リロード失敗時の旧バージョン復帰に使う）。
     path: PathBuf,
     /// 開いた共有ライブラリハンドル。`module` の関数ポインタを有効に保つために保持する。
@@ -135,6 +146,30 @@ impl PluginManager {
         }
     }
 
+    /// `HttpRequestRef<'_>`（借用型・ゼロコピー）でリクエストをプラグインへ委譲する。
+    ///
+    /// プラグインが `__plugin_handle_ref` シンボルをエクスポートしている場合は
+    /// ゼロコピー FFI パスを使う。そうでなければ `handle` と同じ所有型パスにフォールバックする。
+    pub fn handle_ref(&self, req: &HttpRequestRef<'_>) -> HttpResponse {
+        match &self.current {
+            Some(loaded) => {
+                if let Some(f) = loaded.handle_ref_fn {
+                    f(req)
+                } else {
+                    // フォールバック: HttpRequestRef → HttpRequest へ変換して既存パスを使う
+                    let owned = HttpRequest {
+                        method: req.method.as_str().into(),
+                        path: req.path.as_str().into(),
+                        query: req.query.as_str().into(),
+                        body: req.body.as_slice().to_vec().into(),
+                    };
+                    (loaded.module.handle())(&owned)
+                }
+            }
+            None => service_unavailable("プラグイン未ロード"),
+        }
+    }
+
     /// プラグインがロード済みかどうかを返す。
     pub fn is_loaded(&self) -> bool {
         self.current.is_some()
@@ -197,10 +232,24 @@ impl PluginManager {
 
         (module.init())(&ctx, prev);
 
-        tracing::info!("プラグインをロード: {}", path.display());
+        // `__plugin_handle_ref` シンボルをオプションでロードする。
+        // `define_http_plugin!` で生成されるため通常は存在するが、
+        // 古いプラグインとの互換性のため `None` の場合は `handle` にフォールバックする。
+        let handle_ref_fn: Option<HandleRefFn> = unsafe {
+            lib.get::<HandleRefFn>(b"__plugin_handle_ref\0")
+                .ok()
+                .map(|sym| *sym)
+        };
+
+        tracing::info!(
+            "プラグインをロード: {} (handle_ref: {})",
+            path.display(),
+            handle_ref_fn.is_some()
+        );
 
         self.current = Some(LoadedPlugin {
             module,
+            handle_ref_fn,
             path: path.to_path_buf(),
             _lib: lib,
         });
@@ -332,6 +381,50 @@ impl PluginRouter {
         rstring_to_pool(query);
 
         resp
+    }
+
+    /// `&str` スライスのみで HTTP リクエストをルーティングする（ゼロコピー版）。
+    ///
+    /// ホスト側で `RString` / `RVec` のアロケーションを一切行わず、
+    /// `RStr<'_>` / `RSlice<'_>` としてプラグインへ渡す。
+    /// プラグインが `__plugin_handle_ref` をエクスポートしている場合はゼロコピー FFI を使う。
+    pub fn handle_ref(&self, method: &str, path: &str, query: &str, body: &[u8]) -> HttpResponse {
+        // 最長一致プレフィックスを検索
+        let matched = self
+            .plugins
+            .keys()
+            .filter(|prefix| path.starts_with(prefix.as_str()))
+            .max_by_key(|prefix| prefix.len())
+            .cloned();
+
+        let Some(prefix) = matched else {
+            return HttpResponse {
+                status: 404,
+                content_type: "text/plain".into(),
+                body: RVec::from(b"not found".to_vec()),
+            };
+        };
+
+        let loaded = self
+            .plugins
+            .get(&prefix)
+            .map(|m| m.is_loaded())
+            .unwrap_or(false);
+
+        if !loaded {
+            return service_unavailable("プラグイン未ロード");
+        }
+
+        // プレフィックス除去はゼロコピー（&str スライス）
+        let stripped = &path[prefix.len()..];
+        let req = HttpRequestRef {
+            method: method.into(),
+            path: stripped.into(),
+            query: query.into(),
+            body: body.into(),
+        };
+
+        self.plugins.get(&prefix).unwrap().handle_ref(&req)
     }
 
     /// 登録済みプレフィックスの一覧を返す（順序不定）。

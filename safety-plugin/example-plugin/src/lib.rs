@@ -12,7 +12,7 @@
 //! - リセットモード: 環境変数 `PLUGIN_RESET=1` が設定されている場合、
 //!   `init` の冒頭で request_count を 0 にリセットする（テスト用）。
 
-use safety_plugin_common::{define_http_plugin, HttpRequest, HttpResponse};
+use safety_plugin_common::{define_http_plugin, HttpRequest, HttpRequestRef, HttpResponse};
 
 /// プラグイン内部状態（ホットリロード時に引き継ぐ）。
 #[derive(Default)]
@@ -25,6 +25,7 @@ define_http_plugin! {
     name: "example-plugin",
     state: PluginState,
     handler: handle_inner,
+    handler_ref: handle_inner_ref,
     state_save: save_state,
     state_load: load_state,
 }
@@ -51,17 +52,35 @@ fn load_state(bytes: &[u8]) -> Option<PluginState> {
     }
 }
 
-/// HTTP リクエストの実処理。マクロが生成した `__handle` から呼ばれる。
+/// HTTP リクエストの実処理。マクロが生成した `__handle` から呼ばれる（`HttpRequest` 所有型版）。
 fn handle_inner(req: &HttpRequest, state: &mut PluginState) -> HttpResponse {
+    handle_core(
+        req.method.as_str(),
+        req.path.as_str(),
+        req.body.as_slice(),
+        state,
+    )
+}
+
+/// ゼロコピー版ハンドラ。`__plugin_handle_ref` から呼ばれる（`HttpRequestRef` 借用型版）。
+fn handle_inner_ref(req: &HttpRequestRef<'_>, state: &mut PluginState) -> HttpResponse {
+    handle_core(
+        req.method.as_str(),
+        req.path.as_str(),
+        req.body.as_slice(),
+        state,
+    )
+}
+
+/// 共通実装。`handle_inner` / `handle_inner_ref` 双方から呼ばれる。
+fn handle_core(method: &str, path: &str, body: &[u8], state: &mut PluginState) -> HttpResponse {
     // パニックモード: 環境変数で制御
+    #[cfg(test)]
     if std::env::var("PLUGIN_SHOULD_PANIC").as_deref() == Ok("1") {
         panic!("意図的なパニック（Phase 4 検証用）");
     }
 
     state.request_count += 1;
-
-    let path = req.path.as_str();
-    let method = req.method.as_str();
 
     match (method, path) {
         ("GET", p) if p.ends_with("/hello") => HttpResponse {
@@ -74,7 +93,7 @@ fn handle_inner(req: &HttpRequest, state: &mut PluginState) -> HttpResponse {
         ("POST", p) if p.ends_with("/echo") => HttpResponse {
             status: 200,
             content_type: "application/octet-stream".into(),
-            body: req.body.clone(),
+            body: body.to_vec().into(),
         },
         _ => HttpResponse {
             status: 404,

@@ -10,7 +10,7 @@ use abi_stable::{
     library::RootModule,
     package_version_strings,
     sabi_types::VersionStrings,
-    std_types::{ROption, RSlice, RString, RVec},
+    std_types::{ROption, RSlice, RStr, RString, RVec},
     StableAbi,
 };
 
@@ -60,6 +60,30 @@ pub struct HttpResponse {
     pub content_type: RString,
     /// レスポンスボディ（バイト列）。
     pub body: RVec<u8>,
+}
+
+/// ホストからプラグインへ渡す借用ベースの HTTP リクエスト（ゼロコピー版）。
+///
+/// [`HttpRequest`] の借用版。`RStr<'a>` は `&str` と同等の ABI 安定型なので
+/// ホスト側でアロケーションなしに文字列を渡せる。
+/// プラグインは文字列を所有する必要がなく、読み取りのみの場合に最適。
+///
+/// # ホストとのデータフロー
+///
+/// ```text
+/// &str (ホスト側スタック) ──► RStr<'a> (ゼロコピー) ──► FFI ──► プラグイン
+/// ```
+#[repr(C)]
+#[derive(StableAbi)]
+pub struct HttpRequestRef<'a> {
+    /// HTTP メソッド（`"GET"`, `"POST"` など）。
+    pub method: RStr<'a>,
+    /// リクエストパス（プレフィックス除去済み、例: `"/hello"`）。
+    pub path: RStr<'a>,
+    /// クエリ文字列。クエリなしは空文字列。
+    pub query: RStr<'a>,
+    /// リクエストボディ（バイト列）。
+    pub body: RSlice<'a, u8>,
 }
 
 /// プラグインモジュールのABI定義。
@@ -146,7 +170,91 @@ impl RootModule for RobotPlugin_Ref {
 /// ```
 #[macro_export]
 macro_rules! define_http_plugin {
+    // ── `handler_ref` あり: HttpRequestRef<'_> を直接受け取るゼロコピー版ハンドラも生成 ──
     (
+        name: $name:expr,
+        state: $state:ty,
+        handler: $handler:ident,
+        handler_ref: $handler_ref:ident,
+        state_save: $save:ident,
+        state_load: $load:ident $(,)?
+    ) => {
+        $crate::define_http_plugin! {
+            @inner
+            name: $name,
+            state: $state,
+            handler: $handler,
+            state_save: $save,
+            state_load: $load,
+        }
+
+        /// ゼロコピー FFI エントリポイント。
+        ///
+        /// `HttpRequestRef<'_>` は `RStr<'a>` を使うため、ホスト側の文字列アロケーションが不要。
+        /// ホストが `libloading` 経由でこのシンボルを直接呼び出す。
+        #[no_mangle]
+        pub extern "C" fn __plugin_handle_ref(
+            req: &$crate::HttpRequestRef<'_>,
+        ) -> $crate::HttpResponse {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut state = __get_state().lock().unwrap_or_else(|e| e.into_inner());
+                $handler_ref(req, &mut *state)
+            }));
+            match result {
+                Ok(resp) => resp,
+                Err(_) => {
+                    eprintln!(
+                        "[{}] panic を捕捉しました（handle_ref）。500 を返します",
+                        $name
+                    );
+                    $crate::HttpResponse {
+                        status: 500,
+                        content_type: "text/plain".into(),
+                        body: b"internal plugin error".to_vec().into(),
+                    }
+                }
+            }
+        }
+    };
+
+    // ── `handler_ref` なし: 変換ラッパで __plugin_handle_ref を生成 ──
+    (
+        name: $name:expr,
+        state: $state:ty,
+        handler: $handler:ident,
+        state_save: $save:ident,
+        state_load: $load:ident $(,)?
+    ) => {
+        $crate::define_http_plugin! {
+            @inner
+            name: $name,
+            state: $state,
+            handler: $handler,
+            state_save: $save,
+            state_load: $load,
+        }
+
+        /// 変換ラッパ版の FFI エントリポイント。
+        ///
+        /// `HttpRequestRef<'_>` を `HttpRequest`（所有型）へ変換してから既存ハンドラを呼ぶ。
+        /// ホスト側のアロケーションは不要だが、プラグイン内部で変換コストが発生する。
+        #[no_mangle]
+        pub extern "C" fn __plugin_handle_ref(
+            req: &$crate::HttpRequestRef<'_>,
+        ) -> $crate::HttpResponse {
+            let owned = $crate::HttpRequest {
+                method: req.method.as_str().into(),
+                path: req.path.as_str().into(),
+                query: req.query.as_str().into(),
+                body: req.body.as_slice().to_vec().into(),
+            };
+            __handle(&owned)
+        }
+    };
+
+    // ── 内部実装（共通コード） ──────────────────────────────────────────────────
+    (
+        @inner
         name: $name:expr,
         state: $state:ty,
         handler: $handler:ident,

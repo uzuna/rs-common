@@ -184,9 +184,9 @@ help:
 	@echo "  hello            GET /api/hello で動作確認"
 	@echo "  add              POST /sample/add で加算確認"
 	@echo "  mul              POST /sample/mul で乗算確認"
-	@echo "  test             全テストを実行
-  bench            criterion ベンチマーク（native vs plugin）
-  memory-check     10,000 回リロードのメモリ計測"
+	@echo "  test             全テストを実行"
+	@echo "  bench            criterion ベンチマーク（native vs plugin）"
+	@echo "  memory-check     10,000 回リロードのメモリ計測"
 	@echo "  clean            ビルド成果物を削除"
 	@echo ""
 	@echo "環境変数:"

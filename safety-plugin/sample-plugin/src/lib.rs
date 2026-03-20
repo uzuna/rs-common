@@ -12,7 +12,7 @@
 //!
 //! 内部状態として `op_count`（累積演算回数）を保持し、ホットリロード時に引き継ぐ。
 
-use safety_plugin_common::{define_http_plugin, HttpRequest, HttpResponse};
+use safety_plugin_common::{define_http_plugin, HttpRequest, HttpRequestRef, HttpResponse};
 use serde::{Deserialize, Serialize};
 
 /// プラグイン内部状態（ホットリロード時に引き継ぐ）。
@@ -26,6 +26,7 @@ define_http_plugin! {
     name: "sample-plugin",
     state: CalcState,
     handler: handle_inner,
+    handler_ref: handle_inner_ref,
     state_save: save_state,
     state_load: load_state,
 }
@@ -47,15 +48,32 @@ struct CalcInput {
     b: i64,
 }
 
-/// HTTP リクエストの実処理。マクロが生成した `__handle` から呼ばれる。
+/// HTTP リクエストの実処理（`HttpRequest` 所有型版）。
 fn handle_inner(req: &HttpRequest, state: &mut CalcState) -> HttpResponse {
-    let path = req.path.as_str();
-    let method = req.method.as_str();
+    handle_core(
+        req.method.as_str(),
+        req.path.as_str(),
+        req.body.as_slice(),
+        state,
+    )
+}
 
+/// ゼロコピー版ハンドラ（`HttpRequestRef` 借用型版）。
+fn handle_inner_ref(req: &HttpRequestRef<'_>, state: &mut CalcState) -> HttpResponse {
+    handle_core(
+        req.method.as_str(),
+        req.path.as_str(),
+        req.body.as_slice(),
+        state,
+    )
+}
+
+/// 共通実装。`handle_inner` / `handle_inner_ref` 双方から呼ばれる。
+fn handle_core(method: &str, path: &str, body: &[u8], state: &mut CalcState) -> HttpResponse {
     // パスの末尾セグメントでルーティング（プレフィックスは問わない）
     match (method, path.rsplit('/').next().unwrap_or("")) {
         ("POST", "add") => {
-            let input = match parse_input(&req.body) {
+            let input = match parse_input(body) {
                 Ok(v) => v,
                 Err(e) => return bad_request(&e),
             };
@@ -63,7 +81,7 @@ fn handle_inner(req: &HttpRequest, state: &mut CalcState) -> HttpResponse {
             json_response(200, &serde_json::json!({ "result": input.a + input.b }))
         }
         ("POST", "mul") => {
-            let input = match parse_input(&req.body) {
+            let input = match parse_input(body) {
                 Ok(v) => v,
                 Err(e) => return bad_request(&e),
             };
@@ -79,8 +97,8 @@ fn handle_inner(req: &HttpRequest, state: &mut CalcState) -> HttpResponse {
     }
 }
 
-fn parse_input(body: &abi_stable::std_types::RVec<u8>) -> Result<CalcInput, String> {
-    serde_json::from_slice(body.as_slice()).map_err(|e| format!("JSONパースエラー: {e}"))
+fn parse_input(body: &[u8]) -> Result<CalcInput, String> {
+    serde_json::from_slice(body).map_err(|e| format!("JSONパースエラー: {e}"))
 }
 
 fn json_response(status: u16, value: &serde_json::Value) -> HttpResponse {

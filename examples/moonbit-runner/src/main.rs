@@ -1,11 +1,8 @@
 //! MoonBitプラグインの実行ホスト
 
 use clap::Parser;
+use moonbit_runner::runner;
 use std::process::ExitCode;
-
-mod bindings;
-mod context;
-mod runner;
 
 /// MoonBitプラグインランナー
 #[derive(Debug, Parser)]
@@ -22,6 +19,10 @@ struct Opt {
     #[arg(long, default_value_t = 10_000)]
     iterations: usize,
 
+    /// plain core Wasm を使う線形メモリ benchmark 用ファイルのパス
+    #[arg(long)]
+    raw_wasm: Option<std::path::PathBuf>,
+
     /// `/status` エンドポイントを起動する
     #[arg(long, default_value_t = false)]
     serve_status: bool,
@@ -37,6 +38,7 @@ fn try_main() -> anyhow::Result<()> {
         wasm: opt.wasm,
         wasi: opt.wasi,
         benchmark_iterations: opt.iterations,
+        raw_wasm: opt.raw_wasm,
     };
     let report = runner::run(&config)?;
     runner::print_report(&config, &report);

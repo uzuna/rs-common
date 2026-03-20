@@ -14,3 +14,10 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["net", "rt"] }
 wasmtime.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "criterion_bench"
+harness = false

@@ -14,6 +14,7 @@ use crate::bindings::{
     SensorData,
 };
 use crate::context::ExecStore;
+use crate::raw_runner;
 
 const FLOAT_EPSILON: f32 = 1.0e-6;
 const PROBE_VALID_POSITION: f32 = 30.0;
@@ -46,6 +47,8 @@ pub struct RunnerConfig {
     pub wasi: WasiSupport,
     /// PPS計測時の `update` 呼び出し回数
     pub benchmark_iterations: usize,
+    /// plain core Wasm を用いた線形メモリ benchmark 用ファイル
+    pub raw_wasm: Option<PathBuf>,
 }
 
 impl RunnerConfig {
@@ -127,6 +130,8 @@ pub struct RunReport {
     pub final_status: PluginStatus,
     /// サイズ別ベンチマーク結果
     pub size_benchmarks: SizeBenchmarkReport,
+    /// plain core Wasm を用いた線形メモリ benchmark 結果
+    pub raw_benchmarks: Option<SizeBenchmarkReport>,
 }
 
 // ── /status エンドポイント向け JSON 構造体 ────────────────────────────────
@@ -136,6 +141,7 @@ struct StatusResponse {
     plugin_status: PluginStatusJson,
     update_benchmark: UpdateBenchmarkJson,
     size_benchmarks: SizeBenchmarksJson,
+    raw_benchmarks: Option<SizeBenchmarksJson>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -229,6 +235,14 @@ pub fn run(config: &RunnerConfig) -> anyhow::Result<RunReport> {
         .context("ベンチマーク後ステータスの取得に失敗しました")?;
 
     let size_benchmarks = run_size_benchmarks(&mut inst, config.benchmark_iterations)?;
+    let raw_benchmarks = match config.raw_wasm.as_deref() {
+        Some(path) => Some(
+            raw_runner::run_size_benchmarks(path, config.benchmark_iterations).with_context(
+                || format!("raw Wasm ベンチマークに失敗しました: {}", path.display()),
+            )?,
+        ),
+        None => None,
+    };
 
     Ok(RunReport {
         initial_status,
@@ -237,6 +251,7 @@ pub fn run(config: &RunnerConfig) -> anyhow::Result<RunReport> {
         benchmark,
         final_status,
         size_benchmarks,
+        raw_benchmarks,
     })
 }
 
@@ -285,9 +300,36 @@ pub fn print_report(config: &RunnerConfig, report: &RunReport) {
             r.payload_bytes, r.avg_ns, r.max_ns, r.pps
         );
     }
+    fn print_comparison(label: &str, wit: &SizeBenchmarkResult, raw: &SizeBenchmarkResult) {
+        let avg_speedup = if raw.avg_ns == 0 {
+            0.0
+        } else {
+            wit.avg_ns as f64 / raw.avg_ns as f64
+        };
+        let pps_speedup = if wit.pps == 0.0 {
+            0.0
+        } else {
+            raw.pps / wit.pps
+        };
+        println!(
+            "比較[{label}]: wit_avg_ns={}, raw_avg_ns={}, avg_speedup={:.2}x, wit_pps={:.2}, raw_pps={:.2}, pps_speedup={:.2}x",
+            wit.avg_ns, raw.avg_ns, avg_speedup, wit.pps, raw.pps, pps_speedup
+        );
+    }
+
     print_size_result("128B", &report.size_benchmarks.b128);
     print_size_result("1KB ", &report.size_benchmarks.b1k);
     print_size_result("4KB ", &report.size_benchmarks.b4k);
+
+    if let Some(raw) = &report.raw_benchmarks {
+        println!("線形メモリ benchmark（plain core Wasm）:");
+        print_size_result("raw-128B", &raw.b128);
+        print_size_result("raw-1KB ", &raw.b1k);
+        print_size_result("raw-4KB ", &raw.b4k);
+        print_comparison("128B", &report.size_benchmarks.b128, &raw.b128);
+        print_comparison("1KB", &report.size_benchmarks.b1k, &raw.b1k);
+        print_comparison("4KB", &report.size_benchmarks.b4k, &raw.b4k);
+    }
 }
 
 /// ベンチマーク完了済みの `report` を JSON で返す HTTP `/status` エンドポイントを起動する。
@@ -337,6 +379,14 @@ fn build_status_response(report: &RunReport) -> StatusResponse {
             b1k: SizeBenchmarkEntryJson::from(&report.size_benchmarks.b1k),
             b4k: SizeBenchmarkEntryJson::from(&report.size_benchmarks.b4k),
         },
+        raw_benchmarks: report
+            .raw_benchmarks
+            .as_ref()
+            .map(|raw| SizeBenchmarksJson {
+                b128: SizeBenchmarkEntryJson::from(&raw.b128),
+                b1k: SizeBenchmarkEntryJson::from(&raw.b1k),
+                b4k: SizeBenchmarkEntryJson::from(&raw.b4k),
+            }),
     }
 }
 
@@ -601,6 +651,7 @@ mod tests {
             wasm: PathBuf::from("plugins/control.component.wasm"),
             wasi: WasiSupport::None,
             benchmark_iterations: case.iterations,
+            raw_wasm: None,
         };
         let result = config.validate();
         assert_eq!(

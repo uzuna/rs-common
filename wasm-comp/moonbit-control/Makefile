@@ -2,6 +2,7 @@ REPO_ROOT := $(shell git rev-parse --show-toplevel)
 WIT_DIR   := $(REPO_ROOT)/examples/moonbit-runner/wit
 PLUGINS_DIR := $(REPO_ROOT)/examples/moonbit-runner/plugins
 WASM_OUT  := $(PLUGINS_DIR)/control.component.wasm
+RAW_WASM_OUT := $(PLUGINS_DIR)/control.core.wasm
 BUILD_WASM := _build/wasm/release/build/gen/gen.wasm
 
 .PHONY: all
@@ -30,7 +31,14 @@ $(PLUGINS_DIR):
 .PHONY: build
 build: $(WASM_OUT)
 
+.PHONY: build-raw
+build-raw: $(BUILD_WASM) | $(PLUGINS_DIR)
+	cp $(BUILD_WASM) $(RAW_WASM_OUT)
+
+.PHONY: build-all
+build-all: $(WASM_OUT) $(RAW_WASM_OUT)
+
 .PHONY: clean
 clean:
 	moon clean
-	rm -f control.wasm $(WASM_OUT)
+	rm -f control.wasm $(WASM_OUT) $(RAW_WASM_OUT)

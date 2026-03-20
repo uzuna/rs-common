@@ -7,12 +7,48 @@
 //! プラグイン自身はルートを宣言せず、ロード時に指定されたプレフィックスに紐づく。
 
 use std::{
+    cell::RefCell,
     collections::HashMap,
     path::{Path, PathBuf},
 };
 
-use abi_stable::std_types::{RNone, RSlice, RSome, RVec};
+use abi_stable::std_types::{RNone, RSlice, RSome, RString, RVec};
 use safety_plugin_common::{HttpRequest, HttpResponse, PluginContext, PluginKind, RobotPlugin_Ref};
+
+// ─── RString プール（スレッドローカル） ──────────────────────────────────────
+
+/// プール内に保持する RString の最大キャパシティ（バイト）。
+/// これを超える文字列はプールに戻さず破棄する。
+const POOL_MAX_CAP: usize = 512;
+
+thread_local! {
+    static RSTRING_POOL: RefCell<Vec<RString>> = const { RefCell::new(Vec::new()) };
+}
+
+/// プールから `RString` を取り出し、内容を `s` で初期化して返す。
+///
+/// プールが空の場合は新規アロケートする。
+/// プールに既存の文字列がある場合は `clear()` + `push_str()` でメモリを再利用する。
+pub fn rstring_from_pool(s: &str) -> RString {
+    RSTRING_POOL.with(|pool| {
+        if let Some(mut rs) = pool.borrow_mut().pop() {
+            rs.clear();
+            rs.push_str(s);
+            rs
+        } else {
+            RString::from(s)
+        }
+    })
+}
+
+/// `RString` をプールに返却する。
+///
+/// キャパシティが [`POOL_MAX_CAP`] を超える場合は破棄してメモリを解放する。
+pub fn rstring_to_pool(rs: RString) {
+    if rs.capacity() <= POOL_MAX_CAP {
+        RSTRING_POOL.with(|pool| pool.borrow_mut().push(rs));
+    }
+}
 
 // ─── PluginManager（単一プラグインのライフサイクル管理） ─────────────────────
 
@@ -221,16 +257,20 @@ impl PluginRouter {
     /// - 一致するプレフィックスなし: 404 を返す（フォールバック扱いではない）。
     /// - プレフィックスあり・プラグイン未ロード: 503 を返し `fallback_count` を加算する。
     /// - プレフィックスあり・プラグインロード済み: プラグインの `handle` を呼ぶ。
-    pub fn handle(&mut self, mut req: HttpRequest) -> HttpResponse {
-        let path = req.path.as_str();
-
-        // 最長一致プレフィックスを検索（不変借用のためにキーのみ収集）
-        let matched = self
-            .plugins
-            .keys()
-            .filter(|prefix| path.starts_with(prefix.as_str()))
-            .max_by_key(|prefix| prefix.len())
-            .cloned();
+    ///
+    /// リクエスト処理後、`method`・`path`（プレフィックス除去済み）・`query` を
+    /// スレッドローカルプールへ返却する。[`rstring_from_pool`] でプールを活用すると
+    /// 定常状態でアロケーションを削減できる。
+    pub fn handle(&mut self, req: HttpRequest) -> HttpResponse {
+        // 最長一致プレフィックスを検索（不変借用スコープを限定）
+        let matched = {
+            let path_str = req.path.as_str();
+            self.plugins
+                .keys()
+                .filter(|prefix| path_str.starts_with(prefix.as_str()))
+                .max_by_key(|prefix| prefix.len())
+                .cloned()
+        };
 
         let Some(prefix) = matched else {
             return HttpResponse {
@@ -257,10 +297,41 @@ impl PluginRouter {
             return service_unavailable("プラグイン未ロード");
         }
 
-        // pathを補正
-        req.path = path[prefix.len()..].into();
+        // req を分解してプレフィックスを除去した path を再構築する。
+        // orig_path をプールに返すことで次リクエストの RString アロケーションを節約できる。
+        let prefix_len = prefix.len();
+        let HttpRequest {
+            method,
+            path: orig_path,
+            query,
+            body,
+        } = req;
 
-        self.plugins.get(&prefix).unwrap().handle(&req)
+        // プレフィックス除去済みパスを文字列として取り出してから orig_path をプールへ返す。
+        let stripped: String = orig_path.as_str()[prefix_len..].to_owned();
+        rstring_to_pool(orig_path);
+
+        let req = HttpRequest {
+            method,
+            path: rstring_from_pool(&stripped),
+            query,
+            body,
+        };
+
+        let resp = self.plugins.get(&prefix).unwrap().handle(&req);
+
+        // 処理済みの文字列フィールドをプールへ返却する。
+        let HttpRequest {
+            method,
+            path,
+            query,
+            body: _,
+        } = req;
+        rstring_to_pool(method);
+        rstring_to_pool(path);
+        rstring_to_pool(query);
+
+        resp
     }
 
     /// 登録済みプレフィックスの一覧を返す（順序不定）。

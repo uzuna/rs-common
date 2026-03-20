@@ -24,7 +24,7 @@ use std::{
 use abi_stable::std_types::RVec;
 use criterion::{criterion_group, criterion_main, Criterion};
 use safety_plugin_common::{HttpRequest, HttpResponse};
-use safety_plugin_host::plugin_manager::PluginRouter;
+use safety_plugin_host::plugin_manager::{rstring_from_pool, PluginRouter};
 use std::hint::black_box;
 
 // ─── プラグインパス ───────────────────────────────────────────────────────────
@@ -121,6 +121,29 @@ fn make_post(path: &str, body: &[u8]) -> HttpRequest {
     }
 }
 
+/// プールから RString を借用して GET リクエストを構築する。
+///
+/// [`PluginRouter::handle`] がリクエスト処理後に文字列をプールへ返却するため、
+/// 繰り返し呼び出すと定常状態では `method` / `path` / `query` のアロケーションがなくなる。
+fn make_get_pooled(path: &str) -> HttpRequest {
+    HttpRequest {
+        method: rstring_from_pool("GET"),
+        path: rstring_from_pool(path),
+        query: rstring_from_pool(""),
+        body: RVec::new(),
+    }
+}
+
+/// プールから RString を借用して POST リクエストを構築する。
+fn make_post_pooled(path: &str, body: &[u8]) -> HttpRequest {
+    HttpRequest {
+        method: rstring_from_pool("POST"),
+        path: rstring_from_pool(path),
+        query: rstring_from_pool(""),
+        body: RVec::from(body.to_vec()),
+    }
+}
+
 // ─── ベンチマーク関数 ─────────────────────────────────────────────────────────
 
 /// hello レイテンシ比較: ネイティブ vs example-plugin FFI。
@@ -145,6 +168,11 @@ fn bench_hello(c: &mut Criterion) {
 
         group.bench_function("plugin", |b| {
             b.iter(|| black_box(router.handle(make_get("/api/hello"))));
+        });
+
+        // plugin_pooled: プールから RString を再利用して FFI 呼び出し
+        group.bench_function("plugin_pooled", |b| {
+            b.iter(|| black_box(router.handle(make_get_pooled("/api/hello"))));
         });
     } else {
         eprintln!(
@@ -179,6 +207,13 @@ fn bench_add(c: &mut Criterion) {
 
         group.bench_function("plugin", |b| {
             b.iter(|| black_box(router.handle(make_post("/sample/add", black_box(body)))));
+        });
+
+        // plugin_pooled: プールから RString を再利用して FFI 呼び出し
+        group.bench_function("plugin_pooled", |b| {
+            b.iter(|| {
+                black_box(router.handle(make_post_pooled("/sample/add", black_box(body))))
+            });
         });
     } else {
         eprintln!("[bench_add] スキップ: {} が見つかりません", path.display());

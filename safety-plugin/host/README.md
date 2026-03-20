@@ -259,28 +259,45 @@ make bench
 cargo bench -p safety-plugin-host
 ```
 
-### 計測結果（`cargo bench` / リリースビルド）
+### 計測結果（`cargo bench` / debug ビルド）
 
-| ハンドラ  | native（ホスト直書き） | plugin（FFI 経由） | オーバーヘッド |
-|:----------|----------------------:|------------------:|:--------------:|
-| **hello** |              40.9 ns  |          319 ns   |   約 **7.8 倍** |
-| **add**   |             148 ns    |        1,596 ns   |  約 **10.8 倍** |
+| ハンドラ  | native | plugin（FFI 経由） | plugin_pooled | pool 改善 |
+|:----------|-------:|------------------:|--------------:|----------:|
+| **hello** | 44.9 ns |          377.9 ns |      356.9 ns | −21 ns (−5.6%) |
+| **add**   |  153 ns |        1,632 ns   |    1,593 ns   | −39 ns (−2.4%) |
 
-計測環境: Linux x86-64、`--profile release`
+計測環境: Linux x86-64、`--profile dev`
 
 ### FFI オーバーヘッドの内訳
 
-plugin 経由の追加コスト（hello の場合: 約 278 ns）:
+plugin 経由の追加コスト（hello の場合: 約 333 ns）:
 
 | 要因 | 説明 |
 |:-----|:-----|
 | `RString` アロケーション × 3 | method / path / query の変換 |
+| `String::to_owned()` | プレフィックス除去のための中間コピー |
 | HashMap 最長プレフィックス検索 | PluginRouter のルーティング |
 | `Mutex::lock` | プラグイン内部状態の排他制御 |
 | 関数ポインタ経由 FFI 呼び出し | `extern "C" fn handle(req)` |
 | `std::env::var` × 2 | example-plugin 実装固有（`PLUGIN_SHOULD_PANIC` 確認等） |
 
 add の場合は上記に加えて serde_json による JSON パース/生成が含まれる（約 1,448 ns）。
+
+### RString プールの効果と限界
+
+`rstring_from_pool` / `rstring_to_pool` によるスレッドローカルプールを使うと、
+定常状態で `method` / `query` の `RString` アロケーション（各 10–15 ns）を節約できる。
+
+- **hello**: −21 ns (−5.6%) — `method`・`query` の 2 アロケーションを削減
+- **add**: −39 ns (−2.4%) — 同上だが serde_json の JSON 処理（〜1,448 ns）が支配的
+
+改善幅が限られる理由:
+1. プレフィックス除去時に `String::to_owned()` が必要（`RString` 1 個分の節約と相殺）
+2. `Mutex::lock` / FFI / `std::env::var` は削減できない
+3. add では JSON パース/生成が全体の約 92% を占める
+
+より抜本的なゼロアロケーションを目指す場合は `RStr<'a>`（借用 FFI 文字列型）を
+使う設計変更が有効だが、`extern "C"` 関数ポインタ型の ABI 変更が必要になる。
 
 ---
 

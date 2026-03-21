@@ -4439,6 +4439,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin-base"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "png"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

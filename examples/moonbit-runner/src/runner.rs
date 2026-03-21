@@ -62,7 +62,10 @@ impl RunnerConfig {
     /// 実行前に最低限の設定値を検証する
     pub fn validate(&self) -> anyhow::Result<()> {
         let _ = normalize_plugin_prefix(&self.plugin_prefix)?;
-        ensure!(self.max_versions > 0, "max_versions は 1 以上にしてください");
+        ensure!(
+            self.max_versions > 0,
+            "max_versions は 1 以上にしてください"
+        );
         Ok(())
     }
 }
@@ -543,12 +546,13 @@ fn setup_file_watcher(
     std::thread::spawn(move || {
         for event in nrx.into_iter().flatten() {
             if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_))
-                && event.paths.iter().any(|p| p == &wasm_path) {
-                    tracing::info!("Wasm ファイルの変更を検知: {}", wasm_path.display());
-                    let _ = tx.blocking_send(ReloadEvent::Reload {
-                        path: wasm_path.clone(),
-                    });
-                }
+                && event.paths.iter().any(|p| p == &wasm_path)
+            {
+                tracing::info!("Wasm ファイルの変更を検知: {}", wasm_path.display());
+                let _ = tx.blocking_send(ReloadEvent::Reload {
+                    path: wasm_path.clone(),
+                });
+            }
         }
     });
 

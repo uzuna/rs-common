@@ -33,6 +33,8 @@ help:
 	@echo "  make bench-raw-prof         - profiler 有効で raw benchmark 実行"
 	@echo "  make perf-add-loop2000      - perf record で add_raw loop2000 を収集"
 	@echo "  make perf-add-loop2000-symbolized - 対応付用ビルドで perf 収集"
+	@echo "  make bench-compare          - native / WASM / SharedObject の呼び出しコスト比較"
+	@echo "  make memory-check           - N 回リロード後のメモリ使用量を確認"
 	@echo ""
 	@echo "可変パラメータ"
 	@echo "  SERVER_ADDR=<host:port>     - HTTP サーバー bind アドレス（default: $(SERVER_ADDR)）"
@@ -111,6 +113,15 @@ perf-add-loop2000: build-plugin build-plugin-raw
 perf-add-loop2000-symbolized: build-plugin build-plugin-raw-symbolized
 	MOONBIT_RUNNER_RAW_BENCH=1 MOONBIT_RUNNER_RAW_WASM_PATH=$(RAW_WASM_SYMBOLIZED) MOONBIT_RUNNER_WASMTIME_PROFILER=$(WASMTIME_PROFILER) perf record -F 99 -g -o $(PERF_DATA) -- cargo bench -p $(RUNNER_CRATE) --bench criterion_bench -- --profile-time=8 moonbit-runner/raw/add_raw/loop2000-16B
 	@echo "perf report -i $(PERF_DATA) --stdio --no-children --sort overhead,comm,dso,symbol"
+
+.PHONY: bench-compare
+bench-compare: build-plugin
+	cargo build -p safety-plugin-example -p safety-plugin-sample
+	MOONBIT_RUNNER_SO_BENCH=1 cargo bench -p $(RUNNER_CRATE) --bench criterion_bench -- $(BENCH_ARGS) moonbit-runner/compare
+
+.PHONY: memory-check
+memory-check: build-plugin
+	cargo test -p $(RUNNER_CRATE) reload_memory -- --ignored --nocapture
 
 .PHONY: clean-plugins
 clean-plugins:

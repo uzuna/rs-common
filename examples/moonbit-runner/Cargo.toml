@@ -21,6 +21,7 @@ wasmtime.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+safety-plugin-host = { path = "../../safety-plugin/host" }
 tempfile.workspace = true
 
 [[bench]]

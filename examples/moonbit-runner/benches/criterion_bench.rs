@@ -4,6 +4,8 @@ use moonbit_runner::bindings::{
 };
 use moonbit_runner::context::ExecStore;
 use moonbit_runner::engine;
+use plugin_base::PluginHandle;
+use safety_plugin_host::SoPluginHandle;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
 use wasmtime::{component::Component, Instance, Linker, Memory, Module, Store, TypedFunc};
@@ -552,10 +554,123 @@ fn bench_native_add(c: &mut Criterion) {
     group.finish();
 }
 
+/// SO プラグインの .so ファイルパスを解決する。
+///
+/// 環境変数が設定されていればそれを優先し、未設定の場合はワークスペースの
+/// `target/debug/lib{name}_plugin.so` をデフォルトとする。
+fn so_plugin_path(name: &str) -> PathBuf {
+    let env_var = match name {
+        "example" => "MOONBIT_RUNNER_EXAMPLE_PLUGIN_PATH",
+        "sample" => "MOONBIT_RUNNER_SAMPLE_PLUGIN_PATH",
+        _ => unreachable!("未知の SO プラグイン名: {name}"),
+    };
+    if let Ok(path) = std::env::var(env_var) {
+        return PathBuf::from(path);
+    }
+    // クレート名 "safety-plugin-{name}" → "libsafety_plugin_{name}.so"
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/debug")
+        .join(format!("libsafety_plugin_{name}.so"))
+}
+
+/// native / WASM / SharedObject の呼び出しコストを同一 criterion グループで比較する。
+///
+/// SO ベンチは `MOONBIT_RUNNER_SO_BENCH=1` が設定されており、かつ .so ファイルが
+/// 存在する場合にのみ実行される。
+fn bench_plugin_compare(c: &mut Criterion) {
+    let component_path = plugin_path("control.component.wasm");
+    if !component_path.exists() {
+        eprintln!(
+            "compare ベンチスキップ: {} が見つかりません。先に `make -C examples/moonbit-runner build-plugin` を実行してください",
+            component_path.display()
+        );
+        return;
+    }
+
+    // WASM ハンドラを構築する
+    let engine = new_wasmtime_engine();
+    let bytes = std::fs::read(&component_path).unwrap_or_else(|e| {
+        panic!("component Wasm の読み込みに失敗: {e}");
+    });
+    let component = Component::new(&engine, &bytes).unwrap_or_else(|e| {
+        panic!("component Wasm のロードに失敗: {e}");
+    });
+    let store = ExecStore::new(&engine);
+    let inst =
+        PluginInst::new_with_binary(store, &component).expect("component プラグインの初期化に失敗");
+    let mut wasm: Box<dyn PluginHandle> = Box::new(inst);
+
+    // SO ハンドラ（オプショナル）
+    let so_enabled = std::env::var("MOONBIT_RUNNER_SO_BENCH").ok().as_deref() == Some("1");
+    let mut so_opt: Option<Box<dyn PluginHandle>> = if so_enabled {
+        let example_path = so_plugin_path("example");
+        let sample_path = so_plugin_path("sample");
+        if example_path.exists() && sample_path.exists() {
+            Some(Box::new(
+                SoPluginHandle::load(&example_path, "/api", &sample_path, "/sample")
+                    .expect("SO プラグインのロードに失敗"),
+            ))
+        } else {
+            eprintln!(
+                "compare ベンチの SO 部分をスキップ: .so が見つかりません \
+                 （example: {}, sample: {}）",
+                example_path.display(),
+                sample_path.display()
+            );
+            None
+        }
+    } else {
+        None
+    };
+
+    // ── hello 比較 ──────────────────────────────────────────────────────────
+    {
+        let mut group = c.benchmark_group("moonbit-runner/compare/hello");
+
+        // native: 軽量 Rust スタブ（ベースライン）
+        group.bench_function("native", |b| b.iter(|| black_box(true)));
+
+        // WASM: WIT get-status 呼び出し
+        group.bench_function("wasm", |b| b.iter(|| wasm.hello()));
+
+        // SO: example-plugin GET /api/hello
+        if let Some(ref mut so) = so_opt {
+            group.bench_function("so", |b| b.iter(|| so.hello()));
+        }
+
+        group.finish();
+    }
+
+    // ── add(loop=1) 比較 ────────────────────────────────────────────────────
+    {
+        let mut group = c.benchmark_group("moonbit-runner/compare/add_loop1");
+
+        // native
+        group.bench_function("native", |b| {
+            b.iter(|| add_native(black_box(11), black_box(7), black_box(1)))
+        });
+
+        // WASM
+        group.bench_function("wasm", |b| {
+            b.iter(|| wasm.add(black_box(11), black_box(7), black_box(1)))
+        });
+
+        // SO
+        if let Some(ref mut so) = so_opt {
+            group.bench_function("so", |b| {
+                b.iter(|| so.add(black_box(11), black_box(7), black_box(1)))
+            });
+        }
+
+        group.finish();
+    }
+}
+
 criterion_group!(
     moonbit_runner_benches,
     bench_wit_component,
     bench_raw_linear_memory,
-    bench_native_add
+    bench_native_add,
+    bench_plugin_compare,
 );
 criterion_main!(moonbit_runner_benches);

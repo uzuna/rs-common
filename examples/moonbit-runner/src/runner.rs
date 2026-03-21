@@ -4,6 +4,12 @@
 //! - ファイル監視（`notify`）: Wasm ファイルの変更を検知して自動リロード。
 //! - `SIGUSR1`: プラグインを手動リロードする。
 //! - SIGINT / SIGTERM: グレースフルシャットダウン。
+//!
+//! # プラグイン管理 API
+//! - `GET  /plugin/status`              - ロード状態・現在バージョン・fallback_count
+//! - `POST /plugin/reload`              - .wasm バイナリを受け取り保存してリロード
+//! - `GET  /plugin/versions`            - 保持しているバージョン一覧
+//! - `POST /plugin/rollback/{version}`  - 指定バージョンに切り替え
 
 use anyhow::{bail, ensure, Context};
 use clap::ValueEnum;
@@ -15,6 +21,7 @@ use tokio::sync::mpsc;
 
 use crate::bindings::{MotorOutput, PluginStatus, SensorData};
 use crate::plugin_manager::PluginManager;
+use crate::version_manager::VersionManager;
 
 /// 利用する WASI サポートの種類
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum)]
@@ -45,12 +52,17 @@ pub struct RunnerConfig {
     pub bind_addr: SocketAddr,
     /// Wasm プラグインへ委譲する URL プレフィックス
     pub plugin_prefix: String,
+    /// バージョン管理用ストレージディレクトリ
+    pub plugin_dir: PathBuf,
+    /// 保持するバージョン数の上限
+    pub max_versions: usize,
 }
 
 impl RunnerConfig {
     /// 実行前に最低限の設定値を検証する
     pub fn validate(&self) -> anyhow::Result<()> {
         let _ = normalize_plugin_prefix(&self.plugin_prefix)?;
+        ensure!(self.max_versions > 0, "max_versions は 1 以上にしてください");
         Ok(())
     }
 }
@@ -65,6 +77,7 @@ enum ReloadEvent {
 
 struct AppState {
     manager: Arc<Mutex<PluginManager>>,
+    versions: Mutex<VersionManager>,
     plugin_prefix: String,
     wasi: WasiSupport,
 }
@@ -77,6 +90,38 @@ struct ServerStatusResponse {
     wasi: &'static str,
     loaded: bool,
     fallback_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MgmtStatusResponse {
+    loaded: bool,
+    version: Option<u64>,
+    fallback_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ReloadResponse {
+    version: u64,
+    status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VersionInfo {
+    version: u64,
+    saved_at: u64,
+    path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VersionsResponse {
+    current: Option<u64>,
+    versions: Vec<VersionInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RollbackResponse {
+    version: u64,
+    status: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -157,8 +202,12 @@ pub fn serve_http(config: RunnerConfig) -> anyhow::Result<()> {
 
     let manager = Arc::new(Mutex::new(mgr));
 
+    let versions = VersionManager::new(config.plugin_dir.clone(), config.max_versions)
+        .context("VersionManager の初期化に失敗")?;
+
     let state = Arc::new(AppState {
         manager: manager.clone(),
+        versions: Mutex::new(versions),
         plugin_prefix: plugin_prefix.clone(),
         wasi: config.wasi,
     });
@@ -167,8 +216,15 @@ pub fn serve_http(config: RunnerConfig) -> anyhow::Result<()> {
         .route("/status", get(handle_plugin_status))
         .route("/update", post(handle_plugin_update));
 
+    let mgmt_router = Router::new()
+        .route("/status", get(handle_mgmt_status))
+        .route("/reload", post(handle_mgmt_reload))
+        .route("/versions", get(handle_mgmt_versions))
+        .route("/rollback/{version}", post(handle_mgmt_rollback));
+
     let app = Router::new()
         .route("/status", get(handle_server_status))
+        .nest("/plugin", mgmt_router)
         .nest(&plugin_prefix, plugin_router)
         .with_state(state);
 
@@ -328,6 +384,139 @@ async fn handle_plugin_update(
 
     let output = outputs.into_iter().map(MotorOutputResponse::from).collect();
     Ok(axum::Json(UpdateResponse { output }))
+}
+
+// ─── プラグイン管理 API ハンドラ ─────────────────────────────────────────────
+
+/// GET /plugin/status
+async fn handle_mgmt_status(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<MgmtStatusResponse> {
+    let mgr = state.manager.lock().unwrap_or_else(|e| e.into_inner());
+    let loaded = mgr.is_loaded();
+    let fallback_count = mgr.fallback_count;
+    drop(mgr);
+
+    let version = state
+        .versions
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .current_version();
+
+    axum::Json(MgmtStatusResponse {
+        loaded,
+        version,
+        fallback_count,
+    })
+}
+
+/// POST /plugin/reload
+///
+/// `.wasm` バイナリをボディで受け取り、バージョンとして保存してリロードする。
+async fn handle_mgmt_reload(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    body: axum::body::Bytes,
+) -> HttpResult<axum::Json<ReloadResponse>> {
+    if body.is_empty() {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "ボディが空です".to_string(),
+        ));
+    }
+
+    let (version, path) = {
+        let mut versions = state.versions.lock().unwrap_or_else(|e| e.into_inner());
+        let v = versions.save(&body).map_err(|e| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("バイナリの保存に失敗: {e}"),
+            )
+        })?;
+        let p = versions
+            .path_of(v)
+            .expect("save 直後はパスが存在するはず")
+            .to_path_buf();
+        (v, p)
+    };
+
+    let reload_ok = state
+        .manager
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .reload(&path)
+        .is_ok();
+
+    let status = if reload_ok { "loaded" } else { "fallback" };
+    tracing::info!("API リロード: v{version} → {status}");
+
+    Ok(axum::Json(ReloadResponse {
+        version,
+        status: status.to_string(),
+    }))
+}
+
+/// GET /plugin/versions
+async fn handle_mgmt_versions(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<VersionsResponse> {
+    let versions = state.versions.lock().unwrap_or_else(|e| e.into_inner());
+    let current = versions.current_version();
+    let list = versions
+        .list()
+        .iter()
+        .map(|v| VersionInfo {
+            version: v.version,
+            saved_at: v.saved_at,
+            path: v.path.display().to_string(),
+        })
+        .collect();
+
+    axum::Json(VersionsResponse {
+        current,
+        versions: list,
+    })
+}
+
+/// POST /plugin/rollback/{version}
+async fn handle_mgmt_rollback(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(version): axum::extract::Path<u64>,
+) -> HttpResult<axum::Json<RollbackResponse>> {
+    let path = {
+        let versions = state.versions.lock().unwrap_or_else(|e| e.into_inner());
+        match versions.path_of(version) {
+            Some(p) => p.to_path_buf(),
+            None => {
+                return Err((
+                    axum::http::StatusCode::NOT_FOUND,
+                    format!("バージョン {version} は存在しません"),
+                ))
+            }
+        }
+    };
+
+    let reload_ok = state
+        .manager
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .reload(&path)
+        .is_ok();
+
+    if reload_ok {
+        state
+            .versions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .mark_current(version);
+    }
+
+    let status = if reload_ok { "loaded" } else { "fallback" };
+    tracing::info!("API ロールバック: v{version} → {status}");
+
+    Ok(axum::Json(RollbackResponse {
+        version,
+        status: status.to_string(),
+    }))
 }
 
 // ─── シグナル・ファイル監視 ───────────────────────────────────────────────────

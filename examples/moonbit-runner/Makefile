@@ -6,6 +6,9 @@ WASM := $(PROJECT_DIR)/examples/moonbit-runner/plugins/control.component.wasm
 RAW_WASM_SYMBOLIZED := $(PROJECT_DIR)/examples/moonbit-runner/plugins/control.core.symbolized.wasm
 SERVER_ADDR ?= 127.0.0.1:8080
 PLUGIN_PREFIX ?= /api
+PLUGIN_DIR ?= plugin-versions
+MAX_VERSIONS ?= 10
+V ?= 1
 BENCH_ARGS ?=
 WASMTIME_PROFILER ?= perfmap
 PERF_DATA ?= /tmp/moonbit-runner-add-loop2000.perf.data
@@ -20,6 +23,10 @@ help:
 	@echo "  make build-plugin-raw-symbolized - 対応付用 core Wasm (debug/name付き) を生成"
 	@echo "  make build-plugin-all       - component/core Wasm を両方生成"
 	@echo "  make run                    - HTTP サーバーとして起動"
+	@echo "  make reload-api             - curl で /plugin/reload に .wasm を POST する"
+	@echo "  make rollback-api V=<n>     - バージョン指定ロールバック"
+	@echo "  make plugin-status          - プラグイン管理ステータスを確認"
+	@echo "  make plugin-versions        - バージョン一覧を確認"
 	@echo "  make bench                  - criterion で benchmark 実行"
 	@echo "  make bench-raw              - criterion + raw 比較 benchmark 実行"
 	@echo "  make bench-raw-symbolized   - name section 付き raw Wasm で benchmark 実行"
@@ -60,7 +67,24 @@ build-plugin-all:
 
 .PHONY: run
 run: build-plugin
-	cargo run -p $(RUNNER_CRATE) -- --wasm $(WASM) --addr $(SERVER_ADDR) --prefix $(PLUGIN_PREFIX)
+	cargo run -p $(RUNNER_CRATE) -- --wasm $(WASM) --addr $(SERVER_ADDR) --prefix $(PLUGIN_PREFIX) --plugin-dir $(PLUGIN_DIR) --max-versions $(MAX_VERSIONS)
+
+.PHONY: reload-api
+reload-api:
+	curl -s -X POST http://$(SERVER_ADDR)/plugin/reload \
+		--data-binary @$(WASM) -H "Content-Type: application/octet-stream" | python3 -m json.tool
+
+.PHONY: rollback-api
+rollback-api:
+	curl -s -X POST http://$(SERVER_ADDR)/plugin/rollback/$(V) | python3 -m json.tool
+
+.PHONY: plugin-status
+plugin-status:
+	curl -s http://$(SERVER_ADDR)/plugin/status | python3 -m json.tool
+
+.PHONY: plugin-versions
+plugin-versions:
+	curl -s http://$(SERVER_ADDR)/plugin/versions | python3 -m json.tool
 
 .PHONY: bench
 bench: build-plugin

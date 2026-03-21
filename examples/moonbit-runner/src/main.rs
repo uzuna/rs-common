@@ -22,6 +22,14 @@ struct Opt {
     /// Wasm プラグインへ処理を委譲する URL プレフィックス
     #[arg(long, default_value = "/api")]
     prefix: String,
+
+    /// バージョン管理用ストレージディレクトリ
+    #[arg(long, default_value = "plugin-versions")]
+    plugin_dir: std::path::PathBuf,
+
+    /// 保持するバージョン数の上限
+    #[arg(long, default_value_t = 10)]
+    max_versions: usize,
 }
 
 fn try_main() -> anyhow::Result<()> {
@@ -31,6 +39,8 @@ fn try_main() -> anyhow::Result<()> {
         wasi: opt.wasi,
         bind_addr: opt.addr,
         plugin_prefix: opt.prefix,
+        plugin_dir: opt.plugin_dir,
+        max_versions: opt.max_versions,
     };
     runner::serve_http(config)
 }

@@ -13,7 +13,9 @@ axum.workspace = true
 clap = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-tokio = { workspace = true, features = ["net", "rt"] }
+notify = "8"
+signal-hook = "0.3"
+tokio = { workspace = true, features = ["net", "rt", "sync"] }
 tracing.workspace = true
 wasmtime.workspace = true
 

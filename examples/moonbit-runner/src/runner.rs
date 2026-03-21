@@ -1,4 +1,9 @@
 //! MoonBit Wasm プラグインへ HTTP 経由で処理を委譲するランナー
+//!
+//! # リロードトリガー
+//! - ファイル監視（`notify`）: Wasm ファイルの変更を検知して自動リロード。
+//! - `SIGUSR1`: プラグインを手動リロードする。
+//! - SIGINT / SIGTERM: グレースフルシャットダウン。
 
 use anyhow::{bail, ensure, Context};
 use clap::ValueEnum;
@@ -6,11 +11,10 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use wasmtime::{component::Component, Engine};
+use tokio::sync::mpsc;
 
-use crate::bindings::{MotorOutput, PluginInst, PluginStatus, SensorData};
-use crate::context::ExecStore;
-use crate::engine;
+use crate::bindings::{MotorOutput, PluginStatus, SensorData};
+use crate::plugin_manager::PluginManager;
 
 /// 利用する WASI サポートの種類
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum)]
@@ -51,10 +55,17 @@ impl RunnerConfig {
     }
 }
 
+/// リロードイベント
+enum ReloadEvent {
+    /// Wasm プラグインをリロードする
+    Reload { path: PathBuf },
+    /// プロセスを終了する
+    Shutdown,
+}
+
 struct AppState {
-    plugin: Mutex<PluginInst>,
+    manager: Arc<Mutex<PluginManager>>,
     plugin_prefix: String,
-    wasm_path: String,
     wasi: WasiSupport,
 }
 
@@ -64,6 +75,8 @@ struct ServerStatusResponse {
     plugin_prefix: String,
     wasm: String,
     wasi: &'static str,
+    loaded: bool,
+    fallback_count: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -138,14 +151,15 @@ pub fn serve_http(config: RunnerConfig) -> anyhow::Result<()> {
     ensure_supported_wasi(config.wasi)?;
 
     let plugin_prefix = normalize_plugin_prefix(&config.plugin_prefix)?;
-    let engine = engine::create_engine_from_env()?;
-    let component = load_component(&engine, &config.wasm)?;
-    let plugin = instantiate_plugin(&engine, &component, config.wasi)?;
+
+    let mut mgr = PluginManager::new()?;
+    mgr.load(&config.wasm).context("初回プラグインロード失敗")?;
+
+    let manager = Arc::new(Mutex::new(mgr));
 
     let state = Arc::new(AppState {
-        plugin: Mutex::new(plugin),
+        manager: manager.clone(),
         plugin_prefix: plugin_prefix.clone(),
-        wasm_path: config.wasm.display().to_string(),
         wasi: config.wasi,
     });
 
@@ -157,6 +171,23 @@ pub fn serve_http(config: RunnerConfig) -> anyhow::Result<()> {
         .route("/status", get(handle_server_status))
         .nest(&plugin_prefix, plugin_router)
         .with_state(state);
+
+    let (tx, mut rx) = mpsc::channel::<ReloadEvent>(32);
+
+    // ファイル監視（失敗してもサーバー起動は継続）
+    let _watcher = match setup_file_watcher(tx.clone(), config.wasm.clone()) {
+        Ok(w) => {
+            tracing::info!("ファイル監視を開始: {}", config.wasm.display());
+            Some(w)
+        }
+        Err(e) => {
+            tracing::warn!("ファイル監視の開始に失敗（無効化）: {e}");
+            None
+        }
+    };
+
+    setup_sigusr1(tx.clone(), config.wasm.clone());
+    setup_shutdown_signal(tx.clone());
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -173,9 +204,34 @@ pub fn serve_http(config: RunnerConfig) -> anyhow::Result<()> {
             "Wasm 委譲エンドポイント: http://{}{}/*",
             config.bind_addr, plugin_prefix
         );
-        axum::serve(listener, app)
-            .await
-            .context("HTTP サーバーがエラー終了しました")
+
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("HTTP サーバーがエラー終了しました");
+        });
+
+        // リロードイベントループ
+        while let Some(event) = rx.recv().await {
+            match event {
+                ReloadEvent::Reload { path } => {
+                    tracing::info!("リロードイベント受信: {}", path.display());
+                    if let Err(e) = manager
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .reload(&path)
+                    {
+                        tracing::error!("リロード失敗、旧バージョンで継続: {e:#}");
+                    }
+                }
+                ReloadEvent::Shutdown => {
+                    tracing::info!("シャットダウンします");
+                    server_handle.abort();
+                    break;
+                }
+            }
+        }
+        Ok(())
     })
 }
 
@@ -206,52 +262,41 @@ fn ensure_supported_wasi(wasi: WasiSupport) -> anyhow::Result<()> {
     }
 }
 
-fn load_component(engine: &Engine, path: &Path) -> anyhow::Result<Component> {
-    let buffer = std::fs::read(path)
-        .with_context(|| format!("Wasmファイルの読み込み失敗: {}", path.display()))?;
-    Component::new(engine, &buffer)
-        .map_err(|e| anyhow::anyhow!("Componentの生成失敗: {}: {}", path.display(), e))
-}
-
-fn instantiate_plugin(
-    engine: &Engine,
-    component: &Component,
-    wasi: WasiSupport,
-) -> anyhow::Result<PluginInst> {
-    match wasi {
-        WasiSupport::None => {
-            let store = ExecStore::new(engine);
-            PluginInst::new_with_binary(store, component)
-                .context("WASIなしプラグインの初期化に失敗しました")
-        }
-        WasiSupport::Preview2 => {
-            bail!("WASI Preview2 は moonbit-runner では未対応です")
-        }
-    }
-}
+// ─── HTTP ハンドラ ─────────────────────────────────────────────────────────
 
 async fn handle_server_status(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::Json<ServerStatusResponse> {
+    let mgr = state.manager.lock().unwrap_or_else(|e| e.into_inner());
+    let wasm = mgr
+        .current_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let loaded = mgr.is_loaded();
+    let fallback_count = mgr.fallback_count;
+    drop(mgr);
+
     axum::Json(ServerStatusResponse {
         service: "moonbit-runner",
         plugin_prefix: state.plugin_prefix.clone(),
-        wasm: state.wasm_path.clone(),
+        wasm,
         wasi: state.wasi.as_str(),
+        loaded,
+        fallback_count,
     })
 }
 
 async fn handle_plugin_status(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> HttpResult<axum::Json<PluginStatusResponse>> {
-    let mut plugin = state.plugin.lock().map_err(|_| {
+    let mut mgr = state.manager.lock().map_err(|_| {
         (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "プラグイン状態ロックの取得に失敗しました".to_string(),
         )
     })?;
 
-    let status = plugin.get_status().map_err(|err| {
+    let status = mgr.get_status().map_err(|err| {
         (
             axum::http::StatusCode::BAD_GATEWAY,
             format!("Wasm プラグインの status 取得に失敗しました: {err}"),
@@ -267,14 +312,14 @@ async fn handle_plugin_update(
 ) -> HttpResult<axum::Json<UpdateResponse>> {
     let input: Vec<SensorData> = request.input.into_iter().map(SensorData::from).collect();
 
-    let mut plugin = state.plugin.lock().map_err(|_| {
+    let mut mgr = state.manager.lock().map_err(|_| {
         (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "プラグイン状態ロックの取得に失敗しました".to_string(),
         )
     })?;
 
-    let outputs = plugin.update(&input).map_err(|err| {
+    let outputs = mgr.update(&input).map_err(|err| {
         (
             axum::http::StatusCode::BAD_GATEWAY,
             format!("Wasm プラグインの update 呼び出しに失敗しました: {err}"),
@@ -283,6 +328,82 @@ async fn handle_plugin_update(
 
     let output = outputs.into_iter().map(MotorOutputResponse::from).collect();
     Ok(axum::Json(UpdateResponse { output }))
+}
+
+// ─── シグナル・ファイル監視 ───────────────────────────────────────────────────
+
+fn setup_file_watcher(
+    tx: mpsc::Sender<ReloadEvent>,
+    wasm_path: PathBuf,
+) -> anyhow::Result<notify::RecommendedWatcher> {
+    use notify::{EventKind, RecursiveMode, Watcher};
+    use std::sync::mpsc as std_mpsc;
+
+    let (ntx, nrx) = std_mpsc::channel();
+    let mut watcher = notify::RecommendedWatcher::new(ntx, notify::Config::default())
+        .context("ファイル監視の初期化に失敗")?;
+
+    let watch_dir = wasm_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    watcher
+        .watch(&watch_dir, RecursiveMode::NonRecursive)
+        .context("ディレクトリの監視開始に失敗")?;
+
+    std::thread::spawn(move || {
+        for event in nrx.into_iter().flatten() {
+            if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_))
+                && event.paths.iter().any(|p| p == &wasm_path) {
+                    tracing::info!("Wasm ファイルの変更を検知: {}", wasm_path.display());
+                    let _ = tx.blocking_send(ReloadEvent::Reload {
+                        path: wasm_path.clone(),
+                    });
+                }
+        }
+    });
+
+    Ok(watcher)
+}
+
+/// SIGUSR1 受信でプラグインをリロードする
+fn setup_sigusr1(tx: mpsc::Sender<ReloadEvent>, wasm_path: PathBuf) {
+    use signal_hook::{consts::SIGUSR1, iterator::Signals};
+
+    std::thread::spawn(move || {
+        let mut signals = match Signals::new([SIGUSR1]) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("SIGUSR1 ハンドラの設定に失敗: {e}");
+                return;
+            }
+        };
+        for _ in signals.forever() {
+            tracing::info!("SIGUSR1 を受信しました。プラグインをリロードします");
+            let _ = tx.blocking_send(ReloadEvent::Reload {
+                path: wasm_path.clone(),
+            });
+        }
+    });
+}
+
+/// SIGINT / SIGTERM でグレースフルシャットダウンする
+fn setup_shutdown_signal(tx: mpsc::Sender<ReloadEvent>) {
+    use signal_hook::{consts::SIGINT, consts::SIGTERM, iterator::Signals};
+
+    std::thread::spawn(move || {
+        let mut signals = match Signals::new([SIGINT, SIGTERM]) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("シャットダウンシグナルハンドラの設定に失敗: {e}");
+                return;
+            }
+        };
+        for _ in signals.forever() {
+            tracing::info!("シャットダウンシグナルを受信しました");
+            let _ = tx.blocking_send(ReloadEvent::Shutdown);
+        }
+    });
 }
 
 #[cfg(test)]

@@ -91,6 +91,14 @@ interface api {
 
     /// 4KB入出力の呼び出しコストを測るベンチマーク関数
     benchmark-4k: func(input: benchmark-input-4k) -> benchmark-output-4k;
+
+    /// 内部状態をバイト列にシリアライズして返す（ホットリロード前にホストが呼ぶ）
+    save-state: func() -> list<u8>;
+
+    /// バイト列から内部状態を復元する（ホットリロード後にホストが呼ぶ）
+    ///
+    /// 初回起動時はホストが空スライスを渡す。
+    load-state: func(state: list<u8>);
 }
 
 /// MoonBitプラグインのエントリーポイント

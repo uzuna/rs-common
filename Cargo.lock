@@ -3623,6 +3623,7 @@ dependencies = [
  "axum",
  "clap",
  "criterion",
+ "plugin-base",
  "serde",
  "serde_json",
  "tokio",

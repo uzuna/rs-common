@@ -16,8 +16,8 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
 
 use crate::bindings::{MotorOutput, PluginStatus, SensorData};
 use crate::plugin_manager::PluginManager;
@@ -275,11 +275,7 @@ pub fn serve_http(config: RunnerConfig) -> anyhow::Result<()> {
             match event {
                 ReloadEvent::Reload { path } => {
                     tracing::info!("リロードイベント受信: {}", path.display());
-                    if let Err(e) = manager
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .reload(&path)
-                    {
+                    if let Err(e) = manager.lock().await.reload(&path) {
                         tracing::error!("リロード失敗、旧バージョンで継続: {e:#}");
                     }
                 }
@@ -326,7 +322,7 @@ fn ensure_supported_wasi(wasi: WasiSupport) -> anyhow::Result<()> {
 async fn handle_server_status(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::Json<ServerStatusResponse> {
-    let mgr = state.manager.lock().unwrap_or_else(|e| e.into_inner());
+    let mgr = state.manager.lock().await;
     let wasm = mgr
         .current_path()
         .map(|p| p.display().to_string())
@@ -348,12 +344,7 @@ async fn handle_server_status(
 async fn handle_plugin_status(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> HttpResult<axum::Json<PluginStatusResponse>> {
-    let mut mgr = state.manager.lock().map_err(|_| {
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "プラグイン状態ロックの取得に失敗しました".to_string(),
-        )
-    })?;
+    let mut mgr = state.manager.lock().await;
 
     let status = mgr.get_status().map_err(|err| {
         (
@@ -371,12 +362,7 @@ async fn handle_plugin_update(
 ) -> HttpResult<axum::Json<UpdateResponse>> {
     let input: Vec<SensorData> = request.input.into_iter().map(SensorData::from).collect();
 
-    let mut mgr = state.manager.lock().map_err(|_| {
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "プラグイン状態ロックの取得に失敗しました".to_string(),
-        )
-    })?;
+    let mut mgr = state.manager.lock().await;
 
     let outputs = mgr.update(&input).map_err(|err| {
         (
@@ -395,16 +381,12 @@ async fn handle_plugin_update(
 async fn handle_mgmt_status(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::Json<MgmtStatusResponse> {
-    let mgr = state.manager.lock().unwrap_or_else(|e| e.into_inner());
+    let mgr = state.manager.lock().await;
     let loaded = mgr.is_loaded();
     let fallback_count = mgr.fallback_count;
     drop(mgr);
 
-    let version = state
-        .versions
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .current_version();
+    let version = state.versions.lock().await.current_version();
 
     axum::Json(MgmtStatusResponse {
         loaded,
@@ -428,7 +410,7 @@ async fn handle_mgmt_reload(
     }
 
     let (version, path) = {
-        let mut versions = state.versions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut versions = state.versions.lock().await;
         let v = versions.save(&body).map_err(|e| {
             (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -442,12 +424,7 @@ async fn handle_mgmt_reload(
         (v, p)
     };
 
-    let reload_ok = state
-        .manager
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .reload(&path)
-        .is_ok();
+    let reload_ok = state.manager.lock().await.reload(&path).is_ok();
 
     let status = if reload_ok { "loaded" } else { "fallback" };
     tracing::info!("API リロード: v{version} → {status}");
@@ -462,7 +439,7 @@ async fn handle_mgmt_reload(
 async fn handle_mgmt_versions(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::Json<VersionsResponse> {
-    let versions = state.versions.lock().unwrap_or_else(|e| e.into_inner());
+    let versions = state.versions.lock().await;
     let current = versions.current_version();
     let list = versions
         .list()
@@ -486,7 +463,7 @@ async fn handle_mgmt_rollback(
     axum::extract::Path(version): axum::extract::Path<u64>,
 ) -> HttpResult<axum::Json<RollbackResponse>> {
     let path = {
-        let versions = state.versions.lock().unwrap_or_else(|e| e.into_inner());
+        let versions = state.versions.lock().await;
         match versions.path_of(version) {
             Some(p) => p.to_path_buf(),
             None => {
@@ -498,19 +475,10 @@ async fn handle_mgmt_rollback(
         }
     };
 
-    let reload_ok = state
-        .manager
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .reload(&path)
-        .is_ok();
+    let reload_ok = state.manager.lock().await.reload(&path).is_ok();
 
     if reload_ok {
-        state
-            .versions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .mark_current(version);
+        state.versions.lock().await.mark_current(version);
     }
 
     let status = if reload_ok { "loaded" } else { "fallback" };

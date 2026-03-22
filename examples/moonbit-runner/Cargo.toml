@@ -1,0 +1,29 @@
+[package]
+name = "moonbit-runner"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+plugin-base = { path = "../../crates/plugin-base" }
+axum.workspace = true
+clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+notify = "8"
+signal-hook = "0.3"
+tokio = { workspace = true, features = ["net", "rt", "sync"] }
+tracing.workspace = true
+wasmtime.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+safety-plugin-host = { path = "../../safety-plugin/host" }
+tempfile.workspace = true
+
+[[bench]]
+name = "criterion_bench"
+harness = false

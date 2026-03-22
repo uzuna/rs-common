@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use criterion::{criterion_group, criterion_main, Criterion};
 use wasmtime::{
     component::{Component, ResourceAny},
@@ -12,15 +12,15 @@ wasmtime::component::bindgen!(in "wit/world.wit");
 const EXAMPLE_WASM: &str = "../../target/wasm32-unknown-unknown/release/hello.wasm";
 
 // refer: examples/wasmtime-runner/src/bindings.rs
-struct ExecStore<T> {
-    store: Store<T>,
-    linker: wasmtime::component::Linker<T>,
+struct ExecStore {
+    store: Store<()>,
+    linker: wasmtime::component::Linker<()>,
 }
 
-impl<T> ExecStore<T> {
+impl ExecStore {
     // WASIなしで実行する場合のコンポーネントを生成
-    fn new_core(engine: &Engine, data: T) -> Self {
-        let store = Store::new(engine, data);
+    fn new_core(engine: &Engine) -> Self {
+        let store = Store::new(engine, ());
         let linker = wasmtime::component::Linker::new(engine);
         Self { store, linker }
     }
@@ -33,22 +33,22 @@ fn load_wasm_component(engine: &Engine) -> anyhow::Result<Component> {
 fn load_from_file(engine: &Engine, file: impl AsRef<Path>) -> anyhow::Result<Component> {
     let buffer = std::fs::read(&file)
         .with_context(|| format!("Failed to read wasm file: {}", file.as_ref().display()))?;
-    Component::new(engine, &buffer).with_context(|| {
-        format!(
-            "Failed to create component from file: {}",
+    Component::new(engine, &buffer).map_err(|err| {
+        anyhow!(
+            "Failed to create component from file: {}: {err}",
             file.as_ref().display()
         )
     })
 }
 
-struct HelloInst<T> {
+struct HelloInst {
     instance: Example,
-    store: Store<T>,
+    store: Store<()>,
     summer: ResourceAny,
 }
 
-impl<T> HelloInst<T> {
-    fn new_with_binary(es: ExecStore<T>, component: &Component) -> anyhow::Result<Self> {
+impl HelloInst {
+    fn new_with_binary(es: ExecStore, component: &Component) -> anyhow::Result<Self> {
         let ExecStore { mut store, linker } = es;
         let e = Example::instantiate(&mut store, component, &linker)?;
         let g = e.local_hello_types();
@@ -57,7 +57,7 @@ impl<T> HelloInst<T> {
         Ok(Self::new(e, store, summer))
     }
 
-    fn new(instance: Example, store: Store<T>, summer: ResourceAny) -> Self {
+    fn new(instance: Example, store: Store<()>, summer: ResourceAny) -> Self {
         Self {
             instance,
             store,
@@ -66,19 +66,19 @@ impl<T> HelloInst<T> {
     }
 
     fn call_add(&mut self, a: u32, b: u32) -> anyhow::Result<u32> {
-        self.instance.call_add(&mut self.store, a, b)
+        Ok(self.instance.call_add(&mut self.store, a, b)?)
     }
 
     fn call_sum(&mut self, v: &[u32]) -> anyhow::Result<u32> {
-        self.instance.call_sum(&mut self.store, v)
+        Ok(self.instance.call_sum(&mut self.store, v)?)
     }
 
     fn call_loop_sum(&mut self, len: u32) -> anyhow::Result<u32> {
-        self.instance.call_loop_sum(&mut self.store, len)
+        Ok(self.instance.call_loop_sum(&mut self.store, len)?)
     }
 
     fn call_generate_string(&mut self, len: u32) -> anyhow::Result<String> {
-        self.instance.call_generate_string(&mut self.store, len)
+        Ok(self.instance.call_generate_string(&mut self.store, len)?)
     }
 
     fn summer_set_key(&mut self, key: &str) -> anyhow::Result<()> {
@@ -110,17 +110,17 @@ impl<T> HelloInst<T> {
     }
 }
 
-struct HelloInstFir<T> {
+struct HelloInstFir {
     // Wit定義に従ってComponentを呼ぶための型
     instance: Example,
     // wasmインスタンスデータ保持構造体
-    store: Store<T>,
+    store: Store<()>,
     // WASMインスタンス内のFIRリソースクラス型定義情報
     fir: ResourceAny,
 }
 
-impl<T> HelloInstFir<T> {
-    fn new_with_binary(es: ExecStore<T>, component: &Component) -> anyhow::Result<Self> {
+impl HelloInstFir {
+    fn new_with_binary(es: ExecStore, component: &Component) -> anyhow::Result<Self> {
         let ExecStore { mut store, linker } = es;
         let e = Example::instantiate(&mut store, component, &linker)?;
         let g = e.local_hello_filter();
@@ -129,7 +129,7 @@ impl<T> HelloInstFir<T> {
         Ok(Self::new(e, store, fir))
     }
 
-    fn new(instance: Example, store: Store<T>, fir: ResourceAny) -> Self {
+    fn new(instance: Example, store: Store<()>, fir: ResourceAny) -> Self {
         Self {
             instance,
             store,
@@ -140,13 +140,13 @@ impl<T> HelloInstFir<T> {
     fn call_filter(&mut self, x: f32) -> anyhow::Result<f32> {
         let g = self.instance.local_hello_filter();
         let fir = g.fir();
-        fir.call_filter(&mut self.store, self.fir, x)
+        Ok(fir.call_filter(&mut self.store, self.fir, x)?)
     }
 
     fn call_filter_vec(&mut self, list: &[f32]) -> anyhow::Result<Vec<f32>> {
         let g = self.instance.local_hello_filter();
         let fir = g.fir();
-        fir.call_filter_vec(&mut self.store, self.fir, list)
+        Ok(fir.call_filter_vec(&mut self.store, self.fir, list)?)
     }
 }
 
@@ -176,7 +176,7 @@ fn rust_generate_string(len: usize) -> String {
 fn benchmark_calculate_add_inner(c: &mut Criterion) -> anyhow::Result<()> {
     let engine = Engine::default();
     let comp = load_wasm_component(&engine)?;
-    let es = ExecStore::new_core(&engine, ());
+    let es = ExecStore::new_core(&engine);
     let mut inst = HelloInst::new_with_binary(es, &comp)?;
 
     c.bench_function("Rust add", |b| b.iter(|| rust_calculate_add(1, 2)));
@@ -239,7 +239,7 @@ fn benchmark_calculate_add_inner(c: &mut Criterion) -> anyhow::Result<()> {
 fn benchmark_filter_inner(c: &mut Criterion) -> anyhow::Result<()> {
     let engine = Engine::default();
     let comp = load_wasm_component(&engine)?;
-    let es = ExecStore::new_core(&engine, ());
+    let es = ExecStore::new_core(&engine);
     let mut inst = HelloInstFir::new_with_binary(es, &comp)?;
 
     let mut r_fir = dsp::Fir::new_moving(8);

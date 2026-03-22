@@ -3616,6 +3616,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "moonbit-runner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "criterion",
+ "notify",
+ "plugin-base",
+ "safety-plugin-host",
+ "serde",
+ "serde_json",
+ "signal-hook",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "wasmtime",
+]
+
+[[package]]
 name = "moxcms"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4425,6 +4445,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin-base"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "png"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5083,6 +5110,7 @@ dependencies = [
  "http-body-util",
  "libloading 0.8.9",
  "notify",
+ "plugin-base",
  "safety-plugin-common",
  "serde_json",
  "signal-hook",

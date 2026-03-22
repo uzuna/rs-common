@@ -1,5 +1,13 @@
 [workspace]
-members = ["crates/*", "jetson/*", "examples/*", "wasm-comp/*", "pycrates/*", "safety-plugin/*"]
+members = [
+    "crates/*",
+    "jetson/*",
+    "examples/*",
+    "wasm-comp/*",
+    "pycrates/*",
+    "safety-plugin/*",
+]
+exclude = ["wasm-comp/moonbit-control"]
 resolver = "2"
 
 [workspace.package]

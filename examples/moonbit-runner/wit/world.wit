@@ -1,0 +1,107 @@
+package local:moonbit-control@0.1.0;
+
+/// プラグイン制御APIインターフェース
+interface api {
+    /// モーター制御の入力データ（仮定義：別途確定予定）
+    record sensor-data {
+        /// モーター負荷
+        load: f32,
+        /// モーターポジション
+        position: f32,
+        /// 追加センサー値（省略可）
+        extra: option<f32>,
+    }
+
+    /// モーター制御の出力データ（仮定義：別途確定予定）
+    record motor-output {
+        /// 目標位置
+        position: f32,
+        /// 出力トルク
+        torque: f32,
+    }
+
+    /// プラグインの内部状態
+    record plugin-status {
+        /// 稼働中フラグ
+        running: bool,
+        /// エラーコード（0=正常）
+        error-code: u32,
+        /// 内部温度
+        temperature: f32,
+    }
+
+    /// 128バイトの入力データ転送を測るベンチマーク入力
+    ///
+    /// `payload` は必ず 128 バイトとする。
+    record benchmark-input-128 {
+        payload: list<u8>,
+    }
+
+    /// 128バイトの出力データ転送を測るベンチマーク出力
+    ///
+    /// `payload` は必ず 128 バイトとする。
+    record benchmark-output-128 {
+        payload: list<u8>,
+    }
+
+    /// 1KBの入力データ転送を測るベンチマーク入力
+    ///
+    /// `payload` は必ず 1024 バイトとする。
+    record benchmark-input-1k {
+        payload: list<u8>,
+    }
+
+    /// 1KBの出力データ転送を測るベンチマーク出力
+    ///
+    /// `payload` は必ず 1024 バイトとする。
+    record benchmark-output-1k {
+        payload: list<u8>,
+    }
+
+    /// 4KBの入力データ転送を測るベンチマーク入力
+    ///
+    /// `payload` は必ず 4096 バイトとする。
+    record benchmark-input-4k {
+        payload: list<u8>,
+    }
+
+    /// 4KBの出力データ転送を測るベンチマーク出力
+    ///
+    /// `payload` は必ず 4096 バイトとする。
+    record benchmark-output-4k {
+        payload: list<u8>,
+    }
+
+    /// センサーデータを受け取りモーター出力を返す制御関数
+    update: func(input: list<sensor-data>) -> list<motor-output>;
+
+    /// プラグインの内部状態を返す
+    get-status: func() -> plugin-status;
+
+    /// 純粋な計算負荷を測る加算関数
+    ///
+    /// `loop-count` 回だけ `a + b` を累積して返す。
+    add: func(a: s32, b: s32, loop-count: s32) -> s32;
+
+    /// 128バイト入出力の呼び出しコストを測るベンチマーク関数
+    benchmark-128: func(input: benchmark-input-128) -> benchmark-output-128;
+
+    /// 1KB入出力の呼び出しコストを測るベンチマーク関数
+    benchmark-1k: func(input: benchmark-input-1k) -> benchmark-output-1k;
+
+    /// 4KB入出力の呼び出しコストを測るベンチマーク関数
+    benchmark-4k: func(input: benchmark-input-4k) -> benchmark-output-4k;
+
+    /// 内部状態をバイト列にシリアライズして返す（ホットリロード前にホストが呼ぶ）
+    save-state: func() -> list<u8>;
+
+    /// バイト列から内部状態を復元する（ホットリロード後にホストが呼ぶ）
+    ///
+    /// 初回起動時はホストが空スライスを渡す。
+    load-state: func(state: list<u8>);
+}
+
+/// MoonBitプラグインのエントリーポイント
+world plugin {
+    export api;
+}

@@ -6032,6 +6032,8 @@ dependencies = [
  "elgato-streamdeck",
  "image",
  "imageproc",
+ "serde",
+ "serde_json",
  "sysinfo",
  "thiserror 2.0.18",
  "tracing",

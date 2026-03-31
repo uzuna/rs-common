@@ -1,0 +1,23 @@
+[package]
+name = "stream-deck"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "stream-deck"
+path = "src/main.rs"
+
+[dependencies]
+ab_glyph.workspace = true
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+elgato-streamdeck.workspace = true
+image = { workspace = true, features = ["jpeg"] }
+imageproc.workspace = true
+sysinfo.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

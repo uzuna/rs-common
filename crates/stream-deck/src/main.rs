@@ -12,10 +12,11 @@ mod metrics;
 mod renderer;
 
 use std::collections::VecDeque;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
-use tracing::{error, info, warn};
+use elgato_streamdeck::DeviceStateUpdate;
+use tracing::{debug, error, info, warn};
 
 use metrics::{MetricsProvider, MetricsSnapshot};
 use renderer::SectionSpec;
@@ -28,6 +29,26 @@ const TICK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// 再接続待機時間
 const RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
+/// 入力ポーリング間隔 (タック内で輝度操作を素早く反映するための刻み幅)
+const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// デフォルト輝度 (%)
+const DEFAULT_BRIGHTNESS: u8 = 70;
+
+/// 輝度変化の最小・最大・1ステップ (エンコーダ 1 click)
+const BRIGHTNESS_MIN: u8 = 5;
+const BRIGHTNESS_MAX: u8 = 100;
+const BRIGHTNESS_STEP: u8 = 5;
+
+/// 輝度を制御する右端エンコーダのインデックス (0-3、Plus は 4 個)
+const ENCODER_BRIGHTNESS: u8 = 3;
+
+/// 輝度をデフォルトにリセットする右下ボタンのインデックス (0-7、2行×4列)
+const BUTTON_BRIGHTNESS_RESET: u8 = 7;
+
+/// 色サイクルを担当する左上ボタンのインデックス
+const BUTTON_COLOR_CYCLE: u8 = 0;
 
 /// Stream Deck CPU モニター
 #[derive(Parser)]
@@ -71,6 +92,8 @@ fn run_monitor() -> anyhow::Result<()> {
     let renderer = renderer::Renderer::new()?;
     let mut metrics = MetricsProvider::new();
     let mut history = MetricsHistory::new(HISTORY_LEN);
+    let mut brightness = DEFAULT_BRIGHTNESS;
+    let mut button_states = ButtonStates::new();
 
     loop {
         info!("Stream Deck+ への接続を試みています...");
@@ -78,7 +101,14 @@ fn run_monitor() -> anyhow::Result<()> {
         match device::HardwareManager::connect() {
             Ok(hw) => {
                 info!("接続完了。ダッシュボード表示開始");
-                if let Err(e) = run_loop(&hw, &renderer, &mut metrics, &mut history) {
+                if let Err(e) = run_loop(
+                    &hw,
+                    &renderer,
+                    &mut metrics,
+                    &mut history,
+                    &mut brightness,
+                    &mut button_states,
+                ) {
                     warn!("デバイスエラー: {e:#} — 再接続します");
                 }
             }
@@ -92,12 +122,27 @@ fn run_monitor() -> anyhow::Result<()> {
 }
 
 /// デバイスが接続されている間、定期的に LCD を更新する
+///
+/// `brightness`・`button_states` は再接続をまたいで保持されるため、呼び出し元が所有する。
 fn run_loop(
     hw: &device::HardwareManager,
     renderer: &renderer::Renderer,
     metrics: &mut MetricsProvider,
     history: &mut MetricsHistory,
+    brightness: &mut u8,
+    button_states: &mut ButtonStates,
 ) -> anyhow::Result<()> {
+    let reader = hw.get_reader();
+    hw.set_brightness(*brightness)?;
+
+    // 接続時: 全ボタンをクリアしてから保存済み状態を復元する
+    hw.clear_buttons()?;
+    for (key, &color) in button_states.colors.iter().enumerate() {
+        if color != ButtonColor::Black {
+            hw.set_button_color(key as u8, color.to_rgb())?;
+        }
+    }
+
     loop {
         // メトリクス取得 & 履歴に追加
         let snap = metrics.sample();
@@ -107,6 +152,7 @@ fn run_loop(
             cpu = %format!("{:.1}%", snap.cpu_pct),
             mem = %format!("{:.1}%", snap.mem_pct),
             load = %format!("{:.2}", snap.load_one),
+            bright = *brightness,
             "LCD 更新",
         );
 
@@ -114,7 +160,7 @@ fn run_loop(
         let cpu_norm = history.cpu_normalized();
         let mem_norm = history.mem_normalized();
         let load_norm = history.load_normalized(snap.cpu_count);
-        let empty: Vec<f32> = Vec::new();
+        let bright_norm = vec![*brightness as f32 / 100.0; HISTORY_LEN];
 
         let sections: [SectionSpec; 4] = [
             SectionSpec {
@@ -133,9 +179,9 @@ fn run_loop(
                 history: &load_norm,
             },
             SectionSpec {
-                label: "---",
-                value_text: String::new(),
-                history: &empty,
+                label: "BRIGHT",
+                value_text: format!("{}%", brightness),
+                history: &bright_norm,
             },
         ];
 
@@ -146,11 +192,117 @@ fn run_loop(
             return Err(anyhow::anyhow!("{e}"));
         }
 
-        std::thread::sleep(TICK_INTERVAL);
+        // 次のTickまで入力をポーリングする (INPUT_POLL_INTERVAL 刻み)
+        let deadline = Instant::now() + TICK_INTERVAL;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let poll_timeout = INPUT_POLL_INTERVAL.min(remaining);
+
+            let updates = reader
+                .read(Some(poll_timeout))
+                .map_err(|e| anyhow::anyhow!("入力読み取りエラー: {e}"))?;
+
+            let mut brightness_changed = false;
+            for update in updates {
+                match update {
+                    DeviceStateUpdate::EncoderTwist(idx, delta) if idx == ENCODER_BRIGHTNESS => {
+                        let new_b = apply_brightness_delta(*brightness, delta);
+                        if new_b != *brightness {
+                            *brightness = new_b;
+                            brightness_changed = true;
+                        }
+                    }
+                    DeviceStateUpdate::ButtonDown(idx) if idx == BUTTON_BRIGHTNESS_RESET => {
+                        if *brightness != DEFAULT_BRIGHTNESS {
+                            *brightness = DEFAULT_BRIGHTNESS;
+                            brightness_changed = true;
+                        }
+                    }
+                    DeviceStateUpdate::ButtonDown(idx) if idx == BUTTON_COLOR_CYCLE => {
+                        let color = button_states.cycle(idx as usize);
+                        debug!(key = idx, ?color, "ボタン色サイクル");
+                        if let Err(e) = hw.set_button_color(idx, color.to_rgb()) {
+                            error!("ボタン色設定エラー: {e:#}");
+                            return Err(anyhow::anyhow!("{e}"));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if brightness_changed {
+                debug!(bright = *brightness, "輝度変更");
+                if let Err(e) = hw.set_brightness(*brightness) {
+                    error!("輝度設定エラー: {e:#}");
+                    return Err(anyhow::anyhow!("{e}"));
+                }
+            }
+        }
     }
 }
 
 // ── MetricsHistory ────────────────────────────────────────────────
+
+/// エンコーダのデルタを輝度に適用し、範囲内にクランプして返す
+fn apply_brightness_delta(current: u8, delta: i8) -> u8 {
+    (current as i16 + delta as i16 * BRIGHTNESS_STEP as i16)
+        .clamp(BRIGHTNESS_MIN as i16, BRIGHTNESS_MAX as i16) as u8
+}
+
+// ── ButtonColor / ButtonStates ─────────────────────────────────────
+
+/// ボタンが取りうる表示色 (Black → R → G → B → Black 循環)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ButtonColor {
+    Black,
+    Red,
+    Green,
+    Blue,
+}
+
+impl ButtonColor {
+    /// 次の色に遷移する
+    fn next(self) -> Self {
+        match self {
+            ButtonColor::Black => ButtonColor::Red,
+            ButtonColor::Red => ButtonColor::Green,
+            ButtonColor::Green => ButtonColor::Blue,
+            ButtonColor::Blue => ButtonColor::Black,
+        }
+    }
+
+    /// `image::Rgb<u8>` に変換する
+    fn to_rgb(self) -> image::Rgb<u8> {
+        match self {
+            ButtonColor::Black => image::Rgb([0, 0, 0]),
+            ButtonColor::Red => image::Rgb([255, 0, 0]),
+            ButtonColor::Green => image::Rgb([0, 255, 0]),
+            ButtonColor::Blue => image::Rgb([0, 0, 255]),
+        }
+    }
+}
+
+/// 全ボタン (8個) の現在色を保持する状態
+struct ButtonStates {
+    colors: [ButtonColor; 8],
+}
+
+impl ButtonStates {
+    fn new() -> Self {
+        Self {
+            colors: [ButtonColor::Black; 8],
+        }
+    }
+
+    /// ボタン `key` の色を次に進めて新しい色を返す
+    fn cycle(&mut self, key: usize) -> ButtonColor {
+        self.colors[key] = self.colors[key].next();
+        self.colors[key]
+    }
+}
 
 /// メモリ使用量を "使用量/最大値" 形式の文字列に変換する (例: "6.2/16G")
 fn format_memory(used: u64, total: u64) -> String {
@@ -277,7 +429,59 @@ mod tests {
         }
     }
 
-    /// 正常系・値域確認: format_memory が正しい文字列を返す
+    /// 正常系: ButtonColor::next は Black→R→G→B→Black と循環する
+    #[test]
+    fn test_button_color_cycle() {
+        let cases: &[(ButtonColor, ButtonColor)] = &[
+            (ButtonColor::Black, ButtonColor::Red),
+            (ButtonColor::Red, ButtonColor::Green),
+            (ButtonColor::Green, ButtonColor::Blue),
+            (ButtonColor::Blue, ButtonColor::Black),
+        ];
+        for &(input, expected) in cases {
+            assert_eq!(input.next(), expected, "input={input:?}");
+        }
+    }
+
+    /// 正常系: ButtonStates::cycle は state を更新して返す、全ボタン独立
+    #[test]
+    fn test_button_states_independent() {
+        let mut states = ButtonStates::new();
+        // ボタン 0 を 1 回サイクル → Red
+        assert_eq!(states.cycle(0), ButtonColor::Red);
+        // ボタン 1 はまだ Black のまま
+        assert_eq!(states.colors[1], ButtonColor::Black);
+        // ボタン 0 をさらに 3 回 → Green → Blue → Black
+        states.cycle(0);
+        states.cycle(0);
+        assert_eq!(states.cycle(0), ButtonColor::Black);
+    }
+
+    /// 値域確認: apply_brightness_delta は範囲外をクランプし、ステップを正しく適用する
+    #[test]
+    fn test_brightness_adjustment() {
+        let cases: &[(u8, i8, u8)] = &[
+            (70, 1, 75),   // 正常増加 (1 click CW = +5%)
+            (70, -1, 65),  // 正常減少 (1 click CCW = -5%)
+            (100, 1, 100), // 上限クランプ (100% 超にならない)
+            (5, -1, 5),    // 下限クランプ (5% 未満にならない)
+            (70, 0, 70),   // デルタ 0 は変化なし
+            (70, 2, 80),   // 2 click で +10%
+        ];
+        for &(current, delta, expected) in cases {
+            let got = apply_brightness_delta(current, delta);
+            assert_eq!(got, expected, "current={current} delta={delta}");
+        }
+    }
+
+    /// 正常系: brightness_changed フラグ: 同値では変化しない
+    #[test]
+    fn test_brightness_no_change_at_limits() {
+        // 上限でさらに増やしても変化なし
+        assert_eq!(apply_brightness_delta(BRIGHTNESS_MAX, 1), BRIGHTNESS_MAX);
+        // 下限でさらに減らしても変化なし
+        assert_eq!(apply_brightness_delta(BRIGHTNESS_MIN, -1), BRIGHTNESS_MIN);
+    }
     #[test]
     fn test_format_memory() {
         const GB: u64 = 1 << 30;

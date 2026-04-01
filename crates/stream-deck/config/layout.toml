@@ -1,0 +1,4 @@
+[layout]
+# 4 sections are rendered from left to right.
+# Available values: cpu, mem, load, bright, notif
+sections = ["cpu", "mem", "load", "bright"]

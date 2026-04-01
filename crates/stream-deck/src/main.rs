@@ -26,6 +26,11 @@ use tracing::{debug, error, info, warn};
 use metrics::{MetricsProvider, MetricsSnapshot};
 use renderer::SectionSpec;
 
+#[cfg(feature = "file-watch")]
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+#[cfg(feature = "file-watch")]
+use std::sync::mpsc;
+
 /// Stream Deck に表示するメトリクスの履歴 (最大 HISTORY_LEN サンプル)
 const HISTORY_LEN: usize = 10;
 
@@ -64,6 +69,13 @@ const NOTIFICATION_MAX_BYTES: usize = 4096;
 /// LCD に表示する通知サマリ最大文字数
 const NOTIFICATION_SUMMARY_MAX_CHARS: usize = 14;
 
+/// 設定ファイルリロードのデバウンス間隔
+#[cfg(feature = "file-watch")]
+const RELOAD_DEBOUNCE: Duration = Duration::from_millis(200);
+
+/// デフォルト設定ファイル
+const DEFAULT_LAYOUT_CONFIG_PATH: &str = "crates/stream-deck/config/layout.toml";
+
 /// Stream Deck CPU モニター
 #[derive(Parser)]
 #[command(
@@ -72,6 +84,10 @@ const NOTIFICATION_SUMMARY_MAX_CHARS: usize = 14;
     version
 )]
 struct Cli {
+    /// レイアウト設定ファイルのパス
+    #[arg(long, default_value = DEFAULT_LAYOUT_CONFIG_PATH)]
+    config: String,
+
     /// 通知が既読になった時のスロット挙動
     #[arg(long, value_enum, default_value_t = SlotCompactionMode::KeepGap)]
     notif_compaction: SlotCompactionMode,
@@ -99,14 +115,22 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Commands::List) => cmd::list::run(),
         Some(Commands::Diagnose) => cmd::diagnose::run(),
-        None => run_monitor(cli.notif_compaction),
+        None => run_monitor(cli.notif_compaction, &cli.config),
     }
 }
 
 /// デフォルト動作: 4セクションのメトリクスダッシュボードを LCD に表示し続ける
-fn run_monitor(compaction_mode: SlotCompactionMode) -> anyhow::Result<()> {
+fn run_monitor(compaction_mode: SlotCompactionMode, config_path: &str) -> anyhow::Result<()> {
     info!("Stream Deck マルチメトリクスモニター 起動");
     info!(mode = %compaction_mode, "通知既読時のスロット挙動");
+
+    let initial_config = DashboardConfig::load(config_path)?;
+    let mut config_manager = ConfigManager::new(config_path, initial_config);
+    info!(
+        path = config_path,
+        ?config_manager.active.layout.sections,
+        "レイアウト設定を読み込みました"
+    );
 
     let renderer = renderer::Renderer::new()?;
     let mut metrics = MetricsProvider::new();
@@ -124,6 +148,7 @@ fn run_monitor(compaction_mode: SlotCompactionMode) -> anyhow::Result<()> {
                 if let Err(e) = run_loop(
                     &hw,
                     &renderer,
+                    &mut config_manager,
                     &mut metrics,
                     &mut history,
                     &mut brightness,
@@ -148,6 +173,7 @@ fn run_monitor(compaction_mode: SlotCompactionMode) -> anyhow::Result<()> {
 fn run_loop(
     hw: &device::HardwareManager,
     renderer: &renderer::Renderer,
+    config_manager: &mut ConfigManager,
     metrics: &mut MetricsProvider,
     history: &mut MetricsHistory,
     brightness: &mut u8,
@@ -163,6 +189,10 @@ fn run_loop(
 
     loop {
         let mut notification_state_changed = false;
+
+        if config_manager.poll_reload() {
+            info!("レイアウトをリロードしました");
+        }
 
         if drain_notifications(notification_source, notification_state)? {
             notification_state_changed = true;
@@ -190,30 +220,37 @@ fn run_loop(
         let cpu_norm = history.cpu_normalized();
         let mem_norm = history.mem_normalized();
         let load_norm = history.load_normalized(snap.cpu_count);
+        let bright_norm = vec![*brightness as f32 / 100.0; HISTORY_LEN];
         let notif_norm = notification_state.notification_history(HISTORY_LEN);
 
-        let sections: [SectionSpec; 4] = [
-            SectionSpec {
-                label: "CPU",
-                value_text: format!("{:.1}%", snap.cpu_pct),
-                history: &cpu_norm,
-            },
-            SectionSpec {
-                label: "MEM",
-                value_text: format_memory(snap.used_memory_bytes, snap.total_memory_bytes),
-                history: &mem_norm,
-            },
-            SectionSpec {
-                label: "LOAD",
-                value_text: format!("{:.2}", snap.load_one),
-                history: &load_norm,
-            },
-            SectionSpec {
-                label: "NOTIF",
-                value_text: notification_state.overlay_text(),
-                history: &notif_norm,
-            },
-        ];
+        let sections: [SectionSpec; 4] =
+            std::array::from_fn(|idx| match config_manager.current().layout.sections[idx] {
+                DashboardSection::Cpu => SectionSpec {
+                    label: "CPU",
+                    value_text: format!("{:.1}%", snap.cpu_pct),
+                    history: &cpu_norm,
+                },
+                DashboardSection::Mem => SectionSpec {
+                    label: "MEM",
+                    value_text: format_memory(snap.used_memory_bytes, snap.total_memory_bytes),
+                    history: &mem_norm,
+                },
+                DashboardSection::Load => SectionSpec {
+                    label: "LOAD",
+                    value_text: format!("{:.2}", snap.load_one),
+                    history: &load_norm,
+                },
+                DashboardSection::Bright => SectionSpec {
+                    label: "BRIGHT",
+                    value_text: format!("{}%", brightness),
+                    history: &bright_norm,
+                },
+                DashboardSection::Notif => SectionSpec {
+                    label: "NOTIF",
+                    value_text: notification_state.overlay_text(),
+                    history: &notif_norm,
+                },
+            });
 
         let image = renderer.render(&sections);
 
@@ -340,6 +377,195 @@ fn drain_notifications(
 }
 
 // ── Notification Types ──────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+struct DashboardConfig {
+    #[serde(default)]
+    layout: LayoutConfig,
+}
+
+impl DashboardConfig {
+    fn load(path: &str) -> anyhow::Result<Self> {
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            anyhow::anyhow!("レイアウト設定ファイルを読めませんでした path={path}: {e}")
+        })?;
+        let cfg: DashboardConfig = toml::from_str(&text).map_err(|e| {
+            anyhow::anyhow!("レイアウト設定の TOML パースに失敗しました path={path}: {e}")
+        })?;
+        Ok(cfg)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LayoutConfig {
+    #[serde(default = "default_sections")]
+    sections: [DashboardSection; 4],
+}
+
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        Self {
+            sections: default_sections(),
+        }
+    }
+}
+
+fn default_sections() -> [DashboardSection; 4] {
+    [
+        DashboardSection::Cpu,
+        DashboardSection::Mem,
+        DashboardSection::Load,
+        DashboardSection::Notif,
+    ]
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum DashboardSection {
+    Cpu,
+    Mem,
+    Load,
+    Bright,
+    Notif,
+}
+
+// ── ConfigManager ─────────────────────────────────────────────────
+
+struct ConfigManager {
+    config_path: String,
+    active: DashboardConfig,
+    reload_err_count: u32,
+    last_reload_at: Instant,
+    #[cfg(feature = "file-watch")]
+    watcher: Option<FileWatcher>,
+}
+
+impl ConfigManager {
+    fn new(config_path: &str, initial: DashboardConfig) -> Self {
+        #[cfg(feature = "file-watch")]
+        let watcher = match FileWatcher::new(config_path) {
+            Ok(w) => {
+                info!(path = config_path, "設定ファイル監視を開始");
+                Some(w)
+            }
+            Err(e) => {
+                warn!("設定ファイル監視の初期化に失敗（無効化）: {e:#}");
+                None
+            }
+        };
+
+        Self {
+            config_path: config_path.to_owned(),
+            active: initial,
+            reload_err_count: 0,
+            last_reload_at: Instant::now(),
+            #[cfg(feature = "file-watch")]
+            watcher,
+        }
+    }
+
+    fn current(&self) -> &DashboardConfig {
+        &self.active
+    }
+
+    fn poll_reload(&mut self) -> bool {
+        #[cfg(feature = "file-watch")]
+        {
+            let has_signal = self.watcher.as_ref().map_or(false, |w| w.has_pending());
+            if has_signal && self.last_reload_at.elapsed() >= RELOAD_DEBOUNCE {
+                return self.do_reload();
+            }
+        }
+        false
+    }
+
+    pub(crate) fn do_reload(&mut self) -> bool {
+        self.last_reload_at = Instant::now();
+        match DashboardConfig::load(&self.config_path) {
+            Ok(new_cfg) => {
+                self.active = new_cfg;
+                self.reload_err_count = 0;
+                info!(path = %self.config_path, "設定ファイルをリロードしました");
+                true
+            }
+            Err(e) => {
+                self.reload_err_count += 1;
+                warn!(
+                    path = %self.config_path,
+                    err_count = self.reload_err_count,
+                    "設定ファイルのリロードに失敗（旧設定を維持）: {e:#}"
+                );
+                false
+            }
+        }
+    }
+}
+
+// ── FileWatcher ──────────────────────────────────────────────────
+
+#[cfg(feature = "file-watch")]
+struct FileWatcher {
+    /// watcher をドロップすると監視スレッドが停止するため保持する
+    _watcher: RecommendedWatcher,
+    receiver: mpsc::Receiver<()>,
+}
+
+#[cfg(feature = "file-watch")]
+impl FileWatcher {
+    fn new(config_path: &str) -> anyhow::Result<Self> {
+        let (tx, rx) = mpsc::channel::<()>();
+
+        // 相対パスでも動くよう canonicalize を試みる (失敗時は生パスを使用)
+        let target =
+            std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.into());
+        let target_name = target
+            .file_name()
+            .map(|n| n.to_os_string())
+            .ok_or_else(|| {
+                anyhow::anyhow!("設定ファイルのファイル名が取得できません: {config_path}")
+            })?;
+        let parent = target
+            .parent()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "設定ファイルの親ディレクトリが取得できません: {config_path}"
+                )
+            })?
+            .to_owned();
+
+        let mut watcher =
+            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                if let Ok(event) = res {
+                    // rename 系のイベントは paths が空の場合があるため、空も通知対象にする
+                    let relevant = event.paths.is_empty()
+                        || event
+                            .paths
+                            .iter()
+                            .any(|p| p.file_name() == Some(&target_name));
+                    if relevant {
+                        let _ = tx.send(());
+                    }
+                }
+            })?;
+
+        // ディレクトリ単位で非再帰監視することで rename 保存にも対応する
+        watcher.watch(&parent, RecursiveMode::NonRecursive)?;
+
+        Ok(Self {
+            _watcher: watcher,
+            receiver: rx,
+        })
+    }
+
+    /// シグナルが 1 件以上あれば true を返し、キューを空にする
+    fn has_pending(&self) -> bool {
+        let mut any = false;
+        while self.receiver.try_recv().is_ok() {
+            any = true;
+        }
+        any
+    }
+}
 
 #[derive(Debug)]
 struct NotificationSource {
@@ -970,5 +1196,90 @@ mod tests {
         let slot1 = matches!(state.slots[1], SlotState::Empty);
         let slot2 = matches!(state.slots[2], SlotState::Unread { .. });
         assert!(slot0 && slot1 && slot2);
+    }
+
+    #[test]
+    fn test_layout_config_parse_custom_order() {
+        let text = r#"
+            [layout]
+            sections = ["notif", "cpu", "bright", "mem"]
+        "#;
+        let cfg: DashboardConfig = toml::from_str(text).expect("layout parse failed");
+        assert!(matches!(cfg.layout.sections[0], DashboardSection::Notif));
+        assert!(matches!(cfg.layout.sections[1], DashboardSection::Cpu));
+        assert!(matches!(cfg.layout.sections[2], DashboardSection::Bright));
+        assert!(matches!(cfg.layout.sections[3], DashboardSection::Mem));
+    }
+
+    #[test]
+    fn test_config_manager_returns_initial_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("layout.toml");
+        std::fs::write(
+            &path,
+            "[layout]\nsections = [\"notif\", \"cpu\", \"bright\", \"mem\"]\n",
+        )
+        .expect("write");
+        let path_str = path.to_str().unwrap();
+        let initial = DashboardConfig::load(path_str).expect("load");
+        let manager = ConfigManager::new(path_str, initial);
+        assert!(matches!(
+            manager.current().layout.sections[0],
+            DashboardSection::Notif
+        ));
+        assert!(matches!(
+            manager.current().layout.sections[3],
+            DashboardSection::Mem
+        ));
+    }
+
+    #[test]
+    fn test_config_manager_keeps_old_on_parse_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("layout.toml");
+        std::fs::write(
+            &path,
+            "[layout]\nsections = [\"cpu\", \"mem\", \"load\", \"notif\"]\n",
+        )
+        .expect("write valid");
+        let path_str = path.to_str().unwrap();
+        let initial = DashboardConfig::load(path_str).expect("load initial");
+        let mut manager = ConfigManager::new(path_str, initial);
+
+        std::fs::write(&path, "not valid toml [[[").expect("write broken");
+        let reloaded = manager.do_reload();
+
+        assert!(!reloaded, "壊れた TOML でリロード成功してはいけない");
+        assert!(
+            matches!(manager.current().layout.sections[0], DashboardSection::Cpu),
+            "旧設定が維持されていない"
+        );
+    }
+
+    #[test]
+    fn test_config_manager_applies_valid_reload() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("layout.toml");
+        std::fs::write(
+            &path,
+            "[layout]\nsections = [\"cpu\", \"mem\", \"load\", \"notif\"]\n",
+        )
+        .expect("write initial");
+        let path_str = path.to_str().unwrap();
+        let initial = DashboardConfig::load(path_str).expect("load initial");
+        let mut manager = ConfigManager::new(path_str, initial);
+
+        std::fs::write(
+            &path,
+            "[layout]\nsections = [\"notif\", \"cpu\", \"bright\", \"mem\"]\n",
+        )
+        .expect("write updated");
+        let reloaded = manager.do_reload();
+
+        assert!(reloaded, "有効な TOML のリロードが失敗してはいけない");
+        assert!(
+            matches!(manager.current().layout.sections[0], DashboardSection::Notif),
+            "リロード後に設定が反映されていない"
+        );
     }
 }

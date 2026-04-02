@@ -6,6 +6,7 @@
 //! * `diagnose` — 接続環境を段階的に診断する
 
 mod cmd;
+mod config;
 mod device;
 mod error;
 mod metrics;
@@ -24,7 +25,6 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 use elgato_streamdeck::DeviceStateUpdate;
-use serde::Deserialize;
 use tracing::{debug, error, info, warn};
 
 use metrics::MetricsSource;
@@ -127,11 +127,11 @@ fn run_monitor(compaction_mode: SlotCompactionMode, config_path: &str) -> anyhow
     info!("Stream Deck マルチメトリクスモニター 起動");
     info!(mode = %compaction_mode, "通知既読時のスロット挙動");
 
-    let initial_config = DashboardConfig::load(config_path)?;
+    let initial_config = load_runtime_config(config_path)?;
     let mut config_manager = ConfigManager::new(config_path, initial_config);
     info!(
         path = config_path,
-        ?config_manager.active.layout.sections,
+        ?config_manager.active.sections,
         "レイアウト設定を読み込みました"
     );
 
@@ -180,26 +180,59 @@ fn run_monitor(compaction_mode: SlotCompactionMode, config_path: &str) -> anyhow
     }
 }
 
+fn load_runtime_config(config_path: &str) -> anyhow::Result<RuntimeConfig> {
+    let bundle = config::AppConfigBundle::load(config_path, terminal_title_capable())?;
+    if bundle.report.has_errors() {
+        warn!(errors = ?bundle.report.errors, "新設定モデル検証でエラーを検出しました");
+    }
+    if !bundle.report.warnings.is_empty() {
+        info!(warnings = ?bundle.report.warnings, "新設定モデル検証の警告");
+    }
+    info!(watch_targets = ?bundle.watch_targets, "新設定モデルの監視対象を解決しました");
+    if let Some(reason) = &bundle.report.ssh_disabled_reason {
+        info!(reason = %reason, "新設定モデル: SSH ページを無効化します");
+    }
+
+    Ok(RuntimeConfig {
+        sections: bundle.app.dashboard.sections,
+        watch_targets: bundle.watch_targets,
+    })
+}
+
+fn terminal_title_capable() -> bool {
+    match std::env::var("STREAM_DECK_TERMINAL_TITLE_CAPABLE") {
+        Ok(v) if v.eq_ignore_ascii_case("0") || v.eq_ignore_ascii_case("false") => false,
+        Ok(v) if v.eq_ignore_ascii_case("1") || v.eq_ignore_ascii_case("true") => true,
+        Ok(_) => true,
+        Err(_) => true,
+    }
+}
+
 /// 設定からセクション列を構築する
 fn build_sections(
-    config: &DashboardConfig,
+    config: &RuntimeConfig,
     sys_source: &Rc<RefCell<MetricsSource>>,
     brightness: &Rc<Cell<u8>>,
     notification_state: &Rc<RefCell<NotificationState>>,
 ) -> Vec<Section> {
     config
-        .layout
         .sections
         .iter()
         .map(|sec| {
             let plugin: Box<dyn DataPlugin> = match sec.kind {
-                DashboardSectionKind::Cpu => Box::new(CpuPlugin::new(Rc::clone(sys_source))),
-                DashboardSectionKind::Mem => Box::new(MemPlugin::new(Rc::clone(sys_source))),
-                DashboardSectionKind::Load => Box::new(LoadPlugin::new(Rc::clone(sys_source))),
-                DashboardSectionKind::Bright => {
+                config::DashboardSectionKind::Cpu => {
+                    Box::new(CpuPlugin::new(Rc::clone(sys_source)))
+                }
+                config::DashboardSectionKind::Mem => {
+                    Box::new(MemPlugin::new(Rc::clone(sys_source)))
+                }
+                config::DashboardSectionKind::Load => {
+                    Box::new(LoadPlugin::new(Rc::clone(sys_source)))
+                }
+                config::DashboardSectionKind::Bright => {
                     Box::new(BrightnessPlugin::new(Rc::clone(brightness)))
                 }
-                DashboardSectionKind::Notif => {
+                config::DashboardSectionKind::Notif => {
                     Box::new(NotifPlugin::new(Rc::clone(notification_state)))
                 }
             };
@@ -371,7 +404,7 @@ fn convert_page_model_to_sections(page: &PageDisplayModel) -> Vec<SectionSpec> {
 }
 
 fn emphasis_to_history(emphasis: f32, len: usize) -> Vec<f32> {
-    iter::repeat(emphasis.clamp(0.0, 1.0)).take(len).collect()
+    std::iter::repeat_n(emphasis.clamp(0.0, 1.0), len).collect()
 }
 
 /// 1回の入力ポーリングで発生した副作用の集約結果。
@@ -566,94 +599,12 @@ fn drain_notifications(
     Ok(changed)
 }
 
-// ── 設定 ──────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Deserialize)]
-struct DashboardConfig {
-    #[serde(default)]
-    layout: LayoutConfig,
-    #[serde(default)]
-    watch: WatchConfig,
-}
-
-impl DashboardConfig {
-    fn load(path: &str) -> anyhow::Result<Self> {
-        let text = std::fs::read_to_string(path).map_err(|e| {
-            anyhow::anyhow!("レイアウト設定ファイルを読めませんでした path={path}: {e}")
-        })?;
-        let cfg: DashboardConfig = toml::from_str(&text).map_err(|e| {
-            anyhow::anyhow!("レイアウト設定の TOML パースに失敗しました path={path}: {e}")
-        })?;
-        Ok(cfg)
-    }
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-/// 追加監視対象ファイルの設定。
-/// `layout.toml` 以外に再読み込みトリガーとしたいファイルを列挙する。
-struct WatchConfig {
-    #[serde(default)]
-    includes: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct LayoutConfig {
-    #[serde(default = "default_sections")]
-    sections: Vec<SectionConfig>,
-}
-
-impl Default for LayoutConfig {
-    fn default() -> Self {
-        Self {
-            sections: default_sections(),
-        }
-    }
-}
-
-/// 設定ファイル上の1セクション分の設定
-#[derive(Debug, Clone, Deserialize)]
-struct SectionConfig {
-    /// セクション種別 (TOML キー: `type`)
-    #[serde(rename = "type")]
-    kind: DashboardSectionKind,
-    /// 履歴バー本数（省略時: HISTORY_LEN）
-    #[serde(default = "default_capacity")]
-    capacity: usize,
-}
-
-fn default_capacity() -> usize {
-    HISTORY_LEN
-}
-
-fn default_sections() -> Vec<SectionConfig> {
-    vec![
-        SectionConfig {
-            kind: DashboardSectionKind::Cpu,
-            capacity: HISTORY_LEN,
-        },
-        SectionConfig {
-            kind: DashboardSectionKind::Mem,
-            capacity: HISTORY_LEN,
-        },
-        SectionConfig {
-            kind: DashboardSectionKind::Load,
-            capacity: HISTORY_LEN,
-        },
-        SectionConfig {
-            kind: DashboardSectionKind::Notif,
-            capacity: HISTORY_LEN,
-        },
-    ]
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum DashboardSectionKind {
-    Cpu,
-    Mem,
-    Load,
-    Bright,
-    Notif,
+/// 実行時に利用する統合設定。
+/// Step1-4b では新設定モデルで検証・監視対象を解決し、
+/// 表示セクションだけを legacy 設定からブリッジして保持する。
+struct RuntimeConfig {
+    sections: Vec<config::DashboardSectionConfig>,
+    watch_targets: Vec<PathBuf>,
 }
 
 // ── ConfigManager ─────────────────────────────────────────────────
@@ -662,7 +613,7 @@ enum DashboardSectionKind {
 /// ファイル変更通知を受けてデバウンス付きで設定を再読込する。
 struct ConfigManager {
     config_path: String,
-    active: DashboardConfig,
+    active: RuntimeConfig,
     reload_err_count: u32,
     last_reload_at: Instant,
     watch_targets: Vec<PathBuf>,
@@ -671,8 +622,8 @@ struct ConfigManager {
 }
 
 impl ConfigManager {
-    fn new(config_path: &str, initial: DashboardConfig) -> Self {
-        let watch_targets = resolve_watch_targets(config_path, &initial);
+    fn new(config_path: &str, initial: RuntimeConfig) -> Self {
+        let watch_targets = initial.watch_targets.clone();
 
         #[cfg(feature = "file-watch")]
         let watcher = create_file_watcher(&watch_targets);
@@ -688,7 +639,7 @@ impl ConfigManager {
         }
     }
 
-    fn current(&self) -> &DashboardConfig {
+    fn current(&self) -> &RuntimeConfig {
         &self.active
     }
 
@@ -705,9 +656,9 @@ impl ConfigManager {
 
     pub(crate) fn do_reload(&mut self) -> bool {
         self.last_reload_at = Instant::now();
-        match DashboardConfig::load(&self.config_path) {
+        match load_runtime_config(&self.config_path) {
             Ok(new_cfg) => {
-                let new_watch_targets = resolve_watch_targets(&self.config_path, &new_cfg);
+                let new_watch_targets = new_cfg.watch_targets.clone();
                 self.active = new_cfg;
                 self.reload_err_count = 0;
 
@@ -732,33 +683,6 @@ impl ConfigManager {
             }
         }
     }
-}
-
-fn resolve_watch_targets(config_path: &str, config: &DashboardConfig) -> Vec<PathBuf> {
-    let base_path = normalize_path(Path::new(config_path));
-    let base_dir = base_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    let mut dedup = BTreeSet::new();
-    dedup.insert(base_path.clone());
-
-    for include in &config.watch.includes {
-        let include = include.trim();
-        if include.is_empty() {
-            continue;
-        }
-        let include_path = Path::new(include);
-        let resolved = if include_path.is_absolute() {
-            normalize_path(include_path)
-        } else {
-            normalize_path(&base_dir.join(include_path))
-        };
-        dedup.insert(resolved);
-    }
-
-    dedup.into_iter().collect()
 }
 
 // ── FileWatcher ──────────────────────────────────────────────────
@@ -878,186 +802,6 @@ mod tests {
     fn test_brightness_no_change_at_limits() {
         assert_eq!(apply_brightness_delta(BRIGHTNESS_MAX, 1), BRIGHTNESS_MAX);
         assert_eq!(apply_brightness_delta(BRIGHTNESS_MIN, -1), BRIGHTNESS_MIN);
-    }
-
-    #[test]
-    fn test_layout_config_parse_custom_order() {
-        let text = concat!(
-            "[[layout.sections]]\ntype = \"notif\"\n\n",
-            "[[layout.sections]]\ntype = \"cpu\"\ncapacity = 30\n\n",
-            "[[layout.sections]]\ntype = \"bright\"\n\n",
-            "[[layout.sections]]\ntype = \"mem\"\ncapacity = 5\n",
-        );
-        let cfg: DashboardConfig = toml::from_str(text).expect("layout parse failed");
-        assert!(matches!(
-            cfg.layout.sections[0].kind,
-            DashboardSectionKind::Notif
-        ));
-        assert_eq!(cfg.layout.sections[0].capacity, HISTORY_LEN);
-        assert!(matches!(
-            cfg.layout.sections[1].kind,
-            DashboardSectionKind::Cpu
-        ));
-        assert_eq!(cfg.layout.sections[1].capacity, 30);
-        assert!(matches!(
-            cfg.layout.sections[2].kind,
-            DashboardSectionKind::Bright
-        ));
-        assert!(matches!(
-            cfg.layout.sections[3].kind,
-            DashboardSectionKind::Mem
-        ));
-        assert_eq!(cfg.layout.sections[3].capacity, 5);
-    }
-
-    #[test]
-    fn test_config_manager_returns_initial_config() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("layout.toml");
-        std::fs::write(
-            &path,
-            concat!(
-                "[[layout.sections]]\ntype = \"notif\"\n\n",
-                "[[layout.sections]]\ntype = \"cpu\"\n\n",
-                "[[layout.sections]]\ntype = \"bright\"\n\n",
-                "[[layout.sections]]\ntype = \"mem\"\n",
-            ),
-        )
-        .expect("write");
-        let path_str = path.to_str().unwrap();
-        let initial = DashboardConfig::load(path_str).expect("load");
-        let manager = ConfigManager::new(path_str, initial);
-        assert!(matches!(
-            manager.current().layout.sections[0].kind,
-            DashboardSectionKind::Notif
-        ));
-        assert!(matches!(
-            manager.current().layout.sections[3].kind,
-            DashboardSectionKind::Mem
-        ));
-    }
-
-    #[test]
-    fn test_config_manager_keeps_old_on_parse_error() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("layout.toml");
-        std::fs::write(
-            &path,
-            concat!(
-                "[[layout.sections]]\ntype = \"cpu\"\n\n",
-                "[[layout.sections]]\ntype = \"mem\"\n\n",
-                "[[layout.sections]]\ntype = \"load\"\n\n",
-                "[[layout.sections]]\ntype = \"notif\"\n",
-            ),
-        )
-        .expect("write valid");
-        let path_str = path.to_str().unwrap();
-        let initial = DashboardConfig::load(path_str).expect("load initial");
-        let mut manager = ConfigManager::new(path_str, initial);
-
-        std::fs::write(&path, "not valid toml [[[").expect("write broken");
-        let reloaded = manager.do_reload();
-
-        assert!(!reloaded, "壊れた TOML でリロード成功してはいけない");
-        assert!(
-            matches!(
-                manager.current().layout.sections[0].kind,
-                DashboardSectionKind::Cpu
-            ),
-            "旧設定が維持されていない"
-        );
-    }
-
-    #[test]
-    fn test_config_manager_applies_valid_reload() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("layout.toml");
-        std::fs::write(
-            &path,
-            concat!(
-                "[[layout.sections]]\ntype = \"cpu\"\n\n",
-                "[[layout.sections]]\ntype = \"mem\"\n\n",
-                "[[layout.sections]]\ntype = \"load\"\n\n",
-                "[[layout.sections]]\ntype = \"notif\"\n",
-            ),
-        )
-        .expect("write initial");
-        let path_str = path.to_str().unwrap();
-        let initial = DashboardConfig::load(path_str).expect("load initial");
-        let mut manager = ConfigManager::new(path_str, initial);
-
-        std::fs::write(
-            &path,
-            concat!(
-                "[[layout.sections]]\ntype = \"notif\"\ncapacity = 20\n\n",
-                "[[layout.sections]]\ntype = \"cpu\"\n\n",
-                "[[layout.sections]]\ntype = \"bright\"\n\n",
-                "[[layout.sections]]\ntype = \"mem\"\n",
-            ),
-        )
-        .expect("write updated");
-        let reloaded = manager.do_reload();
-
-        assert!(reloaded, "有効な TOML のリロードが失敗してはいけない");
-        assert!(
-            matches!(
-                manager.current().layout.sections[0].kind,
-                DashboardSectionKind::Notif
-            ),
-            "リロード後に設定が反映されていない"
-        );
-        assert_eq!(
-            manager.current().layout.sections[0].capacity,
-            20,
-            "capacity がリロード後に反映されていない"
-        );
-    }
-
-    #[test]
-    fn test_watch_targets_include_primary_and_includes() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let layout_path = dir.path().join("layout.toml");
-        let hosts_path = dir.path().join("ssh_hosts.toml");
-        std::fs::write(&layout_path, "").expect("write layout");
-        std::fs::write(&hosts_path, "").expect("write hosts");
-
-        let cfg: DashboardConfig = toml::from_str(
-            r#"
-[watch]
-includes = ["ssh_hosts.toml"]
-"#,
-        )
-        .expect("parse config");
-
-        let targets = resolve_watch_targets(layout_path.to_str().expect("path str"), &cfg);
-        assert_eq!(targets.len(), 2, "監視対象が期待件数と一致しない");
-        assert!(
-            targets.contains(&normalize_path(&layout_path)),
-            "layout.toml が監視対象に含まれていない"
-        );
-        assert!(
-            targets.contains(&normalize_path(&hosts_path)),
-            "includes で指定したファイルが監視対象に含まれていない"
-        );
-    }
-
-    #[test]
-    fn test_watch_targets_deduplicate_entries() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let layout_path = dir.path().join("layout.toml");
-        std::fs::write(&layout_path, "").expect("write layout");
-
-        let cfg: DashboardConfig = toml::from_str(
-            r#"
-[watch]
-includes = ["layout.toml", "./layout.toml", ""]
-"#,
-        )
-        .expect("parse config");
-
-        let targets = resolve_watch_targets(layout_path.to_str().expect("path str"), &cfg);
-        assert_eq!(targets.len(), 1, "重複監視対象が除去されていない");
-        assert_eq!(targets[0], normalize_path(&layout_path));
     }
 
     #[test]

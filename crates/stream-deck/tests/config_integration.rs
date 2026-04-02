@@ -1,0 +1,273 @@
+#[path = "../src/config.rs"]
+mod config;
+
+use config::*;
+
+fn minimal_app() -> AppConfig {
+    AppConfig {
+        app: AppMeta {
+            home: "home".to_string(),
+        },
+        dashboard: DashboardConfig::default(),
+        pages: vec![PageConfig {
+            id: "home".to_string(),
+            title: "Home".to_string(),
+            items: vec![],
+        }],
+        dynamic: DynamicConfig::default(),
+        watch: WatchConfig::default(),
+    }
+}
+
+fn assert_contains_error(report: &ConfigValidationReport, expected: &str) {
+    assert!(
+        report.errors.iter().any(|e| e.contains(expected)),
+        "expected error keyword not found: {expected}, errors={:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn test_parse_app_config_with_pages() {
+    let text = r#"
+[app]
+home = "home"
+
+[dashboard]
+
+[[dashboard.sections]]
+type = "cpu"
+capacity = 10
+
+[[dashboard.sections]]
+type = "mem"
+capacity = 10
+
+[[dashboard.sections]]
+type = "load"
+capacity = 10
+
+[[dashboard.sections]]
+type = "notif"
+capacity = 10
+
+[[pages]]
+id = "home"
+
+[[pages.items]]
+kind = "nav"
+label = "apps"
+target = "apps"
+
+[[pages]]
+id = "apps"
+
+[[pages.items]]
+kind = "command"
+label = "terminal"
+command = ["xterm"]
+"#;
+    let parsed: AppConfig = toml::from_str(text).expect("parse app config");
+    assert_eq!(parsed.app.home, "home");
+    assert_eq!(parsed.pages.len(), 2);
+    assert_eq!(parsed.dashboard.sections.len(), 4);
+}
+
+#[test]
+fn test_validate_rejects_page_size_zero() {
+    let mut app = minimal_app();
+    app.dynamic.ssh_hosts = Some(DynamicSshConfig {
+        source: "hosts.toml".to_string(),
+        page_size: 0,
+        ..DynamicSshConfig::default()
+    });
+
+    let report = validate_app_config(&app, None, true);
+    assert!(report.has_errors());
+    assert_contains_error(&report, "page_size は 1 以上");
+}
+
+#[test]
+fn test_validate_rejects_missing_nav_target() {
+    let mut app = minimal_app();
+    app.pages[0].items = vec![PageItemConfig::Nav {
+        label: "go".to_string(),
+        target: "missing".to_string(),
+    }];
+
+    let report = validate_app_config(&app, None, true);
+    assert_contains_error(&report, "nav target が存在しません");
+}
+
+#[test]
+fn test_validate_disables_ssh_when_terminal_title_not_capable() {
+    let mut app = minimal_app();
+    app.dynamic.ssh_hosts = Some(DynamicSshConfig {
+        source: "hosts.toml".to_string(),
+        ..DynamicSshConfig::default()
+    });
+
+    let report = validate_app_config(&app, None, false);
+    assert!(!report.ssh_enabled);
+    assert!(report.ssh_disabled_reason.is_some());
+    assert!(!report.warnings.is_empty());
+}
+
+#[test]
+fn test_validate_error_cases_table() {
+    let mut dup_page = minimal_app();
+    dup_page.pages.push(PageConfig {
+        id: "home".to_string(),
+        title: "dup".to_string(),
+        items: vec![],
+    });
+
+    let mut empty_command = minimal_app();
+    empty_command.pages[0].items = vec![PageItemConfig::Command {
+        label: "bad".to_string(),
+        command: vec![],
+    }];
+
+    let mut missing_home = minimal_app();
+    missing_home.app.home = "missing".to_string();
+
+    let cases: Vec<(AppConfig, &str)> = vec![
+        (dup_page, "重複した page id"),
+        (empty_command, "command が空"),
+        (missing_home, "home ページが存在しません"),
+    ];
+
+    for (app, expected_error) in cases {
+        let report = validate_app_config(&app, None, true);
+        assert_contains_error(&report, expected_error);
+    }
+}
+
+#[test]
+fn test_validate_rejects_duplicate_ssh_host_id() {
+    let mut app = minimal_app();
+    app.dynamic.ssh_hosts = Some(DynamicSshConfig {
+        source: "hosts.toml".to_string(),
+        ..DynamicSshConfig::default()
+    });
+    let hosts = SshHostsConfig {
+        hosts: vec![
+            SshHostEntry {
+                id: "cam-01".to_string(),
+                label: "cam01".to_string(),
+                host: "user@192.168.1.10".to_string(),
+                tags: vec![],
+            },
+            SshHostEntry {
+                id: "cam-01".to_string(),
+                label: "cam01-dup".to_string(),
+                host: "user@192.168.1.11".to_string(),
+                tags: vec![],
+            },
+        ],
+    };
+
+    let report = validate_app_config(&app, Some(&hosts), true);
+    assert_contains_error(&report, "重複した SSH host id");
+}
+
+#[test]
+fn test_bundle_load_reads_hosts_and_watch_targets() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let layout = root.join("layout.toml");
+    let hosts = root.join("ssh_hosts.toml");
+
+    std::fs::write(
+        &layout,
+        r#"
+[app]
+home = "home"
+
+[dashboard]
+
+[[dashboard.sections]]
+type = "cpu"
+capacity = 10
+
+[[dashboard.sections]]
+type = "mem"
+capacity = 10
+
+[[dashboard.sections]]
+type = "load"
+capacity = 10
+
+[[dashboard.sections]]
+type = "notif"
+capacity = 10
+
+[[pages]]
+id = "home"
+
+[watch]
+includes = ["extra.toml"]
+
+[dynamic.ssh_hosts]
+source = "ssh_hosts.toml"
+page_size = 6
+"#,
+    )
+    .expect("write layout");
+    std::fs::write(
+        &hosts,
+        r#"
+[[hosts]]
+id = "cam-01"
+label = "cam01"
+host = "user@192.168.1.10"
+"#,
+    )
+    .expect("write hosts");
+
+    let bundle =
+        AppConfigBundle::load(layout.to_str().expect("path str"), true).expect("bundle load");
+
+    assert!(
+        bundle.report.errors.is_empty(),
+        "errors={:?}",
+        bundle.report.errors
+    );
+    assert!(bundle.ssh_hosts.is_some(), "ssh_hosts should be loaded");
+    let ssh_path = std::fs::canonicalize(&hosts).expect("canonical hosts");
+    assert!(
+        bundle.watch_targets.contains(&ssh_path),
+        "ssh hosts file should be in watch targets"
+    );
+}
+
+#[test]
+fn test_resolve_watch_targets_includes_ssh_source() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let layout = root.join("layout.toml");
+    let hosts = root.join("ssh_hosts.toml");
+    std::fs::write(&layout, "").expect("write layout");
+    std::fs::write(&hosts, "").expect("write hosts");
+
+    let mut app = AppConfig::default();
+    app.dynamic.ssh_hosts = Some(DynamicSshConfig {
+        source: "ssh_hosts.toml".to_string(),
+        ..DynamicSshConfig::default()
+    });
+
+    let targets = resolve_watch_targets(layout.to_str().expect("path str"), &app);
+    let hosts_path = std::fs::canonicalize(&hosts).expect("canonical hosts");
+    assert!(targets.contains(&hosts_path));
+}
+
+#[test]
+fn test_legacy_layout_format_is_rejected() {
+    let old_text = r#"
+[[layout.sections]]
+type = "cpu"
+capacity = 10
+"#;
+    let parsed = toml::from_str::<AppConfig>(old_text);
+    assert!(parsed.is_err(), "legacy layout format must be rejected");
+}

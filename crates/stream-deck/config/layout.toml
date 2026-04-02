@@ -1,22 +1,32 @@
 
-# Stream Deck レイアウト設定
-#
-# 各セクションは [[layout.sections]] テーブルで宣言します。
-# type     : セクション種別 (cpu | mem | load | bright | notif)
-# capacity : 履歴バー本数  (省略時はデフォルト値が使われます)
+# Stream Deck レイアウト設定 (新スキーマ)
 
-[[layout.sections]]
+[app]
+home = "home"
+
+[dashboard]
+
+[[dashboard.sections]]
 type = "cpu"
 capacity = 10
 
-[[layout.sections]]
+[[dashboard.sections]]
 type = "mem"
 capacity = 30
 
-[[layout.sections]]
+[[dashboard.sections]]
 type = "load"
 capacity = 30
 
-[[layout.sections]]
-type = "cpu"
-capacity = 50
+[[dashboard.sections]]
+type = "notif"
+capacity = 12
+
+[[pages]]
+id = "home"
+title = "Home"
+
+[[pages.items]]
+kind = "command"
+label = "Terminal"
+command = ["xterm"]

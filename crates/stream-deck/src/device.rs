@@ -83,6 +83,22 @@ impl HardwareManager {
         Ok(())
     }
 
+    /// ボタンに画像を設定して即時反映する
+    pub fn set_button_image(&self, key: u8, image: DynamicImage) -> Result<(), StreamDeckError> {
+        self.deck
+            .set_button_image(key, image)
+            .context("ボタン画像の設定に失敗しました")?;
+        Ok(())
+    }
+
+    /// すべてのボタン画像設定をデバイスに反映する (バッチ操作後に呼ぶ)
+    pub fn flush_buttons(&self) -> Result<(), StreamDeckError> {
+        self.deck
+            .flush()
+            .context("ボタン画像のフラッシュに失敗しました")?;
+        Ok(())
+    }
+
     /// 全ボタンを黒 (初期状態) にクリアする
     pub fn clear_buttons(&self) -> Result<(), StreamDeckError> {
         self.deck

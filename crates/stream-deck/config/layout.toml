@@ -27,6 +27,20 @@ id = "home"
 title = "Home"
 
 [[pages.items]]
+kind = "nav"
+label = "Apps"
+target = "apps"
+
+[[pages]]
+id = "apps"
+title = "Apps"
+
+# サブページで左上に戻る操作を置きたい場合は、back を先頭に定義する。
+[[pages.items]]
+kind = "back"
+label = "Back"
+
+[[pages.items]]
 kind = "command"
 label = "Terminal"
-command = ["xterm"]
+command = ["/usr/bin/terminator"]

@@ -17,26 +17,28 @@ mod section;
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
-use std::iter;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use ab_glyph::{FontVec, PxScale};
 use clap::{Parser, Subcommand};
 use elgato_streamdeck::DeviceStateUpdate;
+use image::{DynamicImage, Rgb, RgbImage};
+use imageproc::drawing::draw_text_mut;
 use tracing::{debug, error, info, warn};
 
 use metrics::MetricsSource;
 use notifications::{
-    NotificationPressAction, NotificationSource, NotificationState, SlotCompactionMode,
+    NotificationPressAction, NotificationSource, NotificationState, SlotCompactionMode, SlotState,
 };
 use plugin::{BrightnessPlugin, CpuPlugin, DataPlugin, LoadPlugin, MemPlugin, NotifPlugin};
 use renderer::SectionSpec;
 use section::Section;
 
 #[cfg(test)]
-use notifications::{NotificationItem, SlotState};
+use notifications::NotificationItem;
 
 #[cfg(feature = "file-watch")]
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -69,6 +71,9 @@ const ENCODER_BRIGHTNESS: u8 = 3;
 /// 輝度をデフォルトにリセットする右下ボタンのインデックス (0-7、2行×4列)
 const BUTTON_BRIGHTNESS_RESET: u8 = 7;
 
+/// Stream Deck+ 物理ボタン数
+const BUTTON_COUNT: usize = 8;
+
 /// 通知受信用の UNIX ドメインソケット
 const NOTIFICATION_SOCKET_PATH: &str = "/tmp/rs-common-stream-deck-notify.sock";
 
@@ -78,6 +83,10 @@ const RELOAD_DEBOUNCE: Duration = Duration::from_millis(200);
 
 /// デフォルト設定ファイル
 const DEFAULT_LAYOUT_CONFIG_PATH: &str = "crates/stream-deck/config/layout.toml";
+
+/// ボタン画像用フォント (NotoSans-Regular, 120x120 ボタン用)
+const BUTTON_FONT_SIZE: f32 = 18.0;
+const BUTTON_FONT_DATA: &[u8] = include_bytes!("../assets/NotoSans-Regular.ttf");
 
 /// Stream Deck CPU モニター
 #[derive(Parser)]
@@ -195,6 +204,8 @@ fn load_runtime_config(config_path: &str) -> anyhow::Result<RuntimeConfig> {
 
     Ok(RuntimeConfig {
         sections: bundle.app.dashboard.sections,
+        home_page_id: bundle.app.app.home,
+        pages: bundle.app.pages,
         watch_targets: bundle.watch_targets,
     })
 }
@@ -255,10 +266,16 @@ fn run_loop(
 ) -> anyhow::Result<()> {
     let reader = hw.get_reader();
     hw.set_brightness(brightness.get())?;
+    let mut page_state = PageState::new(config_manager.current());
 
     // 接続時: 全ボタンをクリアしてから通知状態を復元する
     hw.clear_buttons()?;
-    refresh_notification_buttons(hw, &notification_state.borrow())?;
+    refresh_button_display(
+        hw,
+        &notification_state.borrow(),
+        config_manager.current(),
+        &page_state,
+    )?;
 
     loop {
         if config_manager.poll_reload() {
@@ -269,12 +286,24 @@ fn run_loop(
                 brightness,
                 notification_state,
             );
+            page_state.reconcile(config_manager.current());
+            refresh_button_display(
+                hw,
+                &notification_state.borrow(),
+                config_manager.current(),
+                &page_state,
+            )?
         }
 
         let notification_state_changed =
             poll_notification_state(notification_source, notification_state)?;
         if notification_state_changed {
-            refresh_notification_buttons(hw, &notification_state.borrow())?;
+            refresh_button_display(
+                hw,
+                &notification_state.borrow(),
+                config_manager.current(),
+                &page_state,
+            )?;
         }
 
         // メトリクスを一度だけ refresh してから各セクションを更新
@@ -294,6 +323,7 @@ fn run_loop(
             );
         }
 
+        // LCD はメトリクス表示を維持
         let frame = build_legacy_display_frame(sections);
         let image = render_display_frame(renderer, frame);
 
@@ -317,12 +347,24 @@ fn run_loop(
 
             let mut notification_state_changed =
                 poll_notification_state(notification_source, notification_state)?;
-            let input_outcome = handle_device_updates(updates, brightness, notification_state);
+            let input_outcome = handle_device_updates(
+                updates,
+                brightness,
+                notification_state,
+                config_manager.current(),
+                &mut page_state,
+            );
             let brightness_changed = input_outcome.brightness_changed;
             notification_state_changed |= input_outcome.notification_state_changed;
+            let page_state_changed = input_outcome.page_state_changed;
 
-            if notification_state_changed {
-                refresh_notification_buttons(hw, &notification_state.borrow())?;
+            if notification_state_changed || page_state_changed {
+                refresh_button_display(
+                    hw,
+                    &notification_state.borrow(),
+                    config_manager.current(),
+                    &page_state,
+                )?;
             }
 
             if brightness_changed {
@@ -364,6 +406,47 @@ struct PageTile {
 
 fn build_legacy_display_frame(sections: &[Section]) -> DisplayFrame {
     DisplayFrame::LegacySections(sections.iter().map(Section::as_spec).collect())
+}
+
+fn build_page_display_frame(config: &RuntimeConfig, page_state: &PageState) -> DisplayFrame {
+    let page = config
+        .pages
+        .iter()
+        .find(|p| p.id == page_state.current_page_id)
+        .map(|p| {
+            let tiles: Vec<PageTile> = p
+                .items
+                .iter()
+                .map(|item| PageTile {
+                    label: match item {
+                        config::PageItemConfig::Nav { label, .. } => label.clone(),
+                        config::PageItemConfig::Command { label, .. } => label.clone(),
+                        config::PageItemConfig::Back { label } => {
+                            if label.is_empty() {
+                                "Back".to_string()
+                            } else {
+                                label.clone()
+                            }
+                        }
+                    },
+                    value_text: String::new(),
+                    emphasis: 0.0,
+                })
+                .collect();
+
+            PageDisplayModel {
+                title: p.title.clone(),
+                overlay_text: None,
+                tiles,
+            }
+        })
+        .unwrap_or_else(|| PageDisplayModel {
+            title: "---".to_string(),
+            overlay_text: None,
+            tiles: Vec::new(),
+        });
+
+    DisplayFrame::Page(page)
 }
 
 fn render_display_frame(renderer: &renderer::Renderer, frame: DisplayFrame) -> image::DynamicImage {
@@ -412,6 +495,7 @@ fn emphasis_to_history(emphasis: f32, len: usize) -> Vec<f32> {
 struct InputUpdateOutcome {
     brightness_changed: bool,
     notification_state_changed: bool,
+    page_state_changed: bool,
 }
 
 /// ボタン入力の優先順位ポリシーに基づくルーティング結果。
@@ -426,6 +510,133 @@ enum ButtonRoutingDecision {
 enum EncoderRoutingDecision {
     BrightnessDelta(i8),
     Noop,
+}
+
+/// 現在ページ上のボタン入力解釈結果。
+enum PageButtonDecision {
+    Navigate(String),
+    Back,
+    Command(Vec<String>),
+    Noop,
+}
+
+/// 機能割り当てボタンを視認しやすくするための色。
+enum AssignedButtonColor {
+    Nav,
+    Back,
+    Command,
+}
+
+impl AssignedButtonColor {
+    fn to_rgb(self) -> image::Rgb<u8> {
+        match self {
+            AssignedButtonColor::Nav => image::Rgb([0, 80, 255]),
+            AssignedButtonColor::Back => image::Rgb([255, 120, 0]),
+            AssignedButtonColor::Command => image::Rgb([0, 180, 40]),
+        }
+    }
+}
+
+/// 最小のページ状態機械。
+/// Step2 で `current_page_id` と履歴管理を導入する。
+struct PageState {
+    current_page_id: String,
+    history: Vec<String>,
+}
+
+impl PageState {
+    fn new(config: &RuntimeConfig) -> Self {
+        let current_page_id = fallback_page_id(config).unwrap_or_default();
+        Self {
+            current_page_id,
+            history: Vec::new(),
+        }
+    }
+
+    fn reconcile(&mut self, config: &RuntimeConfig) {
+        if page_exists(config, &self.current_page_id) {
+            return;
+        }
+        self.current_page_id = fallback_page_id(config).unwrap_or_default();
+        self.history.clear();
+    }
+
+    fn navigate_to(&mut self, target: String) {
+        self.history.push(self.current_page_id.clone());
+        self.current_page_id = target;
+    }
+
+    fn back(&mut self) {
+        if let Some(prev) = self.history.pop() {
+            self.current_page_id = prev;
+        }
+    }
+}
+
+fn fallback_page_id(config: &RuntimeConfig) -> Option<String> {
+    if page_exists(config, &config.home_page_id) {
+        return Some(config.home_page_id.clone());
+    }
+    config.pages.first().map(|p| p.id.clone())
+}
+
+fn page_exists(config: &RuntimeConfig, page_id: &str) -> bool {
+    config.pages.iter().any(|p| p.id == page_id)
+}
+
+fn current_page_items<'a>(
+    config: &'a RuntimeConfig,
+    page_state: &PageState,
+) -> &'a [config::PageItemConfig] {
+    config
+        .pages
+        .iter()
+        .find(|p| p.id == page_state.current_page_id)
+        .map(|p| p.items.as_slice())
+        .unwrap_or(&[])
+}
+
+fn resolve_page_button_decision(
+    config: &RuntimeConfig,
+    page_state: &PageState,
+    idx: u8,
+) -> PageButtonDecision {
+    let items = current_page_items(config, page_state);
+    let Some(item) = items.get(idx as usize) else {
+        return PageButtonDecision::Noop;
+    };
+
+    match item {
+        config::PageItemConfig::Nav { target, .. } => {
+            if page_exists(config, target) {
+                PageButtonDecision::Navigate(target.clone())
+            } else {
+                PageButtonDecision::Noop
+            }
+        }
+        config::PageItemConfig::Back { .. } => PageButtonDecision::Back,
+        config::PageItemConfig::Command { command, .. } => {
+            if command.is_empty() {
+                PageButtonDecision::Noop
+            } else {
+                PageButtonDecision::Command(command.clone())
+            }
+        }
+    }
+}
+
+fn assigned_button_color(
+    config: &RuntimeConfig,
+    page_state: &PageState,
+    idx: usize,
+) -> Option<AssignedButtonColor> {
+    let items = current_page_items(config, page_state);
+    let item = items.get(idx)?;
+    match item {
+        config::PageItemConfig::Nav { .. } => Some(AssignedButtonColor::Nav),
+        config::PageItemConfig::Back { .. } => Some(AssignedButtonColor::Back),
+        config::PageItemConfig::Command { .. } => Some(AssignedButtonColor::Command),
+    }
 }
 
 fn resolve_encoder_twist_policy(idx: u8, delta: i8) -> EncoderRoutingDecision {
@@ -459,9 +670,12 @@ fn handle_device_updates(
     updates: Vec<DeviceStateUpdate>,
     brightness: &Rc<Cell<u8>>,
     notification_state: &Rc<RefCell<NotificationState>>,
+    runtime_config: &RuntimeConfig,
+    page_state: &mut PageState,
 ) -> InputUpdateOutcome {
     let mut brightness_changed = false;
     let mut notification_state_changed = false;
+    let mut page_state_changed = false;
 
     for update in updates {
         match update {
@@ -495,7 +709,29 @@ fn handle_device_updates(
                         brightness.set(DEFAULT_BRIGHTNESS);
                         brightness_changed = true;
                     }
-                    ButtonRoutingDecision::Noop => {}
+                    ButtonRoutingDecision::Noop => {
+                        match resolve_page_button_decision(runtime_config, page_state, idx) {
+                            PageButtonDecision::Navigate(target) => {
+                                page_state.navigate_to(target);
+                                page_state_changed = true;
+                            }
+                            PageButtonDecision::Back => {
+                                let before = page_state.current_page_id.clone();
+                                page_state.back();
+                                page_state_changed = page_state.current_page_id != before;
+                            }
+                            PageButtonDecision::Command(command) => {
+                                let action = ActionRequest::Command {
+                                    program: command[0].clone(),
+                                    args: command[1..].to_vec(),
+                                };
+                                if let Err(e) = execute_action(action) {
+                                    warn!("ページ command 実行失敗: {e:#}");
+                                }
+                            }
+                            PageButtonDecision::Noop => {}
+                        }
+                    }
                 }
             }
             _ => {}
@@ -505,6 +741,7 @@ fn handle_device_updates(
     InputUpdateOutcome {
         brightness_changed,
         notification_state_changed,
+        page_state_changed,
     }
 }
 
@@ -572,13 +809,62 @@ fn execute_payload(payload: &str) -> anyhow::Result<()> {
     execute_action(ActionRequest::OpenTarget(trimmed.to_owned()))
 }
 
-fn refresh_notification_buttons(
+/// ボタン画像にラベルテキストを描画して返す
+fn draw_button_with_label(label: &str, bg_color: image::Rgb<u8>) -> anyhow::Result<DynamicImage> {
+    const BUTTON_SIZE: u32 = 120;
+    const TEXT_COLOR: Rgb<u8> = Rgb([255, 255, 255]);
+
+    let mut img = RgbImage::from_pixel(BUTTON_SIZE, BUTTON_SIZE, bg_color);
+
+    if !label.trim().is_empty() {
+        let font = FontVec::try_from_vec(BUTTON_FONT_DATA.to_vec())
+            .map_err(|e| anyhow::anyhow!("ボタンフォントロード失敗: {e}"))?;
+        let scale = PxScale::from(BUTTON_FONT_SIZE);
+
+        let text_y = (BUTTON_SIZE as i32 - BUTTON_FONT_SIZE as i32) / 2;
+        let text_x = 10_i32;
+
+        draw_text_mut(&mut img, TEXT_COLOR, text_x, text_y, scale, &font, label);
+    }
+
+    Ok(DynamicImage::ImageRgb8(img))
+}
+
+/// ボタンにラベルテキスト画像を設定する
+fn refresh_button_display(
     hw: &device::HardwareManager,
     state: &NotificationState,
+    runtime_config: &RuntimeConfig,
+    page_state: &PageState,
 ) -> anyhow::Result<()> {
-    for idx in 0..state.slots.len() {
-        hw.set_button_color(idx as u8, state.slots[idx].color().to_rgb())?;
+    let items = current_page_items(runtime_config, page_state);
+
+    for idx in 0..BUTTON_COUNT {
+        if matches!(state.slots[idx], SlotState::Empty) {
+            // 割り当てあり: ラベル画像を描画
+            if let Some(color_kind) = assigned_button_color(runtime_config, page_state, idx) {
+                let label = items
+                    .get(idx)
+                    .and_then(|item| match item {
+                        config::PageItemConfig::Nav { label, .. } => Some(label.as_str()),
+                        config::PageItemConfig::Command { label, .. } => Some(label.as_str()),
+                        config::PageItemConfig::Back { label } => Some(label.as_str()),
+                    })
+                    .unwrap_or("");
+
+                let bg_color = color_kind.to_rgb();
+                let button_img = draw_button_with_label(label, bg_color)?;
+                hw.set_button_image(idx as u8, button_img)?;
+            } else {
+                // 割り当てなし: 黒
+                hw.set_button_color(idx as u8, image::Rgb([0, 0, 0]))?;
+            }
+        } else {
+            // 通知スロット: 通知色
+            hw.set_button_color(idx as u8, state.slots[idx].color().to_rgb())?;
+        }
     }
+    hw.flush_buttons()?;
     Ok(())
 }
 
@@ -604,6 +890,8 @@ fn drain_notifications(
 /// 表示セクションだけを legacy 設定からブリッジして保持する。
 struct RuntimeConfig {
     sections: Vec<config::DashboardSectionConfig>,
+    home_page_id: String,
+    pages: Vec<config::PageConfig>,
     watch_targets: Vec<PathBuf>,
 }
 

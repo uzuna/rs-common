@@ -16,6 +16,7 @@ mod section;
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
+use std::iter;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
@@ -33,6 +34,9 @@ use notifications::{
 use plugin::{BrightnessPlugin, CpuPlugin, DataPlugin, LoadPlugin, MemPlugin, NotifPlugin};
 use renderer::SectionSpec;
 use section::Section;
+
+#[cfg(test)]
+use notifications::{NotificationItem, SlotState};
 
 #[cfg(feature = "file-watch")]
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -257,9 +261,8 @@ fn run_loop(
             );
         }
 
-        // SectionSpec を収集してレンダラへ渡す
-        let specs: Vec<SectionSpec> = sections.iter().map(|s| s.as_spec()).collect();
-        let image = renderer.render(&specs);
+        let frame = build_legacy_display_frame(sections);
+        let image = render_display_frame(renderer, frame);
 
         if let Err(e) = hw.set_lcd_strip_image(image) {
             error!("LCD 書き込みエラー: {e:#}");
@@ -300,9 +303,123 @@ fn run_loop(
     }
 }
 
+/// 描画入力の互換レイヤ。
+/// 現行のセクション描画と将来のページ描画を同じ入口で扱うための列挙型。
+enum DisplayFrame {
+    LegacySections(Vec<SectionSpec>),
+    #[allow(dead_code)]
+    Page(PageDisplayModel),
+}
+
+#[allow(dead_code)]
+/// ページ描画へ移行するための中間表示モデル。
+/// 現段階では互換レイヤで `SectionSpec` に変換して描画する。
+struct PageDisplayModel {
+    title: String,
+    overlay_text: Option<String>,
+    tiles: Vec<PageTile>,
+}
+
+#[allow(dead_code)]
+/// ページ内の1タイル分の表示情報。
+/// `emphasis` は互換描画では簡易バー強度として扱う。
+struct PageTile {
+    label: String,
+    value_text: String,
+    emphasis: f32,
+}
+
+fn build_legacy_display_frame(sections: &[Section]) -> DisplayFrame {
+    DisplayFrame::LegacySections(sections.iter().map(Section::as_spec).collect())
+}
+
+fn render_display_frame(renderer: &renderer::Renderer, frame: DisplayFrame) -> image::DynamicImage {
+    match frame {
+        DisplayFrame::LegacySections(specs) => renderer.render(&specs),
+        DisplayFrame::Page(page) => {
+            let specs = convert_page_model_to_sections(&page);
+            renderer.render(&specs)
+        }
+    }
+}
+
+fn convert_page_model_to_sections(page: &PageDisplayModel) -> Vec<SectionSpec> {
+    let mut tiles = Vec::new();
+    for tile in &page.tiles {
+        let mut value_text = tile.value_text.clone();
+        if value_text.is_empty() && page.overlay_text.is_some() {
+            value_text = page.overlay_text.clone().unwrap_or_default();
+        }
+
+        let history = emphasis_to_history(tile.emphasis, HISTORY_LEN);
+        tiles.push(SectionSpec {
+            label: tile.label.clone(),
+            value_text,
+            history,
+        });
+    }
+
+    if tiles.is_empty() {
+        return vec![SectionSpec {
+            label: page.title.clone(),
+            value_text: page.overlay_text.clone().unwrap_or_default(),
+            history: vec![0.0; HISTORY_LEN],
+        }];
+    }
+
+    tiles
+}
+
+fn emphasis_to_history(emphasis: f32, len: usize) -> Vec<f32> {
+    iter::repeat(emphasis.clamp(0.0, 1.0)).take(len).collect()
+}
+
+/// 1回の入力ポーリングで発生した副作用の集約結果。
+/// 呼び出し側はこのフラグを使ってデバイス反映を最小化する。
 struct InputUpdateOutcome {
     brightness_changed: bool,
     notification_state_changed: bool,
+}
+
+/// ボタン入力の優先順位ポリシーに基づくルーティング結果。
+enum ButtonRoutingDecision {
+    Notification(NotificationPressAction),
+    BrightnessReset,
+    Noop,
+}
+
+/// エンコーダ入力のルーティング結果。
+/// 現状は輝度エンコーダのみを受理する。
+enum EncoderRoutingDecision {
+    BrightnessDelta(i8),
+    Noop,
+}
+
+fn resolve_encoder_twist_policy(idx: u8, delta: i8) -> EncoderRoutingDecision {
+    if idx == ENCODER_BRIGHTNESS {
+        EncoderRoutingDecision::BrightnessDelta(delta)
+    } else {
+        EncoderRoutingDecision::Noop
+    }
+}
+
+fn resolve_button_down_policy(
+    idx: u8,
+    brightness: u8,
+    notification_state: &mut NotificationState,
+    now: Instant,
+) -> ButtonRoutingDecision {
+    // 0-5 ポリシー: 物理ボタン競合時は「通知操作」を最優先し、
+    // 通知スロットとして使われていない場合のみ輝度リセットを扱う。
+    if let Some(action) = notification_state.on_button_down(idx as usize, now) {
+        return ButtonRoutingDecision::Notification(action);
+    }
+
+    if idx == BUTTON_BRIGHTNESS_RESET && brightness != DEFAULT_BRIGHTNESS {
+        return ButtonRoutingDecision::BrightnessReset;
+    }
+
+    ButtonRoutingDecision::Noop
 }
 
 fn handle_device_updates(
@@ -315,30 +432,37 @@ fn handle_device_updates(
 
     for update in updates {
         match update {
-            DeviceStateUpdate::EncoderTwist(idx, delta) if idx == ENCODER_BRIGHTNESS => {
-                let new_b = apply_brightness_delta(brightness.get(), delta);
-                if new_b != brightness.get() {
-                    brightness.set(new_b);
-                    brightness_changed = true;
+            DeviceStateUpdate::EncoderTwist(idx, delta) => {
+                if let EncoderRoutingDecision::BrightnessDelta(delta) =
+                    resolve_encoder_twist_policy(idx, delta)
+                {
+                    let new_b = apply_brightness_delta(brightness.get(), delta);
+                    if new_b != brightness.get() {
+                        brightness.set(new_b);
+                        brightness_changed = true;
+                    }
                 }
             }
             DeviceStateUpdate::ButtonDown(idx) => {
-                if let Some(action) = notification_state
-                    .borrow_mut()
-                    .on_button_down(idx as usize, Instant::now())
-                {
-                    notification_state_changed = true;
-                    if let NotificationPressAction::Execute(payload) = action {
-                        if let Err(e) = execute_payload(&payload) {
-                            warn!(%payload, "通知アクション実行失敗: {e:#}");
+                let decision = {
+                    let mut state = notification_state.borrow_mut();
+                    resolve_button_down_policy(idx, brightness.get(), &mut state, Instant::now())
+                };
+
+                match decision {
+                    ButtonRoutingDecision::Notification(action) => {
+                        notification_state_changed = true;
+                        if let NotificationPressAction::Execute(payload) = action {
+                            if let Err(e) = execute_payload(&payload) {
+                                warn!(%payload, "通知アクション実行失敗: {e:#}");
+                            }
                         }
                     }
-                    continue;
-                }
-
-                if idx == BUTTON_BRIGHTNESS_RESET && brightness.get() != DEFAULT_BRIGHTNESS {
-                    brightness.set(DEFAULT_BRIGHTNESS);
-                    brightness_changed = true;
+                    ButtonRoutingDecision::BrightnessReset => {
+                        brightness.set(DEFAULT_BRIGHTNESS);
+                        brightness_changed = true;
+                    }
+                    ButtonRoutingDecision::Noop => {}
                 }
             }
             _ => {}
@@ -374,6 +498,8 @@ fn apply_brightness_delta(current: u8, delta: i8) -> u8 {
 }
 
 #[allow(dead_code)]
+/// 実行境界で扱うアクション要求。
+/// 通知由来の open と将来の command/ssh-connect を同じ入口に載せる。
 enum ActionRequest {
     OpenTarget(String),
     Command { program: String, args: Vec<String> },
@@ -463,6 +589,8 @@ impl DashboardConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+/// 追加監視対象ファイルの設定。
+/// `layout.toml` 以外に再読み込みトリガーとしたいファイルを列挙する。
 struct WatchConfig {
     #[serde(default)]
     includes: Vec<String>,
@@ -530,6 +658,8 @@ enum DashboardSectionKind {
 
 // ── ConfigManager ─────────────────────────────────────────────────
 
+/// 設定のアクティブ値と監視状態を管理するコンポーネント。
+/// ファイル変更通知を受けてデバウンス付きで設定を再読込する。
 struct ConfigManager {
     config_path: String,
     active: DashboardConfig,
@@ -928,5 +1058,84 @@ includes = ["layout.toml", "./layout.toml", ""]
         let targets = resolve_watch_targets(layout_path.to_str().expect("path str"), &cfg);
         assert_eq!(targets.len(), 1, "重複監視対象が除去されていない");
         assert_eq!(targets[0], normalize_path(&layout_path));
+    }
+
+    #[test]
+    fn test_convert_page_model_to_sections_fallback_when_tiles_empty() {
+        let page = PageDisplayModel {
+            title: "Home".to_string(),
+            overlay_text: Some("overlay".to_string()),
+            tiles: vec![],
+        };
+
+        let sections = convert_page_model_to_sections(&page);
+        assert_eq!(
+            sections.len(),
+            1,
+            "空ページは1セクションへフォールバックする"
+        );
+        assert_eq!(sections[0].label, "Home");
+        assert_eq!(sections[0].value_text, "overlay");
+        assert_eq!(sections[0].history.len(), HISTORY_LEN);
+    }
+
+    #[test]
+    fn test_emphasis_to_history_clamps_range() {
+        let cases = [(-1.0_f32, 0.0_f32), (0.5_f32, 0.5_f32), (2.0_f32, 1.0_f32)];
+        for (input, expected) in cases {
+            let history = emphasis_to_history(input, 4);
+            assert_eq!(history.len(), 4);
+            for value in history {
+                assert!(
+                    (value - expected).abs() < 1e-6,
+                    "input={input} value={value}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_button_policy_prioritizes_notification_over_brightness_reset() {
+        let mut state = NotificationState::new(SlotCompactionMode::KeepGap);
+        state.slots[BUTTON_BRIGHTNESS_RESET as usize] = SlotState::Unread {
+            item: NotificationItem {
+                id: 1,
+                summary: "s".to_string(),
+                body: "b".to_string(),
+                action_payload: "https://example.com".to_string(),
+                created_at: Instant::now(),
+            },
+        };
+
+        let decision = resolve_button_down_policy(
+            BUTTON_BRIGHTNESS_RESET,
+            DEFAULT_BRIGHTNESS + 5,
+            &mut state,
+            Instant::now(),
+        );
+
+        assert!(matches!(
+            decision,
+            ButtonRoutingDecision::Notification(NotificationPressAction::Execute(_))
+        ));
+    }
+
+    #[test]
+    fn test_button_policy_uses_brightness_reset_when_no_notification() {
+        let mut state = NotificationState::new(SlotCompactionMode::KeepGap);
+        let decision = resolve_button_down_policy(
+            BUTTON_BRIGHTNESS_RESET,
+            DEFAULT_BRIGHTNESS + 10,
+            &mut state,
+            Instant::now(),
+        );
+
+        assert!(matches!(decision, ButtonRoutingDecision::BrightnessReset));
+    }
+
+    #[test]
+    fn test_encoder_policy_ignores_non_brightness_encoder() {
+        let decision = resolve_encoder_twist_policy(0, 1);
+        assert!(matches!(decision, EncoderRoutingDecision::Noop));
     }
 }

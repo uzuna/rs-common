@@ -41,7 +41,7 @@ static FONT_DATA: &[u8] = include_bytes!("../assets/NotoSans-Regular.ttf");
 /// 1セクション分の描画データ（所有権あり）
 pub struct SectionSpec {
     /// ラベル文字列 (例: "CPU", "MEM", "LOAD")
-    pub label: &'static str,
+    pub label: String,
     /// フォーマット済みの値文字列 (例: "75.3%", "2.15")
     pub value_text: String,
     /// 正規化済み履歴 0.0..=1.0 (古い順)
@@ -143,7 +143,7 @@ impl Renderer {
             4,
             label_scale,
             &self.font,
-            spec.label,
+            &spec.label,
         );
 
         // ── 値テキスト (中央) ────────────────────────────────────
@@ -177,7 +177,7 @@ mod tests {
         let labels = ["CPU", "MEM", "LOAD", "---"];
         let values = ["75.3%", "48.2%", "2.15", ""];
         std::array::from_fn(|i| SectionSpec {
-            label: labels[i],
+            label: labels[i].to_string(),
             value_text: values[i].to_string(),
             history: histories[i].to_vec(),
         })
@@ -204,7 +204,7 @@ mod tests {
     fn test_render_empty_history() {
         let renderer = make_renderer();
         let sections: [SectionSpec; 4] = std::array::from_fn(|_| SectionSpec {
-            label: "X",
+            label: "X".to_string(),
             value_text: "0.0".to_string(),
             history: vec![],
         });
@@ -229,7 +229,7 @@ mod tests {
         for n in [1usize, 2, 3, 4, 5, 6] {
             let sections: Vec<SectionSpec> = (0..n)
                 .map(|_| SectionSpec {
-                    label: "X",
+                    label: "X".to_string(),
                     value_text: "1.0".to_string(),
                     history: vec![0.5; 10],
                 })

@@ -48,7 +48,7 @@ impl Section {
         let mut history = vec![0.0f32; pad];
         history.extend(self.history.iter().copied());
         SectionSpec {
-            label: self.plugin.label(),
+            label: self.plugin.label().to_string(),
             value_text: self.plugin.value_text(),
             history,
         }

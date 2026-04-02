@@ -160,25 +160,134 @@ fn test_validate_rejects_duplicate_ssh_host_id() {
         source: "hosts.toml".to_string(),
         ..DynamicSshConfig::default()
     });
-    let hosts = SshHostsConfig {
-        hosts: vec![
-            SshHostEntry {
-                id: "cam-01".to_string(),
-                label: "cam01".to_string(),
-                host: "user@192.168.1.10".to_string(),
-                tags: vec![],
-            },
-            SshHostEntry {
-                id: "cam-01".to_string(),
-                label: "cam01-dup".to_string(),
-                host: "user@192.168.1.11".to_string(),
-                tags: vec![],
-            },
-        ],
-    };
+    let hosts = vec![
+        HostEntry {
+            id: "cam-01".to_string(),
+            label: "cam01".to_string(),
+            host: "user@192.168.1.10".to_string(),
+            tags: vec![],
+        },
+        HostEntry {
+            id: "cam-01".to_string(),
+            label: "cam01-dup".to_string(),
+            host: "user@192.168.1.11".to_string(),
+            tags: vec![],
+        },
+    ];
 
-    let report = validate_app_config(&app, Some(&hosts), true);
+    let report = validate_app_config(&app, Some(hosts.as_slice()), true);
     assert_contains_error(&report, "重複した SSH host id");
+}
+
+#[test]
+fn test_load_ssh_hosts_entries_normalizes_values() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let layout = root.join("layout.toml");
+    let hosts = root.join("ssh_hosts.toml");
+
+    std::fs::write(&layout, "[app]\nhome=\"home\"\n").expect("write layout");
+    std::fs::write(
+        &hosts,
+        r#"
+[[hosts]]
+id = " cam-01 "
+label = " Cam01 "
+host = " user@192.168.1.10 "
+tags = [" edge ", "", " field "]
+"#,
+    )
+    .expect("write hosts");
+
+    let loaded = load_ssh_hosts_entries(
+        layout.to_str().expect("layout path"),
+        hosts.to_str().expect("hosts path"),
+    )
+    .expect("load hosts");
+
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].id, "cam-01");
+    assert_eq!(loaded[0].label, "Cam01");
+    assert_eq!(loaded[0].host, "user@192.168.1.10");
+    assert_eq!(loaded[0].tags, vec!["edge".to_string(), "field".to_string()]);
+}
+
+#[test]
+fn test_build_ssh_page_build_input_from_dynamic_config() {
+    let mut app = minimal_app();
+    app.dynamic.ssh_hosts = Some(DynamicSshConfig {
+        source: "ssh_hosts.toml".to_string(),
+        page_size: 4,
+        page_id_prefix: "ssh_hosts".to_string(),
+        terminal: vec!["/usr/bin/terminator".to_string()],
+        ssh_template: "ssh {host}".to_string(),
+    });
+
+    let input = build_ssh_page_build_input(&app).expect("build input");
+    assert_eq!(input.page_size, 4);
+    assert_eq!(input.page_id_prefix, "ssh_hosts");
+    assert_eq!(input.terminal, vec!["/usr/bin/terminator".to_string()]);
+    assert_eq!(input.ssh_template, "ssh {host}");
+}
+
+#[test]
+fn test_build_dynamic_ssh_pages_chunks_hosts_and_adds_nav_items() {
+    let input = SshPageBuildInput {
+        page_size: 2,
+        page_id_prefix: "ssh_hosts".to_string(),
+        terminal: vec!["/usr/bin/terminator".to_string()],
+        ssh_template: "ssh {host}".to_string(),
+    };
+    let hosts = vec![
+        HostEntry {
+            id: "cam-01".to_string(),
+            label: "Cam01".to_string(),
+            host: "user@192.168.1.10".to_string(),
+            tags: vec![],
+        },
+        HostEntry {
+            id: "cam-02".to_string(),
+            label: "Cam02".to_string(),
+            host: "user@192.168.1.11".to_string(),
+            tags: vec![],
+        },
+        HostEntry {
+            id: "cam-03".to_string(),
+            label: "Cam03".to_string(),
+            host: "user@192.168.1.12".to_string(),
+            tags: vec![],
+        },
+    ];
+
+    let pages = build_dynamic_ssh_pages(&input, &hosts);
+    assert_eq!(pages.len(), 2);
+    assert_eq!(pages[0].id, "ssh_hosts");
+    assert_eq!(pages[1].id, "ssh_hosts_2");
+
+    let has_next = pages[0]
+        .items
+        .iter()
+        .any(|item| matches!(item, PageItemConfig::Nav { label, target, .. } if label == "Next" && target == "ssh_hosts_2"));
+    assert!(has_next, "first page should contain Next nav item");
+
+    let has_prev = pages[1]
+        .items
+        .iter()
+        .any(|item| matches!(item, PageItemConfig::Nav { label, target, .. } if label == "Prev" && target == "ssh_hosts"));
+    assert!(has_prev, "second page should contain Prev nav item");
+
+    let ssh_item_count_page1 = pages[0]
+        .items
+        .iter()
+        .filter(|item| matches!(item, PageItemConfig::SshConnect { .. }))
+        .count();
+    let ssh_item_count_page2 = pages[1]
+        .items
+        .iter()
+        .filter(|item| matches!(item, PageItemConfig::SshConnect { .. }))
+        .count();
+    assert_eq!(ssh_item_count_page1, 2);
+    assert_eq!(ssh_item_count_page2, 1);
 }
 
 #[test]

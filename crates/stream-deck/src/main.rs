@@ -202,10 +202,24 @@ fn load_runtime_config(config_path: &str) -> anyhow::Result<RuntimeConfig> {
         info!(reason = %reason, "新設定モデル: SSH ページを無効化します");
     }
 
+    let mut pages = bundle.app.pages.clone();
+    if bundle.report.ssh_enabled {
+        if let (Some(input), Some(hosts)) = (
+            config::build_ssh_page_build_input(&bundle.app),
+            bundle.ssh_hosts.as_deref(),
+        ) {
+            let generated = config::build_dynamic_ssh_pages(&input, hosts);
+            if !generated.is_empty() {
+                info!(count = generated.len(), "動的 SSH ページを生成しました");
+                pages.extend(generated);
+            }
+        }
+    }
+
     Ok(RuntimeConfig {
         sections: bundle.app.dashboard.sections,
         home_page_id: bundle.app.app.home,
-        pages: bundle.app.pages,
+        pages,
         watch_targets: bundle.watch_targets,
     })
 }
@@ -323,7 +337,7 @@ fn run_loop(
             );
         }
 
-        // LCD はメトリクス表示を維持
+        // LCD は常にメトリクス表示を維持する。
         let frame = build_legacy_display_frame(sections);
         let image = render_display_frame(renderer, frame);
 
@@ -409,42 +423,29 @@ fn build_legacy_display_frame(sections: &[Section]) -> DisplayFrame {
 }
 
 fn build_page_display_frame(config: &RuntimeConfig, page_state: &PageState) -> DisplayFrame {
-    let page = config
+    let assignments = resolve_button_assignments(config, page_state);
+
+    let title = config
         .pages
         .iter()
         .find(|p| p.id == page_state.current_page_id)
-        .map(|p| {
-            let tiles: Vec<PageTile> = p
-                .items
-                .iter()
-                .map(|item| PageTile {
-                    label: match item {
-                        config::PageItemConfig::Nav { label, .. } => label.clone(),
-                        config::PageItemConfig::Command { label, .. } => label.clone(),
-                        config::PageItemConfig::Back { label, .. } => {
-                            if label.is_empty() {
-                                "Back".to_string()
-                            } else {
-                                label.clone()
-                            }
-                        }
-                    },
-                    value_text: String::new(),
-                    emphasis: 0.0,
-                })
-                .collect();
+        .map(|p| p.title.clone())
+        .unwrap_or_else(|| "---".to_string());
 
-            PageDisplayModel {
-                title: p.title.clone(),
-                overlay_text: None,
-                tiles,
-            }
+    let tiles: Vec<PageTile> = assignments
+        .into_iter()
+        .map(|assignment| PageTile {
+            label: assignment.label,
+            value_text: String::new(),
+            emphasis: 0.0,
         })
-        .unwrap_or_else(|| PageDisplayModel {
-            title: "---".to_string(),
-            overlay_text: None,
-            tiles: Vec::new(),
-        });
+        .collect();
+
+    let page = PageDisplayModel {
+        title,
+        overlay_text: None,
+        tiles,
+    };
 
     DisplayFrame::Page(page)
 }
@@ -512,12 +513,24 @@ enum EncoderRoutingDecision {
     Noop,
 }
 
+/// エンコーダの責務割り当て。
+/// Step 3-6 ではページ操作を未接続とし、右端のみ輝度操作に固定する。
+enum EncoderRole {
+    ReservedNoop,
+    Brightness,
+}
+
 /// 現在ページ上のボタン入力解釈結果。
 #[derive(Clone)]
 enum PageButtonDecision {
     Navigate(String),
     Back,
     Command(Vec<String>),
+    SshConnect {
+        host: String,
+        terminal: Vec<String>,
+        ssh_template: String,
+    },
     Noop,
 }
 
@@ -612,8 +625,24 @@ fn page_item_priority(item: &config::PageItemConfig) -> i32 {
     match item {
         config::PageItemConfig::Nav { priority, .. }
         | config::PageItemConfig::Command { priority, .. }
-        | config::PageItemConfig::Back { priority, .. } => {
+        | config::PageItemConfig::Back { priority, .. }
+        | config::PageItemConfig::SshConnect { priority, .. } => {
             priority.unwrap_or(DEFAULT_ITEM_PRIORITY)
+        }
+    }
+}
+
+fn page_item_label(item: &config::PageItemConfig) -> String {
+    match item {
+        config::PageItemConfig::Nav { label, .. } => label.clone(),
+        config::PageItemConfig::Command { label, .. } => label.clone(),
+        config::PageItemConfig::SshConnect { label, .. } => label.clone(),
+        config::PageItemConfig::Back { label, .. } => {
+            if label.is_empty() {
+                "Back".to_string()
+            } else {
+                label.clone()
+            }
         }
     }
 }
@@ -635,8 +664,8 @@ fn resolve_button_assignments(
         .into_iter()
         .take(BUTTON_COUNT)
         .map(|(_source_idx, item)| match item {
-            config::PageItemConfig::Nav { label, target, .. } => ResolvedButtonAssignment {
-                label: label.clone(),
+            config::PageItemConfig::Nav { target, .. } => ResolvedButtonAssignment {
+                label: page_item_label(item),
                 color: AssignedButtonColor::Nav,
                 decision: if page_exists(config, target) {
                     PageButtonDecision::Navigate(target.clone())
@@ -644,18 +673,32 @@ fn resolve_button_assignments(
                     PageButtonDecision::Noop
                 },
             },
-            config::PageItemConfig::Back { label, .. } => ResolvedButtonAssignment {
-                label: label.clone(),
+            config::PageItemConfig::Back { .. } => ResolvedButtonAssignment {
+                label: page_item_label(item),
                 color: AssignedButtonColor::Back,
                 decision: PageButtonDecision::Back,
             },
-            config::PageItemConfig::Command { label, command, .. } => ResolvedButtonAssignment {
-                label: label.clone(),
+            config::PageItemConfig::Command { command, .. } => ResolvedButtonAssignment {
+                label: page_item_label(item),
                 color: AssignedButtonColor::Command,
                 decision: if command.is_empty() {
                     PageButtonDecision::Noop
                 } else {
                     PageButtonDecision::Command(command.clone())
+                },
+            },
+            config::PageItemConfig::SshConnect {
+                host,
+                terminal,
+                ssh_template,
+                ..
+            } => ResolvedButtonAssignment {
+                label: page_item_label(item),
+                color: AssignedButtonColor::Command,
+                decision: PageButtonDecision::SshConnect {
+                    host: host.clone(),
+                    terminal: terminal.clone(),
+                    ssh_template: ssh_template.clone(),
                 },
             },
         })
@@ -673,11 +716,18 @@ fn resolve_page_button_decision(
         .unwrap_or(PageButtonDecision::Noop)
 }
 
+fn resolve_encoder_role(idx: u8) -> Option<EncoderRole> {
+    match idx {
+        ENCODER_BRIGHTNESS => Some(EncoderRole::Brightness),
+        0..=2 => Some(EncoderRole::ReservedNoop),
+        _ => None,
+    }
+}
+
 fn resolve_encoder_twist_policy(idx: u8, delta: i8) -> EncoderRoutingDecision {
-    if idx == ENCODER_BRIGHTNESS {
-        EncoderRoutingDecision::BrightnessDelta(delta)
-    } else {
-        EncoderRoutingDecision::Noop
+    match resolve_encoder_role(idx) {
+        Some(EncoderRole::Brightness) => EncoderRoutingDecision::BrightnessDelta(delta),
+        Some(EncoderRole::ReservedNoop) | None => EncoderRoutingDecision::Noop,
     }
 }
 
@@ -763,6 +813,20 @@ fn handle_device_updates(
                                     warn!("ページ command 実行失敗: {e:#}");
                                 }
                             }
+                            PageButtonDecision::SshConnect {
+                                host,
+                                terminal,
+                                ssh_template,
+                            } => {
+                                let action = ActionRequest::SshConnect {
+                                    host,
+                                    terminal,
+                                    ssh_template,
+                                };
+                                if let Err(e) = execute_action(action) {
+                                    warn!("ページ ssh-connect 実行失敗: {e:#}");
+                                }
+                            }
                             PageButtonDecision::Noop => {}
                         }
                     }
@@ -806,8 +870,15 @@ fn apply_brightness_delta(current: u8, delta: i8) -> u8 {
 /// 通知由来の open と将来の command/ssh-connect を同じ入口に載せる。
 enum ActionRequest {
     OpenTarget(String),
-    Command { program: String, args: Vec<String> },
-    SshConnect { host: String, terminal: String },
+    Command {
+        program: String,
+        args: Vec<String>,
+    },
+    SshConnect {
+        host: String,
+        terminal: Vec<String>,
+        ssh_template: String,
+    },
 }
 
 fn execute_action(action: ActionRequest) -> anyhow::Result<()> {
@@ -829,8 +900,16 @@ fn execute_action(action: ActionRequest) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        ActionRequest::SshConnect { host, terminal } => {
-            anyhow::bail!("SSH 接続アクションは未実装です: host={host}, terminal={terminal}")
+        ActionRequest::SshConnect {
+            host,
+            terminal,
+            ssh_template,
+        } => {
+            anyhow::bail!(
+                "SSH 接続アクションは未実装です: host={host}, terminal={:?}, ssh_template={}",
+                terminal,
+                ssh_template
+            )
         }
     }
 }
@@ -1207,6 +1286,29 @@ mod tests {
     fn test_encoder_policy_ignores_non_brightness_encoder() {
         let decision = resolve_encoder_twist_policy(0, 1);
         assert!(matches!(decision, EncoderRoutingDecision::Noop));
+    }
+
+    #[test]
+    fn test_encoder_policy_accepts_brightness_encoder_only() {
+        let cases = [
+            (0_u8, false),
+            (1_u8, false),
+            (2_u8, false),
+            (ENCODER_BRIGHTNESS, true),
+            (9_u8, false),
+        ];
+
+        for (idx, should_brightness) in cases {
+            let decision = resolve_encoder_twist_policy(idx, 1);
+            if should_brightness {
+                assert!(matches!(
+                    decision,
+                    EncoderRoutingDecision::BrightnessDelta(1)
+                ));
+            } else {
+                assert!(matches!(decision, EncoderRoutingDecision::Noop));
+            }
+        }
     }
 
     #[test]

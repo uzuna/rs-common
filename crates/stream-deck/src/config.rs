@@ -103,6 +103,17 @@ pub enum PageItemConfig {
         #[serde(default)]
         priority: Option<i32>,
     },
+    #[serde(rename = "ssh-connect")]
+    SshConnect {
+        label: String,
+        host: String,
+        #[serde(default)]
+        terminal: Vec<String>,
+        #[serde(default = "default_ssh_template")]
+        ssh_template: String,
+        #[serde(default)]
+        priority: Option<i32>,
+    },
 }
 
 /// priority の推奨レンジ。
@@ -114,7 +125,8 @@ fn page_item_priority(item: &PageItemConfig) -> Option<i32> {
     match item {
         PageItemConfig::Nav { priority, .. }
         | PageItemConfig::Command { priority, .. }
-        | PageItemConfig::Back { priority, .. } => *priority,
+        | PageItemConfig::Back { priority, .. }
+        | PageItemConfig::SshConnect { priority, .. } => *priority,
     }
 }
 
@@ -175,6 +187,24 @@ pub struct SshHostEntry {
     pub tags: Vec<String>,
 }
 
+/// Step 5 でページ生成前に扱う正規化済みホストエントリ。
+/// TOML パース用の構造体とは分離し、動的ページ生成入力の中間表現として使う。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostEntry {
+    pub id: String,
+    pub label: String,
+    pub host: String,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SshPageBuildInput {
+    pub page_size: usize,
+    pub page_id_prefix: String,
+    pub terminal: Vec<String>,
+    pub ssh_template: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ConfigValidationReport {
     pub errors: Vec<String>,
@@ -192,7 +222,7 @@ impl ConfigValidationReport {
 #[derive(Debug, Clone)]
 pub struct AppConfigBundle {
     pub app: AppConfig,
-    pub ssh_hosts: Option<SshHostsConfig>,
+    pub ssh_hosts: Option<Vec<HostEntry>>,
     pub report: ConfigValidationReport,
     pub watch_targets: Vec<PathBuf>,
 }
@@ -211,24 +241,16 @@ impl AppConfigBundle {
         let mut ssh_hosts = None;
         if let Some(ssh) = &app.dynamic.ssh_hosts {
             if !ssh.source.trim().is_empty() {
-                let hosts_path = resolve_child_path(config_path, &ssh.source);
-                let hosts_text = std::fs::read_to_string(&hosts_path).map_err(|e| {
-                    anyhow::anyhow!(
-                        "SSH ホスト設定を読めませんでした path={}: {e}",
-                        hosts_path.display()
-                    )
-                })?;
-                let parsed: SshHostsConfig = toml::from_str(&hosts_text).map_err(|e| {
-                    anyhow::anyhow!(
-                        "SSH ホスト設定の TOML パースに失敗しました path={}: {e}",
-                        hosts_path.display()
-                    )
-                })?;
-                ssh_hosts = Some(parsed);
+                let entries = load_ssh_hosts_entries(config_path, &ssh.source)?;
+                ssh_hosts = Some(entries);
             }
         }
 
-        let report = validate_app_config(&app, ssh_hosts.as_ref(), terminal_title_capable);
+        let report = validate_app_config(
+            &app,
+            ssh_hosts.as_ref().map(Vec::as_slice),
+            terminal_title_capable,
+        );
 
         Ok(Self {
             app,
@@ -241,7 +263,7 @@ impl AppConfigBundle {
 
 pub fn validate_app_config(
     app: &AppConfig,
-    ssh_hosts: Option<&SshHostsConfig>,
+    ssh_hosts: Option<&[HostEntry]>,
     terminal_title_capable: bool,
 ) -> ConfigValidationReport {
     let mut report = ConfigValidationReport::default();
@@ -285,6 +307,18 @@ pub fn validate_app_config(
                     }
                 }
                 PageItemConfig::Back { .. } => {}
+                PageItemConfig::SshConnect { host, terminal, .. } => {
+                    if host.trim().is_empty() {
+                        report
+                            .errors
+                            .push(format!("page={id}: ssh-connect host が空です"));
+                    }
+                    if terminal.is_empty() || terminal[0].trim().is_empty() {
+                        report.warnings.push(format!(
+                            "page={id}: ssh-connect terminal が未指定のため実行時解決に依存します"
+                        ));
+                    }
+                }
             }
 
             if let Some(priority) = page_item_priority(item) {
@@ -336,6 +370,14 @@ pub fn validate_app_config(
                 .errors
                 .push("dynamic.ssh_hosts.source が空です".to_string());
         }
+        if ssh.page_id_prefix.trim().is_empty() {
+            report
+                .errors
+                .push("dynamic.ssh_hosts.page_id_prefix が空です".to_string());
+        } else {
+            // 動的 SSH ページ先頭への nav を静的検証で許容する。
+            page_ids.insert(ssh.page_id_prefix.trim().to_string());
+        }
 
         if terminal_title_capable {
             report.ssh_enabled = true;
@@ -350,7 +392,7 @@ pub fn validate_app_config(
 
         if let Some(hosts) = ssh_hosts {
             let mut host_ids = BTreeSet::new();
-            for host in &hosts.hosts {
+            for host in hosts {
                 let id = host.id.trim();
                 if id.is_empty() {
                     report.errors.push("SSH host id が空です".to_string());
@@ -371,6 +413,134 @@ pub fn validate_app_config(
     }
 
     report
+}
+
+/// `ssh_hosts.toml` を読み込み、動的ページ生成で使う中間表現へ正規化する。
+pub fn load_ssh_hosts_entries(config_path: &str, source: &str) -> anyhow::Result<Vec<HostEntry>> {
+    let hosts_path = resolve_child_path(config_path, source);
+    let hosts_text = std::fs::read_to_string(&hosts_path).map_err(|e| {
+        anyhow::anyhow!(
+            "SSH ホスト設定を読めませんでした path={}: {e}",
+            hosts_path.display()
+        )
+    })?;
+    let parsed: SshHostsConfig = toml::from_str(&hosts_text).map_err(|e| {
+        anyhow::anyhow!(
+            "SSH ホスト設定の TOML パースに失敗しました path={}: {e}",
+            hosts_path.display()
+        )
+    })?;
+
+    Ok(normalize_ssh_hosts(parsed))
+}
+
+fn normalize_ssh_hosts(raw: SshHostsConfig) -> Vec<HostEntry> {
+    raw.hosts
+        .into_iter()
+        .map(|host| HostEntry {
+            id: host.id.trim().to_string(),
+            label: {
+                let label = host.label.trim();
+                if label.is_empty() {
+                    host.id.trim().to_string()
+                } else {
+                    label.to_string()
+                }
+            },
+            host: host.host.trim().to_string(),
+            tags: {
+                let mut seen = BTreeSet::new();
+                let mut tags = Vec::new();
+                for tag in host.tags {
+                    let normalized = tag.trim().to_string();
+                    if normalized.is_empty() {
+                        continue;
+                    }
+                    if seen.insert(normalized.clone()) {
+                        tags.push(normalized);
+                    }
+                }
+                tags
+            },
+        })
+        .collect()
+}
+
+pub fn build_ssh_page_build_input(app: &AppConfig) -> Option<SshPageBuildInput> {
+    let ssh = app.dynamic.ssh_hosts.as_ref()?;
+    if ssh.source.trim().is_empty() {
+        return None;
+    }
+    let page_id_prefix = ssh.page_id_prefix.trim();
+    if page_id_prefix.is_empty() {
+        return None;
+    }
+
+    Some(SshPageBuildInput {
+        page_size: ssh.page_size,
+        page_id_prefix: page_id_prefix.to_string(),
+        terminal: ssh.terminal.clone(),
+        ssh_template: ssh.ssh_template.clone(),
+    })
+}
+
+pub fn build_dynamic_ssh_pages(input: &SshPageBuildInput, hosts: &[HostEntry]) -> Vec<PageConfig> {
+    if input.page_size == 0 || hosts.is_empty() {
+        return Vec::new();
+    }
+
+    let chunk_count = hosts.len().div_ceil(input.page_size);
+    let page_ids: Vec<String> = (0..chunk_count)
+        .map(|idx| {
+            if idx == 0 {
+                input.page_id_prefix.clone()
+            } else {
+                format!("{}_{}", input.page_id_prefix, idx + 1)
+            }
+        })
+        .collect();
+
+    let mut pages = Vec::with_capacity(chunk_count);
+    for (page_idx, chunk) in hosts.chunks(input.page_size).enumerate() {
+        let mut items: Vec<PageItemConfig> = Vec::new();
+
+        items.push(PageItemConfig::Back {
+            label: "Back".to_string(),
+            priority: Some(-100),
+        });
+        if page_idx > 0 {
+            items.push(PageItemConfig::Nav {
+                label: "Prev".to_string(),
+                target: page_ids[page_idx - 1].clone(),
+                priority: Some(-90),
+            });
+        }
+        if page_idx + 1 < page_ids.len() {
+            items.push(PageItemConfig::Nav {
+                label: "Next".to_string(),
+                target: page_ids[page_idx + 1].clone(),
+                priority: Some(-80),
+            });
+        }
+
+        for host in chunk {
+            items.push(PageItemConfig::SshConnect {
+                label: host.label.clone(),
+                host: host.host.clone(),
+                terminal: input.terminal.clone(),
+                ssh_template: input.ssh_template.clone(),
+                priority: Some(0),
+            });
+        }
+
+        pages.push(PageConfig {
+            id: page_ids[page_idx].clone(),
+            title: format!("SSH {} / {}", page_idx + 1, page_ids.len()),
+            items,
+        });
+    }
+
+    pages
 }
 
 pub fn resolve_watch_targets(config_path: &str, app: &AppConfig) -> Vec<PathBuf> {

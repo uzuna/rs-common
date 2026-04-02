@@ -88,15 +88,34 @@ pub enum PageItemConfig {
     Nav {
         label: String,
         target: String,
+        #[serde(default)]
+        priority: Option<i32>,
     },
     Command {
         label: String,
         command: Vec<String>,
+        #[serde(default)]
+        priority: Option<i32>,
     },
     Back {
         #[serde(default)]
         label: String,
+        #[serde(default)]
+        priority: Option<i32>,
     },
+}
+
+/// priority の推奨レンジ。
+/// この範囲外もパースは許可するが、設定検証で警告を返す。
+pub const PAGE_ITEM_PRIORITY_RECOMMENDED_MIN: i32 = -100;
+pub const PAGE_ITEM_PRIORITY_RECOMMENDED_MAX: i32 = 100;
+
+fn page_item_priority(item: &PageItemConfig) -> Option<i32> {
+    match item {
+        PageItemConfig::Nav { priority, .. }
+        | PageItemConfig::Command { priority, .. }
+        | PageItemConfig::Back { priority, .. } => *priority,
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -251,7 +270,7 @@ pub fn validate_app_config(
             report.errors.push(format!("重複した page id です: {id}"));
         }
 
-        for item in &page.items {
+        for (item_idx, item) in page.items.iter().enumerate() {
             match item {
                 PageItemConfig::Nav { target, .. } => {
                     if target.trim().is_empty() {
@@ -266,6 +285,19 @@ pub fn validate_app_config(
                     }
                 }
                 PageItemConfig::Back { .. } => {}
+            }
+
+            if let Some(priority) = page_item_priority(item) {
+                if !(PAGE_ITEM_PRIORITY_RECOMMENDED_MIN..=PAGE_ITEM_PRIORITY_RECOMMENDED_MAX)
+                    .contains(&priority)
+                {
+                    report.warnings.push(format!(
+                        "page={id} item[{item_idx}] の priority={} は推奨レンジ外です ({}..={})",
+                        priority,
+                        PAGE_ITEM_PRIORITY_RECOMMENDED_MIN,
+                        PAGE_ITEM_PRIORITY_RECOMMENDED_MAX
+                    ));
+                }
             }
         }
     }

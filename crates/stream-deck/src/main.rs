@@ -421,7 +421,7 @@ fn build_page_display_frame(config: &RuntimeConfig, page_state: &PageState) -> D
                     label: match item {
                         config::PageItemConfig::Nav { label, .. } => label.clone(),
                         config::PageItemConfig::Command { label, .. } => label.clone(),
-                        config::PageItemConfig::Back { label } => {
+                        config::PageItemConfig::Back { label, .. } => {
                             if label.is_empty() {
                                 "Back".to_string()
                             } else {
@@ -513,6 +513,7 @@ enum EncoderRoutingDecision {
 }
 
 /// 現在ページ上のボタン入力解釈結果。
+#[derive(Clone)]
 enum PageButtonDecision {
     Navigate(String),
     Back,
@@ -521,6 +522,7 @@ enum PageButtonDecision {
 }
 
 /// 機能割り当てボタンを視認しやすくするための色。
+#[derive(Clone, Copy)]
 enum AssignedButtonColor {
     Nav,
     Back,
@@ -596,47 +598,79 @@ fn current_page_items<'a>(
         .unwrap_or(&[])
 }
 
+/// ボタン 1 つ分の解決済み割当。
+/// 入力処理と描画処理の両方で同じ結果を参照して、表示と動作の不一致を防ぐ。
+struct ResolvedButtonAssignment {
+    label: String,
+    color: AssignedButtonColor,
+    decision: PageButtonDecision,
+}
+
+const DEFAULT_ITEM_PRIORITY: i32 = 0;
+
+fn page_item_priority(item: &config::PageItemConfig) -> i32 {
+    match item {
+        config::PageItemConfig::Nav { priority, .. }
+        | config::PageItemConfig::Command { priority, .. }
+        | config::PageItemConfig::Back { priority, .. } => {
+            priority.unwrap_or(DEFAULT_ITEM_PRIORITY)
+        }
+    }
+}
+
+fn resolve_button_assignments(
+    config: &RuntimeConfig,
+    page_state: &PageState,
+) -> Vec<ResolvedButtonAssignment> {
+    let mut indexed_items: Vec<(usize, &config::PageItemConfig)> =
+        current_page_items(config, page_state)
+            .iter()
+            .enumerate()
+            .collect();
+
+    // priority 昇順 + 設定記述順で安定化して、先頭からボタンへ割り当てる。
+    indexed_items.sort_by_key(|(source_idx, item)| (page_item_priority(item), *source_idx));
+
+    indexed_items
+        .into_iter()
+        .take(BUTTON_COUNT)
+        .map(|(_source_idx, item)| match item {
+            config::PageItemConfig::Nav { label, target, .. } => ResolvedButtonAssignment {
+                label: label.clone(),
+                color: AssignedButtonColor::Nav,
+                decision: if page_exists(config, target) {
+                    PageButtonDecision::Navigate(target.clone())
+                } else {
+                    PageButtonDecision::Noop
+                },
+            },
+            config::PageItemConfig::Back { label, .. } => ResolvedButtonAssignment {
+                label: label.clone(),
+                color: AssignedButtonColor::Back,
+                decision: PageButtonDecision::Back,
+            },
+            config::PageItemConfig::Command { label, command, .. } => ResolvedButtonAssignment {
+                label: label.clone(),
+                color: AssignedButtonColor::Command,
+                decision: if command.is_empty() {
+                    PageButtonDecision::Noop
+                } else {
+                    PageButtonDecision::Command(command.clone())
+                },
+            },
+        })
+        .collect()
+}
+
 fn resolve_page_button_decision(
     config: &RuntimeConfig,
     page_state: &PageState,
     idx: u8,
 ) -> PageButtonDecision {
-    let items = current_page_items(config, page_state);
-    let Some(item) = items.get(idx as usize) else {
-        return PageButtonDecision::Noop;
-    };
-
-    match item {
-        config::PageItemConfig::Nav { target, .. } => {
-            if page_exists(config, target) {
-                PageButtonDecision::Navigate(target.clone())
-            } else {
-                PageButtonDecision::Noop
-            }
-        }
-        config::PageItemConfig::Back { .. } => PageButtonDecision::Back,
-        config::PageItemConfig::Command { command, .. } => {
-            if command.is_empty() {
-                PageButtonDecision::Noop
-            } else {
-                PageButtonDecision::Command(command.clone())
-            }
-        }
-    }
-}
-
-fn assigned_button_color(
-    config: &RuntimeConfig,
-    page_state: &PageState,
-    idx: usize,
-) -> Option<AssignedButtonColor> {
-    let items = current_page_items(config, page_state);
-    let item = items.get(idx)?;
-    match item {
-        config::PageItemConfig::Nav { .. } => Some(AssignedButtonColor::Nav),
-        config::PageItemConfig::Back { .. } => Some(AssignedButtonColor::Back),
-        config::PageItemConfig::Command { .. } => Some(AssignedButtonColor::Command),
-    }
+    resolve_button_assignments(config, page_state)
+        .get(idx as usize)
+        .map(|assignment| assignment.decision.clone())
+        .unwrap_or(PageButtonDecision::Noop)
 }
 
 fn resolve_encoder_twist_policy(idx: u8, delta: i8) -> EncoderRoutingDecision {
@@ -837,23 +871,14 @@ fn refresh_button_display(
     runtime_config: &RuntimeConfig,
     page_state: &PageState,
 ) -> anyhow::Result<()> {
-    let items = current_page_items(runtime_config, page_state);
+    let assignments = resolve_button_assignments(runtime_config, page_state);
 
     for idx in 0..BUTTON_COUNT {
         if matches!(state.slots[idx], SlotState::Empty) {
             // 割り当てあり: ラベル画像を描画
-            if let Some(color_kind) = assigned_button_color(runtime_config, page_state, idx) {
-                let label = items
-                    .get(idx)
-                    .and_then(|item| match item {
-                        config::PageItemConfig::Nav { label, .. } => Some(label.as_str()),
-                        config::PageItemConfig::Command { label, .. } => Some(label.as_str()),
-                        config::PageItemConfig::Back { label } => Some(label.as_str()),
-                    })
-                    .unwrap_or("");
-
-                let bg_color = color_kind.to_rgb();
-                let button_img = draw_button_with_label(label, bg_color)?;
+            if let Some(assignment) = assignments.get(idx) {
+                let bg_color = assignment.color.to_rgb();
+                let button_img = draw_button_with_label(&assignment.label, bg_color)?;
                 hw.set_button_image(idx as u8, button_img)?;
             } else {
                 // 割り当てなし: 黒
@@ -1068,6 +1093,19 @@ fn normalize_path(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
+    fn runtime_with_items(items: Vec<config::PageItemConfig>) -> RuntimeConfig {
+        RuntimeConfig {
+            sections: vec![],
+            home_page_id: "home".to_string(),
+            pages: vec![config::PageConfig {
+                id: "home".to_string(),
+                title: "Home".to_string(),
+                items,
+            }],
+            watch_targets: vec![],
+        }
+    }
+
     /// 値域確認: apply_brightness_delta は範囲外をクランプし、ステップを正しく適用する
     #[test]
     fn test_brightness_adjustment() {
@@ -1169,5 +1207,73 @@ mod tests {
     fn test_encoder_policy_ignores_non_brightness_encoder() {
         let decision = resolve_encoder_twist_policy(0, 1);
         assert!(matches!(decision, EncoderRoutingDecision::Noop));
+    }
+
+    #[test]
+    fn test_resolve_button_assignments_keeps_source_order_when_priority_absent() {
+        let cfg = runtime_with_items(vec![
+            config::PageItemConfig::Nav {
+                label: "Apps".to_string(),
+                target: "home".to_string(),
+                priority: None,
+            },
+            config::PageItemConfig::Command {
+                label: "Terminal".to_string(),
+                command: vec!["/usr/bin/true".to_string()],
+                priority: None,
+            },
+            config::PageItemConfig::Back {
+                label: "Back".to_string(),
+                priority: None,
+            },
+        ]);
+        let page_state = PageState {
+            current_page_id: "home".to_string(),
+            history: vec![],
+        };
+
+        let assignments = resolve_button_assignments(&cfg, &page_state);
+        let labels: Vec<&str> = assignments.iter().map(|a| a.label.as_str()).collect();
+
+        assert_eq!(labels, vec!["Apps", "Terminal", "Back"]);
+    }
+
+    #[test]
+    fn test_resolve_button_assignments_sorts_by_priority_then_source_order() {
+        let cfg = runtime_with_items(vec![
+            config::PageItemConfig::Command {
+                label: "Late".to_string(),
+                command: vec!["/usr/bin/true".to_string()],
+                priority: Some(20),
+            },
+            config::PageItemConfig::Back {
+                label: "Back".to_string(),
+                priority: Some(-20),
+            },
+            config::PageItemConfig::Nav {
+                label: "Apps".to_string(),
+                target: "home".to_string(),
+                priority: None,
+            },
+            config::PageItemConfig::Command {
+                label: "MidA".to_string(),
+                command: vec!["/usr/bin/true".to_string()],
+                priority: Some(10),
+            },
+            config::PageItemConfig::Command {
+                label: "MidB".to_string(),
+                command: vec!["/usr/bin/true".to_string()],
+                priority: Some(10),
+            },
+        ]);
+        let page_state = PageState {
+            current_page_id: "home".to_string(),
+            history: vec![],
+        };
+
+        let assignments = resolve_button_assignments(&cfg, &page_state);
+        let labels: Vec<&str> = assignments.iter().map(|a| a.label.as_str()).collect();
+
+        assert_eq!(labels, vec!["Back", "Apps", "MidA", "MidB", "Late"]);
     }
 }

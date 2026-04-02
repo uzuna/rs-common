@@ -27,6 +27,14 @@ fn assert_contains_error(report: &ConfigValidationReport, expected: &str) {
     );
 }
 
+fn assert_contains_warning(report: &ConfigValidationReport, expected: &str) {
+    assert!(
+        report.warnings.iter().any(|w| w.contains(expected)),
+        "expected warning keyword not found: {expected}, warnings={:?}",
+        report.warnings
+    );
+}
+
 #[test]
 fn test_parse_app_config_with_pages() {
     let text = r#"
@@ -93,6 +101,7 @@ fn test_validate_rejects_missing_nav_target() {
     app.pages[0].items = vec![PageItemConfig::Nav {
         label: "go".to_string(),
         target: "missing".to_string(),
+        priority: None,
     }];
 
     let report = validate_app_config(&app, None, true);
@@ -126,6 +135,7 @@ fn test_validate_error_cases_table() {
     empty_command.pages[0].items = vec![PageItemConfig::Command {
         label: "bad".to_string(),
         command: vec![],
+        priority: None,
     }];
 
     let mut missing_home = minimal_app();
@@ -169,6 +179,19 @@ fn test_validate_rejects_duplicate_ssh_host_id() {
 
     let report = validate_app_config(&app, Some(&hosts), true);
     assert_contains_error(&report, "重複した SSH host id");
+}
+
+#[test]
+fn test_validate_warns_out_of_range_item_priority() {
+    let mut app = minimal_app();
+    app.pages[0].items = vec![PageItemConfig::Back {
+        label: "Back".to_string(),
+        priority: Some(PAGE_ITEM_PRIORITY_RECOMMENDED_MAX + 1),
+    }];
+
+    let report = validate_app_config(&app, None, true);
+    assert_contains_warning(&report, "priority=");
+    assert_contains_warning(&report, "推奨レンジ外");
 }
 
 #[test]

@@ -15,6 +15,8 @@ mod renderer;
 mod section;
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -222,8 +224,6 @@ fn run_loop(
     refresh_notification_buttons(hw, &notification_state.borrow())?;
 
     loop {
-        let mut notification_state_changed = false;
-
         if config_manager.poll_reload() {
             info!("レイアウトをリロードしました");
             *sections = build_sections(
@@ -234,15 +234,8 @@ fn run_loop(
             );
         }
 
-        if drain_notifications(notification_source, &mut notification_state.borrow_mut())? {
-            notification_state_changed = true;
-        }
-        if notification_state
-            .borrow_mut()
-            .expire_pending(Instant::now())
-        {
-            notification_state_changed = true;
-        }
+        let notification_state_changed =
+            poll_notification_state(notification_source, notification_state)?;
         if notification_state_changed {
             refresh_notification_buttons(hw, &notification_state.borrow())?;
         }
@@ -286,51 +279,11 @@ fn run_loop(
                 .read(Some(poll_timeout))
                 .map_err(|e| anyhow::anyhow!("入力読み取りエラー: {e}"))?;
 
-            let mut brightness_changed = false;
-            let mut notification_state_changed = false;
-
-            if drain_notifications(notification_source, &mut notification_state.borrow_mut())? {
-                notification_state_changed = true;
-            }
-            if notification_state
-                .borrow_mut()
-                .expire_pending(Instant::now())
-            {
-                notification_state_changed = true;
-            }
-
-            for update in updates {
-                match update {
-                    DeviceStateUpdate::EncoderTwist(idx, delta) if idx == ENCODER_BRIGHTNESS => {
-                        let new_b = apply_brightness_delta(brightness.get(), delta);
-                        if new_b != brightness.get() {
-                            brightness.set(new_b);
-                            brightness_changed = true;
-                        }
-                    }
-                    DeviceStateUpdate::ButtonDown(idx) => {
-                        if let Some(action) = notification_state
-                            .borrow_mut()
-                            .on_button_down(idx as usize, Instant::now())
-                        {
-                            notification_state_changed = true;
-                            if let NotificationPressAction::Execute(payload) = action {
-                                if let Err(e) = execute_payload(&payload) {
-                                    warn!(%payload, "通知アクション実行失敗: {e:#}");
-                                }
-                            }
-                            continue;
-                        }
-
-                        if idx == BUTTON_BRIGHTNESS_RESET && brightness.get() != DEFAULT_BRIGHTNESS
-                        {
-                            brightness.set(DEFAULT_BRIGHTNESS);
-                            brightness_changed = true;
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            let mut notification_state_changed =
+                poll_notification_state(notification_source, notification_state)?;
+            let input_outcome = handle_device_updates(updates, brightness, notification_state);
+            let brightness_changed = input_outcome.brightness_changed;
+            notification_state_changed |= input_outcome.notification_state_changed;
 
             if notification_state_changed {
                 refresh_notification_buttons(hw, &notification_state.borrow())?;
@@ -347,6 +300,71 @@ fn run_loop(
     }
 }
 
+struct InputUpdateOutcome {
+    brightness_changed: bool,
+    notification_state_changed: bool,
+}
+
+fn handle_device_updates(
+    updates: Vec<DeviceStateUpdate>,
+    brightness: &Rc<Cell<u8>>,
+    notification_state: &Rc<RefCell<NotificationState>>,
+) -> InputUpdateOutcome {
+    let mut brightness_changed = false;
+    let mut notification_state_changed = false;
+
+    for update in updates {
+        match update {
+            DeviceStateUpdate::EncoderTwist(idx, delta) if idx == ENCODER_BRIGHTNESS => {
+                let new_b = apply_brightness_delta(brightness.get(), delta);
+                if new_b != brightness.get() {
+                    brightness.set(new_b);
+                    brightness_changed = true;
+                }
+            }
+            DeviceStateUpdate::ButtonDown(idx) => {
+                if let Some(action) = notification_state
+                    .borrow_mut()
+                    .on_button_down(idx as usize, Instant::now())
+                {
+                    notification_state_changed = true;
+                    if let NotificationPressAction::Execute(payload) = action {
+                        if let Err(e) = execute_payload(&payload) {
+                            warn!(%payload, "通知アクション実行失敗: {e:#}");
+                        }
+                    }
+                    continue;
+                }
+
+                if idx == BUTTON_BRIGHTNESS_RESET && brightness.get() != DEFAULT_BRIGHTNESS {
+                    brightness.set(DEFAULT_BRIGHTNESS);
+                    brightness_changed = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    InputUpdateOutcome {
+        brightness_changed,
+        notification_state_changed,
+    }
+}
+
+fn poll_notification_state(
+    source: &mut NotificationSource,
+    state: &Rc<RefCell<NotificationState>>,
+) -> anyhow::Result<bool> {
+    let mut changed = false;
+    if drain_notifications(source, &mut state.borrow_mut())? {
+        changed = true;
+    }
+    if state.borrow_mut().expire_pending(Instant::now()) {
+        changed = true;
+    }
+    Ok(changed)
+}
+
 // ── ヘルパー関数 ──────────────────────────────────────────────────
 
 /// エンコーダのデルタを輝度に適用し、範囲内にクランプして返す
@@ -355,16 +373,44 @@ fn apply_brightness_delta(current: u8, delta: i8) -> u8 {
         .clamp(BRIGHTNESS_MIN as i16, BRIGHTNESS_MAX as i16) as u8
 }
 
+#[allow(dead_code)]
+enum ActionRequest {
+    OpenTarget(String),
+    Command { program: String, args: Vec<String> },
+    SshConnect { host: String, terminal: String },
+}
+
+fn execute_action(action: ActionRequest) -> anyhow::Result<()> {
+    match action {
+        ActionRequest::OpenTarget(target) => {
+            let status = Command::new("xdg-open").arg(&target).status()?;
+            if !status.success() {
+                anyhow::bail!("xdg-open が失敗しました: status={status}");
+            }
+            Ok(())
+        }
+        ActionRequest::Command { program, args } => {
+            if program.trim().is_empty() {
+                anyhow::bail!("実行プログラム名が空です");
+            }
+            let status = Command::new(&program).args(args).status()?;
+            if !status.success() {
+                anyhow::bail!("コマンド実行が失敗しました: status={status}, program={program}");
+            }
+            Ok(())
+        }
+        ActionRequest::SshConnect { host, terminal } => {
+            anyhow::bail!("SSH 接続アクションは未実装です: host={host}, terminal={terminal}")
+        }
+    }
+}
+
 fn execute_payload(payload: &str) -> anyhow::Result<()> {
     let trimmed = payload.trim();
     if trimmed.is_empty() {
         anyhow::bail!("action_payload が空です");
     }
-    let status = Command::new("xdg-open").arg(trimmed).status()?;
-    if !status.success() {
-        anyhow::bail!("xdg-open が失敗しました: status={status}");
-    }
-    Ok(())
+    execute_action(ActionRequest::OpenTarget(trimmed.to_owned()))
 }
 
 fn refresh_notification_buttons(
@@ -400,6 +446,8 @@ fn drain_notifications(
 struct DashboardConfig {
     #[serde(default)]
     layout: LayoutConfig,
+    #[serde(default)]
+    watch: WatchConfig,
 }
 
 impl DashboardConfig {
@@ -412,6 +460,12 @@ impl DashboardConfig {
         })?;
         Ok(cfg)
     }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct WatchConfig {
+    #[serde(default)]
+    includes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -481,29 +535,24 @@ struct ConfigManager {
     active: DashboardConfig,
     reload_err_count: u32,
     last_reload_at: Instant,
+    watch_targets: Vec<PathBuf>,
     #[cfg(feature = "file-watch")]
     watcher: Option<FileWatcher>,
 }
 
 impl ConfigManager {
     fn new(config_path: &str, initial: DashboardConfig) -> Self {
+        let watch_targets = resolve_watch_targets(config_path, &initial);
+
         #[cfg(feature = "file-watch")]
-        let watcher = match FileWatcher::new(config_path) {
-            Ok(w) => {
-                info!(path = config_path, "設定ファイル監視を開始");
-                Some(w)
-            }
-            Err(e) => {
-                warn!("設定ファイル監視の初期化に失敗（無効化）: {e:#}");
-                None
-            }
-        };
+        let watcher = create_file_watcher(&watch_targets);
 
         Self {
             config_path: config_path.to_owned(),
             active: initial,
             reload_err_count: 0,
             last_reload_at: Instant::now(),
+            watch_targets,
             #[cfg(feature = "file-watch")]
             watcher,
         }
@@ -528,8 +577,17 @@ impl ConfigManager {
         self.last_reload_at = Instant::now();
         match DashboardConfig::load(&self.config_path) {
             Ok(new_cfg) => {
+                let new_watch_targets = resolve_watch_targets(&self.config_path, &new_cfg);
                 self.active = new_cfg;
                 self.reload_err_count = 0;
+
+                #[cfg(feature = "file-watch")]
+                if self.watch_targets != new_watch_targets {
+                    info!(path = %self.config_path, "監視対象ファイルが変更されたため監視を再初期化します");
+                    self.watcher = create_file_watcher(&new_watch_targets);
+                }
+
+                self.watch_targets = new_watch_targets;
                 info!(path = %self.config_path, "設定ファイルをリロードしました");
                 true
             }
@@ -546,7 +604,48 @@ impl ConfigManager {
     }
 }
 
+fn resolve_watch_targets(config_path: &str, config: &DashboardConfig) -> Vec<PathBuf> {
+    let base_path = normalize_path(Path::new(config_path));
+    let base_dir = base_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let mut dedup = BTreeSet::new();
+    dedup.insert(base_path.clone());
+
+    for include in &config.watch.includes {
+        let include = include.trim();
+        if include.is_empty() {
+            continue;
+        }
+        let include_path = Path::new(include);
+        let resolved = if include_path.is_absolute() {
+            normalize_path(include_path)
+        } else {
+            normalize_path(&base_dir.join(include_path))
+        };
+        dedup.insert(resolved);
+    }
+
+    dedup.into_iter().collect()
+}
+
 // ── FileWatcher ──────────────────────────────────────────────────
+
+#[cfg(feature = "file-watch")]
+fn create_file_watcher(targets: &[PathBuf]) -> Option<FileWatcher> {
+    match FileWatcher::new(targets) {
+        Ok(w) => {
+            info!(targets = ?targets, "設定ファイル監視を開始");
+            Some(w)
+        }
+        Err(e) => {
+            warn!("設定ファイル監視の初期化に失敗（無効化）: {e:#}");
+            None
+        }
+    }
+}
 
 #[cfg(feature = "file-watch")]
 struct FileWatcher {
@@ -556,22 +655,24 @@ struct FileWatcher {
 
 #[cfg(feature = "file-watch")]
 impl FileWatcher {
-    fn new(config_path: &str) -> anyhow::Result<Self> {
-        let (tx, rx) = mpsc::channel::<()>();
+    fn new(targets: &[PathBuf]) -> anyhow::Result<Self> {
+        if targets.is_empty() {
+            anyhow::bail!("監視対象が空です");
+        }
 
-        let target = std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.into());
-        let target_name = target
-            .file_name()
-            .map(|n| n.to_os_string())
-            .ok_or_else(|| {
-                anyhow::anyhow!("設定ファイルのファイル名が取得できません: {config_path}")
-            })?;
-        let parent = target
-            .parent()
-            .ok_or_else(|| {
-                anyhow::anyhow!("設定ファイルの親ディレクトリが取得できません: {config_path}")
-            })?
-            .to_owned();
+        let (tx, rx) = mpsc::channel::<()>();
+        let target_set: BTreeSet<PathBuf> = targets.iter().cloned().collect();
+        let watch_dirs: BTreeSet<PathBuf> = targets
+            .iter()
+            .map(|target| {
+                target.parent().map(Path::to_path_buf).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "監視対象の親ディレクトリが取得できません: {}",
+                        target.display()
+                    )
+                })
+            })
+            .collect::<anyhow::Result<_>>()?;
 
         let mut watcher =
             notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -580,14 +681,17 @@ impl FileWatcher {
                         || event
                             .paths
                             .iter()
-                            .any(|p| p.file_name() == Some(&target_name));
+                            .map(|p| normalize_path(p))
+                            .any(|p| target_set.contains(&p));
                     if relevant {
                         let _ = tx.send(());
                     }
                 }
             })?;
 
-        watcher.watch(&parent, RecursiveMode::NonRecursive)?;
+        for dir in watch_dirs {
+            watcher.watch(&dir, RecursiveMode::NonRecursive)?;
+        }
 
         Ok(Self {
             _watcher: watcher,
@@ -602,6 +706,18 @@ impl FileWatcher {
         }
         any
     }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(path)
+        }
+    })
 }
 
 // ── テスト ────────────────────────────────────────────────────────
@@ -765,5 +881,52 @@ mod tests {
             20,
             "capacity がリロード後に反映されていない"
         );
+    }
+
+    #[test]
+    fn test_watch_targets_include_primary_and_includes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let layout_path = dir.path().join("layout.toml");
+        let hosts_path = dir.path().join("ssh_hosts.toml");
+        std::fs::write(&layout_path, "").expect("write layout");
+        std::fs::write(&hosts_path, "").expect("write hosts");
+
+        let cfg: DashboardConfig = toml::from_str(
+            r#"
+[watch]
+includes = ["ssh_hosts.toml"]
+"#,
+        )
+        .expect("parse config");
+
+        let targets = resolve_watch_targets(layout_path.to_str().expect("path str"), &cfg);
+        assert_eq!(targets.len(), 2, "監視対象が期待件数と一致しない");
+        assert!(
+            targets.contains(&normalize_path(&layout_path)),
+            "layout.toml が監視対象に含まれていない"
+        );
+        assert!(
+            targets.contains(&normalize_path(&hosts_path)),
+            "includes で指定したファイルが監視対象に含まれていない"
+        );
+    }
+
+    #[test]
+    fn test_watch_targets_deduplicate_entries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let layout_path = dir.path().join("layout.toml");
+        std::fs::write(&layout_path, "").expect("write layout");
+
+        let cfg: DashboardConfig = toml::from_str(
+            r#"
+[watch]
+includes = ["layout.toml", "./layout.toml", ""]
+"#,
+        )
+        .expect("parse config");
+
+        let targets = resolve_watch_targets(layout_path.to_str().expect("path str"), &cfg);
+        assert_eq!(targets.len(), 1, "重複監視対象が除去されていない");
+        assert_eq!(targets[0], normalize_path(&layout_path));
     }
 }

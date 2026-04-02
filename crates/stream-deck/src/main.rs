@@ -9,29 +9,35 @@ mod cmd;
 mod device;
 mod error;
 mod metrics;
+mod notifications;
+mod plugin;
 mod renderer;
+mod section;
 
-use std::collections::VecDeque;
-use std::fmt;
-use std::os::unix::net::UnixDatagram;
-use std::path::Path;
+use std::cell::{Cell, RefCell};
 use std::process::Command;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use elgato_streamdeck::DeviceStateUpdate;
 use serde::Deserialize;
 use tracing::{debug, error, info, warn};
 
-use metrics::{MetricsProvider, MetricsSnapshot};
+use metrics::MetricsSource;
+use notifications::{
+    NotificationPressAction, NotificationSource, NotificationState, SlotCompactionMode,
+};
+use plugin::{BrightnessPlugin, CpuPlugin, DataPlugin, LoadPlugin, MemPlugin, NotifPlugin};
 use renderer::SectionSpec;
+use section::Section;
 
 #[cfg(feature = "file-watch")]
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 #[cfg(feature = "file-watch")]
 use std::sync::mpsc;
 
-/// Stream Deck に表示するメトリクスの履歴 (最大 HISTORY_LEN サンプル)
+/// セクションのデフォルト履歴長 (バー本数 = 秒数)
 const HISTORY_LEN: usize = 10;
 
 /// 更新間隔 (1秒 = 1バー/サンプル)
@@ -57,17 +63,8 @@ const ENCODER_BRIGHTNESS: u8 = 3;
 /// 輝度をデフォルトにリセットする右下ボタンのインデックス (0-7、2行×4列)
 const BUTTON_BRIGHTNESS_RESET: u8 = 7;
 
-/// Pending 状態を既読にするまでの猶予
-const NOTIFICATION_PENDING_TIMEOUT: Duration = Duration::from_secs(2);
-
 /// 通知受信用の UNIX ドメインソケット
 const NOTIFICATION_SOCKET_PATH: &str = "/tmp/rs-common-stream-deck-notify.sock";
-
-/// 受信する通知 1 件の最大サイズ
-const NOTIFICATION_MAX_BYTES: usize = 4096;
-
-/// LCD に表示する通知サマリ最大文字数
-const NOTIFICATION_SUMMARY_MAX_CHARS: usize = 14;
 
 /// 設定ファイルリロードのデバウンス間隔
 #[cfg(feature = "file-watch")]
@@ -119,7 +116,7 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-/// デフォルト動作: 4セクションのメトリクスダッシュボードを LCD に表示し続ける
+/// デフォルト動作: メトリクスダッシュボードを LCD に表示し続ける
 fn run_monitor(compaction_mode: SlotCompactionMode, config_path: &str) -> anyhow::Result<()> {
     info!("Stream Deck マルチメトリクスモニター 起動");
     info!(mode = %compaction_mode, "通知既読時のスロット挙動");
@@ -133,11 +130,21 @@ fn run_monitor(compaction_mode: SlotCompactionMode, config_path: &str) -> anyhow
     );
 
     let renderer = renderer::Renderer::new()?;
-    let mut metrics = MetricsProvider::new();
-    let mut history = MetricsHistory::new(HISTORY_LEN);
-    let mut brightness = DEFAULT_BRIGHTNESS;
+
+    // 共有データソース
+    let sys_source: Rc<RefCell<MetricsSource>> = Rc::new(RefCell::new(MetricsSource::new()));
+    let brightness: Rc<Cell<u8>> = Rc::new(Cell::new(DEFAULT_BRIGHTNESS));
+    let notification_state: Rc<RefCell<NotificationState>> =
+        Rc::new(RefCell::new(NotificationState::new(compaction_mode)));
+
+    let mut sections = build_sections(
+        config_manager.current(),
+        &sys_source,
+        &brightness,
+        &notification_state,
+    );
+
     let mut notification_source = NotificationSource::bind(NOTIFICATION_SOCKET_PATH)?;
-    let mut notification_state = NotificationState::new(compaction_mode);
 
     loop {
         info!("Stream Deck+ への接続を試みています...");
@@ -149,11 +156,11 @@ fn run_monitor(compaction_mode: SlotCompactionMode, config_path: &str) -> anyhow
                     &hw,
                     &renderer,
                     &mut config_manager,
-                    &mut metrics,
-                    &mut history,
-                    &mut brightness,
+                    &sys_source,
+                    &mut sections,
+                    &brightness,
                     &mut notification_source,
-                    &mut notification_state,
+                    &notification_state,
                 ) {
                     warn!("デバイスエラー: {e:#} — 再接続します");
                 }
@@ -167,92 +174,99 @@ fn run_monitor(compaction_mode: SlotCompactionMode, config_path: &str) -> anyhow
     }
 }
 
+/// 設定からセクション列を構築する
+fn build_sections(
+    config: &DashboardConfig,
+    sys_source: &Rc<RefCell<MetricsSource>>,
+    brightness: &Rc<Cell<u8>>,
+    notification_state: &Rc<RefCell<NotificationState>>,
+) -> Vec<Section> {
+    config
+        .layout
+        .sections
+        .iter()
+        .map(|sec| {
+            let plugin: Box<dyn DataPlugin> = match sec.kind {
+                DashboardSectionKind::Cpu => Box::new(CpuPlugin::new(Rc::clone(sys_source))),
+                DashboardSectionKind::Mem => Box::new(MemPlugin::new(Rc::clone(sys_source))),
+                DashboardSectionKind::Load => Box::new(LoadPlugin::new(Rc::clone(sys_source))),
+                DashboardSectionKind::Bright => {
+                    Box::new(BrightnessPlugin::new(Rc::clone(brightness)))
+                }
+                DashboardSectionKind::Notif => {
+                    Box::new(NotifPlugin::new(Rc::clone(notification_state)))
+                }
+            };
+            Section::new(plugin, sec.capacity)
+        })
+        .collect()
+}
+
 /// デバイスが接続されている間、定期的に LCD を更新する
-///
-/// `brightness`・通知状態は再接続をまたいで保持されるため、呼び出し元が所有する。
+#[allow(clippy::too_many_arguments)]
 fn run_loop(
     hw: &device::HardwareManager,
     renderer: &renderer::Renderer,
     config_manager: &mut ConfigManager,
-    metrics: &mut MetricsProvider,
-    history: &mut MetricsHistory,
-    brightness: &mut u8,
+    sys_source: &Rc<RefCell<MetricsSource>>,
+    sections: &mut Vec<Section>,
+    brightness: &Rc<Cell<u8>>,
     notification_source: &mut NotificationSource,
-    notification_state: &mut NotificationState,
+    notification_state: &Rc<RefCell<NotificationState>>,
 ) -> anyhow::Result<()> {
     let reader = hw.get_reader();
-    hw.set_brightness(*brightness)?;
+    hw.set_brightness(brightness.get())?;
 
     // 接続時: 全ボタンをクリアしてから通知状態を復元する
     hw.clear_buttons()?;
-    refresh_notification_buttons(hw, notification_state)?;
+    refresh_notification_buttons(hw, &notification_state.borrow())?;
 
     loop {
         let mut notification_state_changed = false;
 
         if config_manager.poll_reload() {
             info!("レイアウトをリロードしました");
+            *sections = build_sections(
+                config_manager.current(),
+                sys_source,
+                brightness,
+                notification_state,
+            );
         }
 
-        if drain_notifications(notification_source, notification_state)? {
+        if drain_notifications(notification_source, &mut notification_state.borrow_mut())? {
             notification_state_changed = true;
         }
-        if notification_state.expire_pending(Instant::now()) {
+        if notification_state
+            .borrow_mut()
+            .expire_pending(Instant::now())
+        {
             notification_state_changed = true;
         }
         if notification_state_changed {
-            refresh_notification_buttons(hw, notification_state)?;
+            refresh_notification_buttons(hw, &notification_state.borrow())?;
         }
 
-        // メトリクス取得 & 履歴に追加
-        let snap = metrics.sample();
-        history.push(&snap);
+        // メトリクスを一度だけ refresh してから各セクションを更新
+        sys_source.borrow_mut().refresh();
+        for section in sections.iter_mut() {
+            section.tick();
+        }
 
-        tracing::debug!(
-            cpu = %format!("{:.1}%", snap.cpu_pct),
-            mem = %format!("{:.1}%", snap.mem_pct),
-            load = %format!("{:.2}", snap.load_one),
-            bright = *brightness,
-            "LCD 更新",
-        );
+        let snap_log = sys_source.borrow();
+        if let Some(snap) = snap_log.snapshot() {
+            tracing::debug!(
+                cpu = %format!("{:.1}%", snap.cpu_pct),
+                mem = %format!("{:.1}%", snap.mem_pct),
+                load = %format!("{:.2}", snap.load_one),
+                bright = brightness.get(),
+                "LCD 更新",
+            );
+        }
 
-        // セクションデータ構築
-        let cpu_norm = history.cpu_normalized();
-        let mem_norm = history.mem_normalized();
-        let load_norm = history.load_normalized(snap.cpu_count);
-        let bright_norm = vec![*brightness as f32 / 100.0; HISTORY_LEN];
-        let notif_norm = notification_state.notification_history(HISTORY_LEN);
-
-        let sections: [SectionSpec; 4] =
-            std::array::from_fn(|idx| match config_manager.current().layout.sections[idx] {
-                DashboardSection::Cpu => SectionSpec {
-                    label: "CPU",
-                    value_text: format!("{:.1}%", snap.cpu_pct),
-                    history: &cpu_norm,
-                },
-                DashboardSection::Mem => SectionSpec {
-                    label: "MEM",
-                    value_text: format_memory(snap.used_memory_bytes, snap.total_memory_bytes),
-                    history: &mem_norm,
-                },
-                DashboardSection::Load => SectionSpec {
-                    label: "LOAD",
-                    value_text: format!("{:.2}", snap.load_one),
-                    history: &load_norm,
-                },
-                DashboardSection::Bright => SectionSpec {
-                    label: "BRIGHT",
-                    value_text: format!("{}%", brightness),
-                    history: &bright_norm,
-                },
-                DashboardSection::Notif => SectionSpec {
-                    label: "NOTIF",
-                    value_text: notification_state.overlay_text(),
-                    history: &notif_norm,
-                },
-            });
-
-        let image = renderer.render(&sections);
+        // SectionSpec を収集してレンダラへ渡す
+        let specs: Vec<SectionSpec> = sections.iter().map(|s| s.as_spec()).collect();
+        let image = renderer.render(&specs);
 
         if let Err(e) = hw.set_lcd_strip_image(image) {
             error!("LCD 書き込みエラー: {e:#}");
@@ -275,25 +289,29 @@ fn run_loop(
             let mut brightness_changed = false;
             let mut notification_state_changed = false;
 
-            if drain_notifications(notification_source, notification_state)? {
+            if drain_notifications(notification_source, &mut notification_state.borrow_mut())? {
                 notification_state_changed = true;
             }
-            if notification_state.expire_pending(Instant::now()) {
+            if notification_state
+                .borrow_mut()
+                .expire_pending(Instant::now())
+            {
                 notification_state_changed = true;
             }
 
             for update in updates {
                 match update {
                     DeviceStateUpdate::EncoderTwist(idx, delta) if idx == ENCODER_BRIGHTNESS => {
-                        let new_b = apply_brightness_delta(*brightness, delta);
-                        if new_b != *brightness {
-                            *brightness = new_b;
+                        let new_b = apply_brightness_delta(brightness.get(), delta);
+                        if new_b != brightness.get() {
+                            brightness.set(new_b);
                             brightness_changed = true;
                         }
                     }
                     DeviceStateUpdate::ButtonDown(idx) => {
-                        if let Some(action) =
-                            notification_state.on_button_down(idx as usize, Instant::now())
+                        if let Some(action) = notification_state
+                            .borrow_mut()
+                            .on_button_down(idx as usize, Instant::now())
                         {
                             notification_state_changed = true;
                             if let NotificationPressAction::Execute(payload) = action {
@@ -304,8 +322,9 @@ fn run_loop(
                             continue;
                         }
 
-                        if idx == BUTTON_BRIGHTNESS_RESET && *brightness != DEFAULT_BRIGHTNESS {
-                            *brightness = DEFAULT_BRIGHTNESS;
+                        if idx == BUTTON_BRIGHTNESS_RESET && brightness.get() != DEFAULT_BRIGHTNESS
+                        {
+                            brightness.set(DEFAULT_BRIGHTNESS);
                             brightness_changed = true;
                         }
                     }
@@ -314,12 +333,12 @@ fn run_loop(
             }
 
             if notification_state_changed {
-                refresh_notification_buttons(hw, notification_state)?;
+                refresh_notification_buttons(hw, &notification_state.borrow())?;
             }
 
             if brightness_changed {
-                debug!(bright = *brightness, "輝度変更");
-                if let Err(e) = hw.set_brightness(*brightness) {
+                debug!(bright = brightness.get(), "輝度変更");
+                if let Err(e) = hw.set_brightness(brightness.get()) {
                     error!("輝度設定エラー: {e:#}");
                     return Err(anyhow::anyhow!("{e}"));
                 }
@@ -328,7 +347,7 @@ fn run_loop(
     }
 }
 
-// ── MetricsHistory ────────────────────────────────────────────────
+// ── ヘルパー関数 ──────────────────────────────────────────────────
 
 /// エンコーダのデルタを輝度に適用し、範囲内にクランプして返す
 fn apply_brightness_delta(current: u8, delta: i8) -> u8 {
@@ -341,7 +360,6 @@ fn execute_payload(payload: &str) -> anyhow::Result<()> {
     if trimmed.is_empty() {
         anyhow::bail!("action_payload が空です");
     }
-
     let status = Command::new("xdg-open").arg(trimmed).status()?;
     if !status.success() {
         anyhow::bail!("xdg-open が失敗しました: status={status}");
@@ -376,7 +394,7 @@ fn drain_notifications(
     Ok(changed)
 }
 
-// ── Notification Types ──────────────────────────────────────────────
+// ── 設定 ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize)]
 struct DashboardConfig {
@@ -399,7 +417,7 @@ impl DashboardConfig {
 #[derive(Debug, Clone, Deserialize)]
 struct LayoutConfig {
     #[serde(default = "default_sections")]
-    sections: [DashboardSection; 4],
+    sections: Vec<SectionConfig>,
 }
 
 impl Default for LayoutConfig {
@@ -410,18 +428,45 @@ impl Default for LayoutConfig {
     }
 }
 
-fn default_sections() -> [DashboardSection; 4] {
-    [
-        DashboardSection::Cpu,
-        DashboardSection::Mem,
-        DashboardSection::Load,
-        DashboardSection::Notif,
+/// 設定ファイル上の1セクション分の設定
+#[derive(Debug, Clone, Deserialize)]
+struct SectionConfig {
+    /// セクション種別 (TOML キー: `type`)
+    #[serde(rename = "type")]
+    kind: DashboardSectionKind,
+    /// 履歴バー本数（省略時: HISTORY_LEN）
+    #[serde(default = "default_capacity")]
+    capacity: usize,
+}
+
+fn default_capacity() -> usize {
+    HISTORY_LEN
+}
+
+fn default_sections() -> Vec<SectionConfig> {
+    vec![
+        SectionConfig {
+            kind: DashboardSectionKind::Cpu,
+            capacity: HISTORY_LEN,
+        },
+        SectionConfig {
+            kind: DashboardSectionKind::Mem,
+            capacity: HISTORY_LEN,
+        },
+        SectionConfig {
+            kind: DashboardSectionKind::Load,
+            capacity: HISTORY_LEN,
+        },
+        SectionConfig {
+            kind: DashboardSectionKind::Notif,
+            capacity: HISTORY_LEN,
+        },
     ]
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum DashboardSection {
+enum DashboardSectionKind {
     Cpu,
     Mem,
     Load,
@@ -471,7 +516,7 @@ impl ConfigManager {
     fn poll_reload(&mut self) -> bool {
         #[cfg(feature = "file-watch")]
         {
-            let has_signal = self.watcher.as_ref().map_or(false, |w| w.has_pending());
+            let has_signal = self.watcher.as_ref().is_some_and(|w| w.has_pending());
             if has_signal && self.last_reload_at.elapsed() >= RELOAD_DEBOUNCE {
                 return self.do_reload();
             }
@@ -505,7 +550,6 @@ impl ConfigManager {
 
 #[cfg(feature = "file-watch")]
 struct FileWatcher {
-    /// watcher をドロップすると監視スレッドが停止するため保持する
     _watcher: RecommendedWatcher,
     receiver: mpsc::Receiver<()>,
 }
@@ -515,9 +559,7 @@ impl FileWatcher {
     fn new(config_path: &str) -> anyhow::Result<Self> {
         let (tx, rx) = mpsc::channel::<()>();
 
-        // 相対パスでも動くよう canonicalize を試みる (失敗時は生パスを使用)
-        let target =
-            std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.into());
+        let target = std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.into());
         let target_name = target
             .file_name()
             .map(|n| n.to_os_string())
@@ -527,16 +569,13 @@ impl FileWatcher {
         let parent = target
             .parent()
             .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "設定ファイルの親ディレクトリが取得できません: {config_path}"
-                )
+                anyhow::anyhow!("設定ファイルの親ディレクトリが取得できません: {config_path}")
             })?
             .to_owned();
 
         let mut watcher =
             notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
                 if let Ok(event) = res {
-                    // rename 系のイベントは paths が空の場合があるため、空も通知対象にする
                     let relevant = event.paths.is_empty()
                         || event
                             .paths
@@ -548,7 +587,6 @@ impl FileWatcher {
                 }
             })?;
 
-        // ディレクトリ単位で非再帰監視することで rename 保存にも対応する
         watcher.watch(&parent, RecursiveMode::NonRecursive)?;
 
         Ok(Self {
@@ -557,7 +595,6 @@ impl FileWatcher {
         })
     }
 
-    /// シグナルが 1 件以上あれば true を返し、キューを空にする
     fn has_pending(&self) -> bool {
         let mut any = false;
         while self.receiver.try_recv().is_ok() {
@@ -567,451 +604,22 @@ impl FileWatcher {
     }
 }
 
-#[derive(Debug)]
-struct NotificationSource {
-    socket: UnixDatagram,
-    recv_buf: [u8; NOTIFICATION_MAX_BYTES],
-}
-
-impl NotificationSource {
-    fn bind(path: &str) -> anyhow::Result<Self> {
-        let socket_path = Path::new(path);
-        if socket_path.exists() {
-            std::fs::remove_file(socket_path)?;
-        }
-
-        let socket = UnixDatagram::bind(socket_path)?;
-        socket.set_nonblocking(true)?;
-        info!(path, "通知ソケット待受を開始");
-
-        Ok(Self {
-            socket,
-            recv_buf: [0; NOTIFICATION_MAX_BYTES],
-        })
-    }
-
-    fn try_recv(&mut self) -> anyhow::Result<Option<IncomingNotification>> {
-        match self.socket.recv(&mut self.recv_buf) {
-            Ok(size) => {
-                let payload = std::str::from_utf8(&self.recv_buf[..size])?;
-                let packet: NotificationPacket = serde_json::from_str(payload)?;
-                let item = IncomingNotification {
-                    summary: packet.summary,
-                    body: packet.body.unwrap_or_default(),
-                    action_payload: packet.action_payload,
-                };
-                Ok(Some(item))
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
-            Err(err) => Err(err.into()),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct NotificationPacket {
-    summary: String,
-    #[serde(default)]
-    body: Option<String>,
-    action_payload: String,
-}
-
-#[derive(Debug)]
-struct IncomingNotification {
-    summary: String,
-    body: String,
-    action_payload: String,
-}
-
-#[derive(Debug, Clone)]
-struct NotificationItem {
-    id: u64,
-    summary: String,
-    body: String,
-    action_payload: String,
-    created_at: Instant,
-}
-
-#[derive(Debug, Clone)]
-enum SlotState {
-    Empty,
-    Unread {
-        item: NotificationItem,
-    },
-    Pending {
-        item: NotificationItem,
-        deadline: Instant,
-    },
-}
-
-impl SlotState {
-    fn color(&self) -> ButtonColor {
-        match self {
-            SlotState::Empty => ButtonColor::Black,
-            SlotState::Unread { .. } => ButtonColor::Blue,
-            SlotState::Pending { .. } => ButtonColor::Yellow,
-        }
-    }
-}
-
-#[derive(Debug)]
-enum NotificationPressAction {
-    Execute(String),
-    RevertToUnread,
-}
-
-struct NotificationState {
-    slots: [SlotState; 8],
-    next_id: u64,
-    compaction_mode: SlotCompactionMode,
-}
-
-impl NotificationState {
-    fn new(compaction_mode: SlotCompactionMode) -> Self {
-        Self {
-            slots: std::array::from_fn(|_| SlotState::Empty),
-            next_id: 1,
-            compaction_mode,
-        }
-    }
-
-    fn insert(&mut self, incoming: IncomingNotification, now: Instant) -> Option<usize> {
-        let item = NotificationItem {
-            id: self.next_id,
-            summary: incoming.summary,
-            body: incoming.body,
-            action_payload: incoming.action_payload,
-            created_at: now,
-        };
-        self.next_id += 1;
-
-        if let Some((idx, _)) = self
-            .slots
-            .iter()
-            .enumerate()
-            .find(|(_, slot)| matches!(slot, SlotState::Empty))
-        {
-            self.slots[idx] = SlotState::Unread { item };
-            return Some(idx);
-        }
-
-        let target = self
-            .slots
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, slot)| match slot {
-                SlotState::Unread { item } => Some((idx, item.created_at)),
-                _ => None,
-            })
-            .min_by_key(|(_, created_at)| *created_at)
-            .map(|(idx, _)| idx);
-
-        match target {
-            Some(idx) => {
-                self.slots[idx] = SlotState::Unread { item };
-                Some(idx)
-            }
-            None => {
-                warn!("通知スロットが埋まっているため破棄しました");
-                None
-            }
-        }
-    }
-
-    fn unread_count(&self) -> usize {
-        self.slots
-            .iter()
-            .filter(|slot| matches!(slot, SlotState::Unread { .. }))
-            .count()
-    }
-
-    fn total_active_count(&self) -> usize {
-        self.slots
-            .iter()
-            .filter(|slot| !matches!(slot, SlotState::Empty))
-            .count()
-    }
-
-    fn on_button_down(&mut self, idx: usize, now: Instant) -> Option<NotificationPressAction> {
-        if idx >= self.slots.len() {
-            return None;
-        }
-
-        match &self.slots[idx] {
-            SlotState::Unread { item } => {
-                let payload = item.action_payload.clone();
-                let moved = item.clone();
-                debug!(slot = idx, notif_id = item.id, "通知アクションを実行");
-                self.slots[idx] = SlotState::Pending {
-                    item: moved,
-                    deadline: now + NOTIFICATION_PENDING_TIMEOUT,
-                };
-                Some(NotificationPressAction::Execute(payload))
-            }
-            SlotState::Pending { item, .. } => {
-                debug!(slot = idx, notif_id = item.id, "通知を未読に戻しました");
-                self.slots[idx] = SlotState::Unread { item: item.clone() };
-                Some(NotificationPressAction::RevertToUnread)
-            }
-            SlotState::Empty => None,
-        }
-    }
-
-    fn expire_pending(&mut self, now: Instant) -> bool {
-        let mut changed = false;
-        for slot in &mut self.slots {
-            if let SlotState::Pending { deadline, .. } = slot {
-                if *deadline <= now {
-                    *slot = SlotState::Empty;
-                    changed = true;
-                }
-            }
-        }
-
-        if changed && self.compaction_mode == SlotCompactionMode::CompactLeft {
-            self.compact_left();
-        }
-
-        changed
-    }
-
-    fn compact_left(&mut self) {
-        let mut non_empty: Vec<SlotState> = self
-            .slots
-            .iter()
-            .filter(|slot| !matches!(slot, SlotState::Empty))
-            .cloned()
-            .collect();
-        non_empty.resize_with(self.slots.len(), || SlotState::Empty);
-
-        for (idx, slot) in non_empty.into_iter().enumerate() {
-            self.slots[idx] = slot;
-        }
-    }
-
-    fn latest_item(&self) -> Option<&NotificationItem> {
-        self.slots
-            .iter()
-            .filter_map(|slot| match slot {
-                SlotState::Unread { item } | SlotState::Pending { item, .. } => Some(item),
-                SlotState::Empty => None,
-            })
-            .max_by_key(|item| item.created_at)
-    }
-
-    fn overlay_text(&self) -> String {
-        let active = self.total_active_count();
-        if active == 0 {
-            return "0".to_string();
-        }
-
-        let summary = self
-            .latest_item()
-            .map(|item| {
-                let text = if item.summary.trim().is_empty() {
-                    item.body.as_str()
-                } else {
-                    item.summary.as_str()
-                };
-                format!(
-                    "#{} {}",
-                    item.id,
-                    truncate_chars(text, NOTIFICATION_SUMMARY_MAX_CHARS)
-                )
-            })
-            .unwrap_or_else(|| "-".to_string());
-
-        format!("{active} {summary}")
-    }
-
-    fn notification_history(&self, len: usize) -> Vec<f32> {
-        let active_ratio = self.total_active_count() as f32 / self.slots.len() as f32;
-        vec![active_ratio; len]
-    }
-}
-
-fn truncate_chars(input: &str, max_chars: usize) -> String {
-    let mut chars = input.chars();
-    let truncated: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{truncated}...")
-    } else {
-        truncated
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum SlotCompactionMode {
-    KeepGap,
-    CompactLeft,
-}
-
-impl fmt::Display for SlotCompactionMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            SlotCompactionMode::KeepGap => "keep-gap",
-            SlotCompactionMode::CompactLeft => "compact-left",
-        };
-        write!(f, "{label}")
-    }
-}
-
-// ── ButtonColor ───────────────────────────────────────────────────
-
-/// 通知状態の表示色
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ButtonColor {
-    Black,
-    Blue,
-    Yellow,
-}
-
-impl ButtonColor {
-    /// `image::Rgb<u8>` に変換する
-    fn to_rgb(self) -> image::Rgb<u8> {
-        match self {
-            ButtonColor::Black => image::Rgb([0, 0, 0]),
-            ButtonColor::Blue => image::Rgb([0, 0, 255]),
-            ButtonColor::Yellow => image::Rgb([255, 200, 0]),
-        }
-    }
-}
-
-/// メモリ使用量を "使用量/最大値" 形式の文字列に変換する (例: "6.2/16G")
-fn format_memory(used: u64, total: u64) -> String {
-    const GB: u64 = 1 << 30;
-    const MB: u64 = 1 << 20;
-    if total >= GB {
-        let used_gb = used as f64 / GB as f64;
-        let total_gb = total as f64 / GB as f64;
-        format!("{used_gb:.1}/{total_gb:.0}G")
-    } else {
-        let used_mb = used / MB;
-        let total_mb = total / MB;
-        format!("{used_mb}/{total_mb}M")
-    }
-}
-
-/// CPU・MEM・LOAD の直近 N サンプルを保持するリングバッファ
-struct MetricsHistory {
-    cpu: VecDeque<f32>,
-    mem: VecDeque<f32>,
-    load: VecDeque<f32>,
-    capacity: usize,
-}
-
-impl MetricsHistory {
-    fn new(capacity: usize) -> Self {
-        Self {
-            cpu: VecDeque::with_capacity(capacity),
-            mem: VecDeque::with_capacity(capacity),
-            load: VecDeque::with_capacity(capacity),
-            capacity,
-        }
-    }
-
-    /// スナップショットを追加する (超えた分は先頭から破棄)
-    fn push(&mut self, snap: &MetricsSnapshot) {
-        Self::push_to(&mut self.cpu, snap.cpu_pct, self.capacity);
-        Self::push_to(&mut self.mem, snap.mem_pct, self.capacity);
-        Self::push_to(&mut self.load, snap.load_one, self.capacity);
-    }
-
-    fn push_to(buf: &mut VecDeque<f32>, value: f32, cap: usize) {
-        if buf.len() == cap {
-            buf.pop_front();
-        }
-        buf.push_back(value);
-    }
-
-    /// CPU 履歴を 0.0..=1.0 に正規化して返す
-    fn cpu_normalized(&self) -> Vec<f32> {
-        self.cpu.iter().map(|&v| v / 100.0).collect()
-    }
-
-    /// MEM 履歴を 0.0..=1.0 に正規化して返す
-    fn mem_normalized(&self) -> Vec<f32> {
-        self.mem.iter().map(|&v| v / 100.0).collect()
-    }
-
-    /// LOAD 履歴を cpu_count を上限として 0.0..=1.0 に正規化して返す
-    fn load_normalized(&self, cpu_count: usize) -> Vec<f32> {
-        let max = cpu_count.max(1) as f32;
-        self.load
-            .iter()
-            .map(|&v| (v / max).clamp(0.0, 1.0))
-            .collect()
-    }
-}
+// ── テスト ────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// 値域確認: push_to はリングバッファが capacity を超えない
-    #[test]
-    fn test_ring_buffer_capacity() {
-        let cap = 5;
-        let mut h = MetricsHistory::new(cap);
-        for i in 0..10 {
-            let snap = MetricsSnapshot {
-                cpu_pct: i as f32,
-                mem_pct: i as f32,
-                used_memory_bytes: i as u64 * (1 << 30),
-                total_memory_bytes: 16 * (1 << 30),
-                load_one: i as f32 * 0.1,
-                cpu_count: 4,
-            };
-            h.push(&snap);
-            assert!(
-                h.cpu.len() <= cap,
-                "cpu バッファが capacity を超えた: {}",
-                h.cpu.len()
-            );
-        }
-        // 最後の cap 個だけ残っているはずなので末尾要素を確認
-        assert_eq!(*h.cpu.back().unwrap(), 9.0);
-        assert_eq!(*h.cpu.front().unwrap(), 5.0);
-    }
-
-    /// 正常系: load_normalized は cpu_count で割って 0..1 にクランプ
-    #[test]
-    fn test_load_normalized_clamp() {
-        let cases: &[(f32, usize, f32)] = &[
-            (0.0, 4, 0.0),
-            (2.0, 4, 0.5),
-            (4.0, 4, 1.0),
-            (8.0, 4, 1.0), // 超過はクランプ
-        ];
-        for &(load, cpu_count, expected) in cases {
-            let mut h = MetricsHistory::new(1);
-            h.push(&MetricsSnapshot {
-                cpu_pct: 0.0,
-                mem_pct: 0.0,
-                used_memory_bytes: 0,
-                total_memory_bytes: 16 * (1 << 30),
-                load_one: load,
-                cpu_count,
-            });
-            let norm = h.load_normalized(cpu_count);
-            let got = norm[0];
-            assert!(
-                (got - expected).abs() < 1e-5,
-                "load={load} cpu_count={cpu_count}: got={got} expected={expected}"
-            );
-        }
-    }
-
     /// 値域確認: apply_brightness_delta は範囲外をクランプし、ステップを正しく適用する
     #[test]
     fn test_brightness_adjustment() {
         let cases: &[(u8, i8, u8)] = &[
-            (70, 1, 75),   // 正常増加 (1 click CW = +5%)
-            (70, -1, 65),  // 正常減少 (1 click CCW = -5%)
-            (100, 1, 100), // 上限クランプ (100% 超にならない)
-            (5, -1, 5),    // 下限クランプ (5% 未満にならない)
-            (70, 0, 70),   // デルタ 0 は変化なし
-            (70, 2, 80),   // 2 click で +10%
+            (70, 1, 75),
+            (70, -1, 65),
+            (100, 1, 100),
+            (5, -1, 5),
+            (70, 0, 70),
+            (70, 2, 80),
         ];
         for &(current, delta, expected) in cases {
             let got = apply_brightness_delta(current, delta);
@@ -1022,193 +630,38 @@ mod tests {
     /// 正常系: brightness_changed フラグ: 同値では変化しない
     #[test]
     fn test_brightness_no_change_at_limits() {
-        // 上限でさらに増やしても変化なし
         assert_eq!(apply_brightness_delta(BRIGHTNESS_MAX, 1), BRIGHTNESS_MAX);
-        // 下限でさらに減らしても変化なし
         assert_eq!(apply_brightness_delta(BRIGHTNESS_MIN, -1), BRIGHTNESS_MIN);
-    }
-    #[test]
-    fn test_format_memory() {
-        const GB: u64 = 1 << 30;
-        const MB: u64 = 1 << 20;
-        let cases: &[(u64, u64, &str)] = &[
-            (6 * GB + GB / 5, 16 * GB, "6.2/16G"), // 典型的な 16GB システム
-            (0, 16 * GB, "0.0/16G"),               // 使用量ゼロ
-            (16 * GB, 16 * GB, "16.0/16G"),        // 満杯
-            (256 * MB, 512 * MB, "256/512M"),      // GB 未満 (512MB < 1GB)
-        ];
-        for &(used, total, expected) in cases {
-            let got = format_memory(used, total);
-            assert_eq!(got, expected, "used={used} total={total}");
-        }
-    }
-
-    #[test]
-    fn test_notification_transition_unread_pending_unread() {
-        let mut state = NotificationState::new(SlotCompactionMode::KeepGap);
-        let now = Instant::now();
-        state.insert(
-            IncomingNotification {
-                summary: "summary".to_string(),
-                body: "body".to_string(),
-                action_payload: "vscode://file/tmp/result.csv".to_string(),
-            },
-            now,
-        );
-
-        let action = state.on_button_down(0, now + Duration::from_millis(1));
-        assert!(matches!(action, Some(NotificationPressAction::Execute(_))));
-        assert!(matches!(state.slots[0], SlotState::Pending { .. }));
-
-        let action2 = state.on_button_down(0, now + Duration::from_millis(2));
-        assert!(matches!(
-            action2,
-            Some(NotificationPressAction::RevertToUnread)
-        ));
-        assert!(matches!(state.slots[0], SlotState::Unread { .. }));
-    }
-
-    #[test]
-    fn test_notification_pending_timeout_to_empty() {
-        let mut state = NotificationState::new(SlotCompactionMode::KeepGap);
-        let now = Instant::now();
-        state.insert(
-            IncomingNotification {
-                summary: "summary".to_string(),
-                body: "body".to_string(),
-                action_payload: "vscode://file/tmp/result.csv".to_string(),
-            },
-            now,
-        );
-        state.on_button_down(0, now);
-
-        let changed =
-            state.expire_pending(now + NOTIFICATION_PENDING_TIMEOUT + Duration::from_millis(1));
-        assert!(changed);
-        assert!(matches!(state.slots[0], SlotState::Empty));
-    }
-
-    #[test]
-    fn test_notification_replaces_oldest_unread_when_full() {
-        let mut state = NotificationState::new(SlotCompactionMode::KeepGap);
-        let base = Instant::now();
-
-        for i in 0..8 {
-            state.insert(
-                IncomingNotification {
-                    summary: format!("n{i}"),
-                    body: String::new(),
-                    action_payload: format!("vscode://file/tmp/n{i}.txt"),
-                },
-                base + Duration::from_millis(i as u64),
-            );
-        }
-
-        state.insert(
-            IncomingNotification {
-                summary: "latest".to_string(),
-                body: String::new(),
-                action_payload: "vscode://file/tmp/latest.txt".to_string(),
-            },
-            base + Duration::from_secs(1),
-        );
-
-        let first_slot_summary = match &state.slots[0] {
-            SlotState::Unread { item } => item.summary.clone(),
-            _ => String::new(),
-        };
-        assert_eq!(first_slot_summary, "latest");
-    }
-
-    #[test]
-    fn test_notification_compact_left_on_expire() {
-        let mut state = NotificationState::new(SlotCompactionMode::CompactLeft);
-        let base = Instant::now();
-
-        state.insert(
-            IncomingNotification {
-                summary: "a".to_string(),
-                body: String::new(),
-                action_payload: "vscode://file/tmp/a".to_string(),
-            },
-            base,
-        );
-        state.insert(
-            IncomingNotification {
-                summary: "b".to_string(),
-                body: String::new(),
-                action_payload: "vscode://file/tmp/b".to_string(),
-            },
-            base + Duration::from_millis(1),
-        );
-        state.insert(
-            IncomingNotification {
-                summary: "c".to_string(),
-                body: String::new(),
-                action_payload: "vscode://file/tmp/c".to_string(),
-            },
-            base + Duration::from_millis(2),
-        );
-
-        state.on_button_down(1, base + Duration::from_millis(3));
-        state.expire_pending(base + NOTIFICATION_PENDING_TIMEOUT + Duration::from_millis(10));
-
-        let slot0 = matches!(state.slots[0], SlotState::Unread { .. });
-        let slot1 = matches!(state.slots[1], SlotState::Unread { .. });
-        let slot2 = matches!(state.slots[2], SlotState::Empty);
-        assert!(slot0 && slot1 && slot2);
-    }
-
-    #[test]
-    fn test_notification_keep_gap_on_expire() {
-        let mut state = NotificationState::new(SlotCompactionMode::KeepGap);
-        let base = Instant::now();
-
-        state.insert(
-            IncomingNotification {
-                summary: "a".to_string(),
-                body: String::new(),
-                action_payload: "vscode://file/tmp/a".to_string(),
-            },
-            base,
-        );
-        state.insert(
-            IncomingNotification {
-                summary: "b".to_string(),
-                body: String::new(),
-                action_payload: "vscode://file/tmp/b".to_string(),
-            },
-            base + Duration::from_millis(1),
-        );
-        state.insert(
-            IncomingNotification {
-                summary: "c".to_string(),
-                body: String::new(),
-                action_payload: "vscode://file/tmp/c".to_string(),
-            },
-            base + Duration::from_millis(2),
-        );
-
-        state.on_button_down(1, base + Duration::from_millis(3));
-        state.expire_pending(base + NOTIFICATION_PENDING_TIMEOUT + Duration::from_millis(10));
-
-        let slot0 = matches!(state.slots[0], SlotState::Unread { .. });
-        let slot1 = matches!(state.slots[1], SlotState::Empty);
-        let slot2 = matches!(state.slots[2], SlotState::Unread { .. });
-        assert!(slot0 && slot1 && slot2);
     }
 
     #[test]
     fn test_layout_config_parse_custom_order() {
-        let text = r#"
-            [layout]
-            sections = ["notif", "cpu", "bright", "mem"]
-        "#;
+        let text = concat!(
+            "[[layout.sections]]\ntype = \"notif\"\n\n",
+            "[[layout.sections]]\ntype = \"cpu\"\ncapacity = 30\n\n",
+            "[[layout.sections]]\ntype = \"bright\"\n\n",
+            "[[layout.sections]]\ntype = \"mem\"\ncapacity = 5\n",
+        );
         let cfg: DashboardConfig = toml::from_str(text).expect("layout parse failed");
-        assert!(matches!(cfg.layout.sections[0], DashboardSection::Notif));
-        assert!(matches!(cfg.layout.sections[1], DashboardSection::Cpu));
-        assert!(matches!(cfg.layout.sections[2], DashboardSection::Bright));
-        assert!(matches!(cfg.layout.sections[3], DashboardSection::Mem));
+        assert!(matches!(
+            cfg.layout.sections[0].kind,
+            DashboardSectionKind::Notif
+        ));
+        assert_eq!(cfg.layout.sections[0].capacity, HISTORY_LEN);
+        assert!(matches!(
+            cfg.layout.sections[1].kind,
+            DashboardSectionKind::Cpu
+        ));
+        assert_eq!(cfg.layout.sections[1].capacity, 30);
+        assert!(matches!(
+            cfg.layout.sections[2].kind,
+            DashboardSectionKind::Bright
+        ));
+        assert!(matches!(
+            cfg.layout.sections[3].kind,
+            DashboardSectionKind::Mem
+        ));
+        assert_eq!(cfg.layout.sections[3].capacity, 5);
     }
 
     #[test]
@@ -1217,19 +670,24 @@ mod tests {
         let path = dir.path().join("layout.toml");
         std::fs::write(
             &path,
-            "[layout]\nsections = [\"notif\", \"cpu\", \"bright\", \"mem\"]\n",
+            concat!(
+                "[[layout.sections]]\ntype = \"notif\"\n\n",
+                "[[layout.sections]]\ntype = \"cpu\"\n\n",
+                "[[layout.sections]]\ntype = \"bright\"\n\n",
+                "[[layout.sections]]\ntype = \"mem\"\n",
+            ),
         )
         .expect("write");
         let path_str = path.to_str().unwrap();
         let initial = DashboardConfig::load(path_str).expect("load");
         let manager = ConfigManager::new(path_str, initial);
         assert!(matches!(
-            manager.current().layout.sections[0],
-            DashboardSection::Notif
+            manager.current().layout.sections[0].kind,
+            DashboardSectionKind::Notif
         ));
         assert!(matches!(
-            manager.current().layout.sections[3],
-            DashboardSection::Mem
+            manager.current().layout.sections[3].kind,
+            DashboardSectionKind::Mem
         ));
     }
 
@@ -1239,7 +697,12 @@ mod tests {
         let path = dir.path().join("layout.toml");
         std::fs::write(
             &path,
-            "[layout]\nsections = [\"cpu\", \"mem\", \"load\", \"notif\"]\n",
+            concat!(
+                "[[layout.sections]]\ntype = \"cpu\"\n\n",
+                "[[layout.sections]]\ntype = \"mem\"\n\n",
+                "[[layout.sections]]\ntype = \"load\"\n\n",
+                "[[layout.sections]]\ntype = \"notif\"\n",
+            ),
         )
         .expect("write valid");
         let path_str = path.to_str().unwrap();
@@ -1251,7 +714,10 @@ mod tests {
 
         assert!(!reloaded, "壊れた TOML でリロード成功してはいけない");
         assert!(
-            matches!(manager.current().layout.sections[0], DashboardSection::Cpu),
+            matches!(
+                manager.current().layout.sections[0].kind,
+                DashboardSectionKind::Cpu
+            ),
             "旧設定が維持されていない"
         );
     }
@@ -1262,7 +728,12 @@ mod tests {
         let path = dir.path().join("layout.toml");
         std::fs::write(
             &path,
-            "[layout]\nsections = [\"cpu\", \"mem\", \"load\", \"notif\"]\n",
+            concat!(
+                "[[layout.sections]]\ntype = \"cpu\"\n\n",
+                "[[layout.sections]]\ntype = \"mem\"\n\n",
+                "[[layout.sections]]\ntype = \"load\"\n\n",
+                "[[layout.sections]]\ntype = \"notif\"\n",
+            ),
         )
         .expect("write initial");
         let path_str = path.to_str().unwrap();
@@ -1271,15 +742,28 @@ mod tests {
 
         std::fs::write(
             &path,
-            "[layout]\nsections = [\"notif\", \"cpu\", \"bright\", \"mem\"]\n",
+            concat!(
+                "[[layout.sections]]\ntype = \"notif\"\ncapacity = 20\n\n",
+                "[[layout.sections]]\ntype = \"cpu\"\n\n",
+                "[[layout.sections]]\ntype = \"bright\"\n\n",
+                "[[layout.sections]]\ntype = \"mem\"\n",
+            ),
         )
         .expect("write updated");
         let reloaded = manager.do_reload();
 
         assert!(reloaded, "有効な TOML のリロードが失敗してはいけない");
         assert!(
-            matches!(manager.current().layout.sections[0], DashboardSection::Notif),
+            matches!(
+                manager.current().layout.sections[0].kind,
+                DashboardSectionKind::Notif
+            ),
             "リロード後に設定が反映されていない"
+        );
+        assert_eq!(
+            manager.current().layout.sections[0].capacity,
+            20,
+            "capacity がリロード後に反映されていない"
         );
     }
 }

@@ -1,13 +1,15 @@
 //! Renderer: 800x100 の LCD ストリップに 4セクション構成で描画するモジュール
 //!
 //! ## レイアウト
+//! セクション数は実行時に決まり、`LCD_WIDTH / n` px 幅で均等分割する。
+//! バーの本数は各セクションの `history.len()` に従い、幅も自動計算される。
+//!
 //! ```text
 //! ┌──────────────────┬──────────────────┬──────────────────┬──────────────────┐
-//! │ CPU              │ MEM              │ LOAD             │ (未定)            │
+//! │ CPU              │ MEM              │ LOAD             │ NOTIF            │
 //! │     75.3%        │     48.2%        │      2.15        │      ---         │
 //! │▓▓░░▓▓▓░░▓▓░░▓▓▓ │...同様...        │...同様...        │                  │
 //! └──────────────────┴──────────────────┴──────────────────┴──────────────────┘
-//!   ←200px→              ←200px→              ←200px→              ←200px→
 //! ```
 //! バー: 全体高(100px)の背景として描画し、テキストをオーバーレイ
 
@@ -21,13 +23,6 @@ use imageproc::{
 /// LCDストリップのサイズ (Stream Deck+ 仕様)
 pub const LCD_WIDTH: u32 = 800;
 pub const LCD_HEIGHT: u32 = 100;
-
-/// セクション幅 (200px × 4 = 800px)
-const SECTION_WIDTH: u32 = 200;
-/// バーの本数 (= 10秒分のサンプル数)
-const BAR_COUNT: usize = 10;
-/// 1本あたりのバー幅 (200px / 10 = 20px)
-const BAR_WIDTH: u32 = SECTION_WIDTH / BAR_COUNT as u32;
 
 /// 値テキストのフォントサイズ (px)
 const VALUE_SCALE: f32 = 40.0;
@@ -43,14 +38,14 @@ const COLOR_LABEL: Rgb<u8> = Rgb([150, 150, 150]);
 /// NotoSans-Regular の埋め込みフォントデータ
 static FONT_DATA: &[u8] = include_bytes!("../assets/NotoSans-Regular.ttf");
 
-/// 1セクション分の描画データ
-pub struct SectionSpec<'a> {
+/// 1セクション分の描画データ（所有権あり）
+pub struct SectionSpec {
     /// ラベル文字列 (例: "CPU", "MEM", "LOAD")
-    pub label: &'a str,
+    pub label: &'static str,
     /// フォーマット済みの値文字列 (例: "75.3%", "2.15")
     pub value_text: String,
-    /// 正規化済み履歴 0.0..=1.0 (古い順、最大 BAR_COUNT 要素)
-    pub history: &'a [f32],
+    /// 正規化済み履歴 0.0..=1.0 (古い順)
+    pub history: Vec<f32>,
 }
 
 /// 4セクション構成で描画する LCD レンダラ
@@ -66,17 +61,23 @@ impl Renderer {
         Ok(Self { font })
     }
 
-    /// 4セクションのデータを受け取り 800x100 の DynamicImage を生成する
-    pub fn render(&self, sections: &[SectionSpec; 4]) -> DynamicImage {
+    /// セクション列を受け取り 800x100 の DynamicImage を生成する
+    ///
+    /// セクション数は可変。幅は `LCD_WIDTH / n` で均等分割し、
+    /// 各セクションのバー本数は `spec.history.len()` に従う。
+    pub fn render(&self, sections: &[SectionSpec]) -> DynamicImage {
+        let n = sections.len().max(1) as u32;
+        let section_width = LCD_WIDTH / n;
         let mut canvas = RgbImage::from_pixel(LCD_WIDTH, LCD_HEIGHT, COLOR_BG);
 
         for (s, spec) in sections.iter().enumerate() {
-            let x_offset = s as u32 * SECTION_WIDTH;
-            self.draw_section(&mut canvas, x_offset, spec);
+            let x_offset = s as u32 * section_width;
+            self.draw_section(&mut canvas, x_offset, section_width, spec);
         }
 
-        // セクション区切り線
-        for divider_x in [SECTION_WIDTH, SECTION_WIDTH * 2, SECTION_WIDTH * 3] {
+        // セクション間の区切り線
+        for s in 1..sections.len() {
+            let divider_x = s as u32 * section_width;
             draw_filled_rect_mut(
                 &mut canvas,
                 Rect::at(divider_x as i32, 0).of_size(1, LCD_HEIGHT),
@@ -87,48 +88,49 @@ impl Renderer {
         DynamicImage::ImageRgb8(canvas)
     }
 
-    /// 1セクション (200×100) を canvas の x_offset 位置に描画する
-    fn draw_section(&self, canvas: &mut RgbImage, x_offset: u32, spec: &SectionSpec) {
+    /// 1セクションを canvas の指定位置に描画する
+    fn draw_section(
+        &self,
+        canvas: &mut RgbImage,
+        x_offset: u32,
+        section_width: u32,
+        spec: &SectionSpec,
+    ) {
         // ── バープロット (背景レイヤ) ─────────────────────────────
-        let history = spec.history;
-        let bar_area = BAR_COUNT;
-        // 足りない分は左側を 0.0 でパディング
-        let pad = bar_area.saturating_sub(history.len());
+        let bar_count = spec.history.len();
+        if bar_count > 0 {
+            let bar_width = (section_width / bar_count as u32).max(1);
+            for (i, &norm) in spec.history.iter().enumerate() {
+                let norm = norm.clamp(0.0, 1.0);
+                // バーを古い順(左)→新しい順(右)で描画。最新バーを少し明るく
+                let brightness: u8 = if i == bar_count - 1 {
+                    75
+                } else {
+                    40 + (25 * i / bar_count) as u8
+                };
+                let bar_color = Rgb([0, brightness, 0]);
+                let bg_color = Rgb([0, brightness / 5, 0]);
 
-        for i in 0..bar_area {
-            let norm = if i < pad {
-                0.0_f32
-            } else {
-                history[i - pad].clamp(0.0, 1.0)
-            };
-            // バーを古い順(左)→新しい順(右)で描画。最新バーを少し明るく
-            let brightness: u8 = if i == bar_area - 1 {
-                75
-            } else {
-                40 + (25 * i / bar_area) as u8
-            };
-            let bar_color = Rgb([0, brightness, 0]);
-            let bg_color = Rgb([0, brightness / 5, 0]);
+                let bar_x = x_offset + i as u32 * bar_width;
+                let bar_h = (norm * LCD_HEIGHT as f32) as u32;
+                let empty_h = LCD_HEIGHT - bar_h;
 
-            let bar_x = x_offset + i as u32 * BAR_WIDTH;
-            let bar_h = (norm * LCD_HEIGHT as f32) as u32;
-            let empty_h = LCD_HEIGHT - bar_h;
-
-            // 空白部分 (バーの上)
-            if empty_h > 0 {
-                draw_filled_rect_mut(
-                    canvas,
-                    Rect::at(bar_x as i32, 0).of_size(BAR_WIDTH, empty_h),
-                    bg_color,
-                );
-            }
-            // バー本体
-            if bar_h > 0 {
-                draw_filled_rect_mut(
-                    canvas,
-                    Rect::at(bar_x as i32, empty_h as i32).of_size(BAR_WIDTH, bar_h),
-                    bar_color,
-                );
+                // 空白部分 (バーの上)
+                if empty_h > 0 {
+                    draw_filled_rect_mut(
+                        canvas,
+                        Rect::at(bar_x as i32, 0).of_size(bar_width, empty_h),
+                        bg_color,
+                    );
+                }
+                // バー本体
+                if bar_h > 0 {
+                    draw_filled_rect_mut(
+                        canvas,
+                        Rect::at(bar_x as i32, empty_h as i32).of_size(bar_width, bar_h),
+                        bar_color,
+                    );
+                }
             }
         }
 
@@ -148,7 +150,7 @@ impl Renderer {
         if !spec.value_text.is_empty() {
             let val_scale = PxScale::from(VALUE_SCALE);
             let (tw, th) = text_size(val_scale, &self.font, &spec.value_text);
-            let text_x = x_offset as i32 + (SECTION_WIDTH as i32 - tw as i32) / 2;
+            let text_x = x_offset as i32 + (section_width as i32 - tw as i32) / 2;
             let text_y = (LCD_HEIGHT as i32 - th as i32) / 2;
             draw_text_mut(
                 canvas,
@@ -171,13 +173,13 @@ mod tests {
         Renderer::new().expect("レンダラの初期化に失敗")
     }
 
-    fn make_sections<'a>(histories: &'a [[f32; 10]; 4]) -> [SectionSpec<'a>; 4] {
+    fn make_sections(histories: &[[f32; 10]; 4]) -> [SectionSpec; 4] {
         let labels = ["CPU", "MEM", "LOAD", "---"];
         let values = ["75.3%", "48.2%", "2.15", ""];
         std::array::from_fn(|i| SectionSpec {
             label: labels[i],
             value_text: values[i].to_string(),
-            history: &histories[i],
+            history: histories[i].to_vec(),
         })
     }
 
@@ -204,7 +206,7 @@ mod tests {
         let sections: [SectionSpec; 4] = std::array::from_fn(|_| SectionSpec {
             label: "X",
             value_text: "0.0".to_string(),
-            history: &[],
+            history: vec![],
         });
         let img = renderer.render(&sections);
         assert_eq!(img.width(), LCD_WIDTH);
@@ -220,9 +222,21 @@ mod tests {
         }
     }
 
-    /// 値域確認: バー幅の計算が正しい
+    /// 正常系: セクション数を変えても LCD 幅を満たす画像が生成される
     #[test]
-    fn test_bar_width_fills_section() {
-        assert_eq!(BAR_WIDTH * BAR_COUNT as u32, SECTION_WIDTH);
+    fn test_render_variable_section_count() {
+        let renderer = make_renderer();
+        for n in [1usize, 2, 3, 4, 5, 6] {
+            let sections: Vec<SectionSpec> = (0..n)
+                .map(|_| SectionSpec {
+                    label: "X",
+                    value_text: "1.0".to_string(),
+                    history: vec![0.5; 10],
+                })
+                .collect();
+            let img = renderer.render(&sections);
+            assert_eq!(img.width(), LCD_WIDTH, "n={n} のとき幅が不正");
+            assert_eq!(img.height(), LCD_HEIGHT, "n={n} のとき高さが不正");
+        }
     }
 }

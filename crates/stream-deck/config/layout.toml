@@ -1,4 +1,22 @@
-[layout]
-# 4 sections are rendered from left to right.
-# Available values: cpu, mem, load, bright, notif
-sections = ["cpu", "mem", "load", "bright"]
+
+# Stream Deck レイアウト設定
+#
+# 各セクションは [[layout.sections]] テーブルで宣言します。
+# type     : セクション種別 (cpu | mem | load | bright | notif)
+# capacity : 履歴バー本数  (省略時はデフォルト値が使われます)
+
+[[layout.sections]]
+type = "cpu"
+capacity = 10
+
+[[layout.sections]]
+type = "mem"
+capacity = 30
+
+[[layout.sections]]
+type = "load"
+capacity = 30
+
+[[layout.sections]]
+type = "cpu"
+capacity = 50

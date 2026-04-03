@@ -1,0 +1,14 @@
+[Unit]
+Description=Stream Deck+ ウィンドウ追跡 DBus ヘルパー
+Documentation=https://github.com/uzuna/rs-common
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -u %%REPO_ROOT%%/crates/stream-deck/window_tracker.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,179 +1,199 @@
 # stream-deck
 
-Elgato Stream Deck+ の LCD ストリップに、複数のメトリクスや通知状態を並べて表示するツールです。
+Elgato Stream Deck+ 向けの操作ランチャーです。LCD にシステムメトリクスを表示しながら、ボタンでアプリ起動・SSH 接続・ページ遷移を操作できます。
 
-この crate は、表示対象を固定の 4 分割ロジックで持つのではなく、`Plugin` と `Section` を分離した構造で実装されています。これにより、同じ種類の表示を履歴長だけ変えて複数並べる、といった構成を設定ファイルだけで切り替えられます。
+## 機能
 
-## アーキテクチャ概要
+- **アプリランチャー**: 設定ファイルで定義したコマンドをボタン一発で実行する
+- **SSH ナビゲーション**: SSH ホスト一覧からページ選択して接続し、既存セッションへ再フォーカスする
+- **LCD メトリクス表示**: CPU / メモリ / ロードを常時表示する
+- **通知表示**: 外部通知をボタンへオーバーレイ表示する
+- **自動コンテキスト遷移**: アクティブウィンドウから SSH ホストを検出して対応ページへ自動移動する
 
-役割は大きく 4 層です。
+## セットアップ
 
-1. `MetricsSource` などの共有データソース
-2. `DataPlugin` を実装した各プラグイン
-3. プラグインと履歴バッファを束ねる `Section`
-4. `SectionSpec` の配列を描画する `Renderer`
+### 必須パッケージ
 
-```text
-DashboardConfig
-    ↓
-build_sections()
-    ↓
-Section { plugin, history, capacity }
-    ↓ tick()
-DataPlugin::update()
-    ↓
-Section::as_spec()
-    ↓
-Renderer::render(&[SectionSpec])
+```bash
+# udev rules（Stream Deck を plugdev グループで使うため）
+sudo tee /etc/udev/rules.d/50-streamdeck.rules <<'EOF'
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", ATTRS{idProduct}=="0084", GROUP="plugdev", MODE="0664"
+EOF
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+# デバイスを抜き挿しして認識させる
+
+# wmctrl / xdotool（SSH ウィンドウフォーカス用）
+sudo apt install wmctrl xdotool
+
+# Python DBus ヘルパーの依存（window_tracker.py 用）
+sudo apt install python3-gi python3-dbus
 ```
 
-## 各コンポーネントの責務
+> **注意**: udev rules を設定しても usbhid がバインドされたままの場合はデバイスを抜き挿しすると解消します。
 
-### `MetricsSource`
+### ビルドと起動
 
-CPU、メモリ、ロードアベレージの元データを共有する層です。
+```bash
+cargo build -p stream-deck
 
-- `sysinfo::System` を内部に持つ
-- 毎ティック 1 回だけ `refresh()` を実行する
-- 各プラグインは `snapshot()` から最新値を読む
-
-この構造により、CPU 用・MEM 用・LOAD 用の各プラグインが個別に OS 情報を更新し直すことを避けています。
-
-### `DataPlugin`
-
-表示データを収集するための境界トレイトです。
-
-```rust
-pub trait DataPlugin {
-    fn update(&mut self);
-    fn latest_normalized(&self) -> f32;
-    fn value_text(&self) -> String;
-    fn label(&self) -> &'static str;
-}
+RUST_LOG=info cargo run -p stream-deck -- \
+  --config ./crates/stream-deck/config/layout.toml
 ```
 
-各メソッドの役割は次の通りです。
+診断コマンド（デバイス認識から接続まで 8 段階で確認）:
 
-- `update()`: 1 ティック分の最新値を取り込む
-- `latest_normalized()`: グラフ描画用の 0.0..=1.0 の値を返す
-- `value_text()`: LCD 中央に出す文字列を返す
-- `label()`: セクション左上のラベルを返す
-
-現在の実装には以下のプラグインがあります。
-
-- `CpuPlugin`
-- `MemPlugin`
-- `LoadPlugin`
-- `BrightnessPlugin`
-- `NotifPlugin`
-
-### `Section`
-
-LCD 上の 1 セクションに相当する表示単位です。
-
-- `Box<dyn DataPlugin>` を 1 つ保持する
-- 正規化済み履歴を `VecDeque<f32>` で保持する
-- `capacity` で履歴長を制御する
-
-重要なのは、履歴長が `Section` 側の責務になっている点です。これにより、同じ `CpuPlugin` を使っていても、別の `Section` に載せれば独立した履歴を持てます。
-
-```text
-Section::new(Box::new(CpuPlugin::new(...)), 10)
-Section::new(Box::new(CpuPlugin::new(...)), 30)
+```bash
+cargo run -p stream-deck -- diagnose
 ```
-
-この 2 つは同じ CPU データを参照しつつ、表示履歴だけが異なる別インスタンスとして扱われます。
-
-### `Renderer`
-
-描画層です。
-
-- 入力は `&[SectionSpec]`
-- セクション数は固定ではなく可変
-- 各セクション幅は `800 / n` で動的計算
-- 各セクションのバー本数は `history.len()` に従う
-
-そのため、4 セクション固定ではなく、設定次第で 1 個でも 5 個でも描画できます。
-
-## 更新フロー
-
-1 ティックごとの流れは次の通りです。
-
-1. `MetricsSource::refresh()` で共有メトリクスを更新する
-2. 各 `Section` の `tick()` を呼ぶ
-3. `Section::tick()` の中で `plugin.update()` を呼ぶ
-4. `latest_normalized()` の値を履歴バッファへ push する
-5. 全 `Section` を `SectionSpec` に変換する
-6. `Renderer::render()` で LCD 画像を生成する
-
-通知や輝度のように外部入力で更新される値は、プラグインが共有状態を読むだけで扱えます。`BrightnessPlugin` と `NotifPlugin` の `update()` が実質 no-op なのはこのためです。
-
-## モジュール構成
-
-- `src/main.rs`
-  - 起動処理、設定読み込み、メインループ、`build_sections()`
-- `src/metrics.rs`
-  - `MetricsSource` とメトリクス整形処理
-- `src/plugin.rs`
-  - `DataPlugin` と各プラグイン実装
-- `src/section.rs`
-  - `Section` と履歴バッファ管理
-- `src/renderer.rs`
-  - LCD 描画
-- `src/notifications.rs`
-  - 通知受信、通知スロット状態、ボタン反映用ロジック
 
 ## 設定ファイル
 
-レイアウトは `[[layout.sections]]` の配列として定義します。
-
-- `type`: セクション種別
-- `capacity`: 履歴バー本数
-
-`capacity` を省略した場合は、コード上のデフォルト値が使われます。
+`layout.toml` はページ中心の構成で記述します。
 
 ```toml
-[[layout.sections]]
-type = "cpu"
-capacity = 10
+[app]
+home = "home"
 
-[[layout.sections]]
-type = "cpu"
-capacity = 30
+[[pages]]
+id = "home"
+title = "Home"
 
-[[layout.sections]]
-type = "mem"
+[[pages.items]]
+kind = "nav"
+label = "Apps"
+target = "apps"
 
-[[layout.sections]]
-type = "notif"
+[[pages.items]]
+kind = "nav"
+label = "SSH"
+target = "ssh_hosts"
+
+[[pages]]
+id = "apps"
+title = "Apps"
+
+[[pages.items]]
+kind = "back"
+label = "Back"
+priority = 10
+
+[[pages.items]]
+kind = "command"
+label = "Browser"
+command = ["xdg-open", "https://example.com"]
+
+[dynamic.ssh_hosts]
+source = "crates/stream-deck/config/ssh_hosts.toml"
+page_size = 6
+page_id_prefix = "ssh_hosts"
+terminal = ["/usr/bin/x-terminal-emulator"]
+ssh_template = "ssh -o StrictHostKeyChecking=accept-new {host}"
 ```
 
-上の例では、CPU を短期履歴と長期履歴で 2 回表示しています。これは Plugin と Section を分離した構造であるため成立しています。
+`ssh_hosts.toml`:
 
-指定できる `type` は以下です。
+```toml
+[[hosts]]
+id = "server-01"
+label = "Server01"
+host = "user@192.168.0.11"
+```
 
-- `cpu`
-- `mem`
-- `load`
-- `bright`
-- `notif`
+### priority の使い方
 
-## 新しい表示項目を追加する手順
+`priority` が低いほど先のスロットへ割り当てられます。推奨レンジ:
 
-新しい表示を追加したい場合は、基本的に次の 3 点を実装します。
+| 用途 | priority |
+|------|---------|
+| Back / 戻る系 | 10 |
+| Prev / Next（ページング） | 20 |
+| 通常アプリ・SSH ホスト | 50〜100（省略可） |
 
-1. `plugin.rs` に `DataPlugin` 実装を追加する
-2. `main.rs` の `DashboardSectionKind` と `build_sections()` に分岐を追加する
-3. 必要なら共有データソースや外部状態を追加する
+## SSH ナビゲーション
 
-履歴の保持や描画幅の計算は `Section` と `Renderer` が受け持つため、新しい表示項目ごとに履歴管理や描画レイアウトを作り直す必要はありません。
+### ウィンドウフォーカス（Wayland 環境）
 
-## 設計上の利点
+Wayland セッションでは `wmctrl`/`xdotool` はデフォルトで Wayland ネイティブアプリに届きません。端末エミュレータを **XWayland** 経由で起動することで既存セッションへのフォーカスが機能します。
 
-- セクション数を固定しない
-- 履歴長をセクションごとに変えられる
-- 同一プラグイン型を複数回使える
-- データ収集と描画責務が分離される
-- 通知や輝度のような外部イベント駆動の値も同じ枠組みに載せられる
+```toml
+[dynamic.ssh_hosts]
+# GDK_BACKEND=x11 を先頭に追加して XWayland で起動する
+terminal = ["env", "GDK_BACKEND=x11", "/usr/bin/x-terminal-emulator"]
+```
 
-この構造により、今後セクション種別が増えても、既存の描画パイプラインや履歴管理を大きく崩さずに拡張できます。
+X11 セッションの場合はそのまま `/usr/bin/x-terminal-emulator` で動作します。
+
+### セッション再利用の仕組み
+
+- 同一ホストへの 2 回目以降の押下は PID 生存チェックを経て既存セッションへフォーカスする
+- PID が死んでいた場合は自動で新規起動する
+- フォーカスは `wmctrl -a <title>` → `xdotool search --name <title> windowactivate` の順で試みる
+
+## 自動コンテキスト遷移（DBus ヘルパー）
+
+SSH 端末をフォアグラウンドにしたとき、Stream Deck のページが自動で対応 SSH ページへ切り替わります。
+
+### `window_tracker.py` の起動
+
+AT-SPI でアクティブウィンドウタイトルを取得し、DBus プロパティとして公開するヘルパーです。
+
+```bash
+# /usr/bin/python3 を明示する（python3-gi が入っているインタープリタ）
+# -u でバッファリングを無効化してログを即時出力する
+/usr/bin/python3 -u crates/stream-deck/window_tracker.py > /tmp/tracker.log 2>&1 &
+
+# 動作確認
+gdbus call --session \
+  --dest io.github.uzuna.StreamDeckHelper \
+  --object-path /io/github/uzuna/StreamDeckHelper \
+  --method org.freedesktop.DBus.Properties.Get \
+  io.github.uzuna.StreamDeckHelper ActiveWindowTitle
+```
+
+### stream-deck 側の環境変数
+
+| 変数 | 値 |
+|------|----|
+| `STREAM_DECK_DBUS_SERVICE` | `io.github.uzuna.StreamDeckHelper` |
+| `STREAM_DECK_DBUS_PATH` | `/io/github/uzuna/StreamDeckHelper` |
+| `STREAM_DECK_DBUS_INTERFACE` | `io.github.uzuna.StreamDeckHelper` |
+| `STREAM_DECK_DBUS_PROPERTY` | `ActiveWindowTitle` |
+
+```bash
+export STREAM_DECK_DBUS_SERVICE="io.github.uzuna.StreamDeckHelper"
+export STREAM_DECK_DBUS_PATH="/io/github/uzuna/StreamDeckHelper"
+export STREAM_DECK_DBUS_INTERFACE="io.github.uzuna.StreamDeckHelper"
+export STREAM_DECK_DBUS_PROPERTY="ActiveWindowTitle"
+
+RUST_LOG=info cargo run -p stream-deck -- \
+  --config ./crates/stream-deck/config/layout.toml
+```
+
+環境変数が未設定の場合は no-op で継続します（自動遷移なし）。
+
+### 仕組み
+
+- `window_tracker.py` は 500ms ごとに AT-SPI でアクティブウィンドウタイトルを取得して DBus プロパティに書き込む
+- stream-deck は 500ms ごとに DBus プロパティを読み、タイトルに `rs-common:ssh:<host>` が含まれていれば対応 SSH ページへ自動遷移する
+
+## SSH テスト環境（multipass）
+
+```bash
+# VM を作成して設定ファイルを自動生成する
+bash scripts/stream-deck/setup_multipass_ssh_test.sh
+
+# 起動
+RUST_LOG=info cargo run -p stream-deck -- \
+  --config ./crates/stream-deck/config/layout.ssh-test.toml
+
+# 後片付け
+bash scripts/stream-deck/cleanup_multipass_ssh_test.sh
+```
+
+| 環境変数 | デフォルト | 説明 |
+|----------|-----------|------|
+| `VM_NAME` | `streamdeck-ssh-test` | VM 名 |
+| `HOST_COUNT` | `1` | 生成するホスト数（ページングテストは `9` 以上） |
+| `SSH_USER` | `ubuntu` | SSH ユーザー名 |
+| `SSH_PAGE_SIZE` | `6` | 1 ページあたりのホスト数 |

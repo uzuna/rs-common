@@ -360,6 +360,28 @@ pub fn validate_app_config(
     }
 
     if let Some(ssh) = &app.dynamic.ssh_hosts {
+        // 動的 SSH ページ先頭への nav を静的検証で許容するため、
+        // nav target 検証より前にプレフィックスを page_ids へ追加する。
+        if !ssh.page_id_prefix.trim().is_empty() {
+            page_ids.insert(ssh.page_id_prefix.trim().to_string());
+        }
+    }
+
+    for page in &app.pages {
+        for item in &page.items {
+            if let PageItemConfig::Nav { target, .. } = item {
+                let target = target.trim();
+                if !target.is_empty() && !page_ids.contains(target) {
+                    report.errors.push(format!(
+                        "page={} の nav target が存在しません: {target}",
+                        page.id
+                    ));
+                }
+            }
+        }
+    }
+
+    if let Some(ssh) = &app.dynamic.ssh_hosts {
         if ssh.page_size == 0 {
             report
                 .errors
@@ -374,9 +396,6 @@ pub fn validate_app_config(
             report
                 .errors
                 .push("dynamic.ssh_hosts.page_id_prefix が空です".to_string());
-        } else {
-            // 動的 SSH ページ先頭への nav を静的検証で許容する。
-            page_ids.insert(ssh.page_id_prefix.trim().to_string());
         }
 
         if terminal_title_capable {

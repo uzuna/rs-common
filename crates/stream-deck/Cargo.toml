@@ -29,6 +29,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 toml = "0.8"
 notify = { version = "6", optional = true }
+dbus = "0.9"
 
 [dev-dependencies]
 tempfile.workspace = true

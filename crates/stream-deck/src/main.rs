@@ -16,16 +16,16 @@ mod renderer;
 mod section;
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
-use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use ab_glyph::{FontVec, PxScale};
 use clap::{Parser, Subcommand};
+use dbus::arg::RefArg;
+use dbus::blocking::{Connection, Proxy};
 use elgato_streamdeck::DeviceStateUpdate;
 use image::{DynamicImage, Rgb, RgbImage};
 use imageproc::drawing::draw_text_mut;
@@ -56,6 +56,9 @@ const TICK_INTERVAL: Duration = Duration::from_secs(1);
 /// 再接続待機時間
 const RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
+/// DBus ポーリング間隔 (Python 側の 500ms ポーリングに合わせる)
+const DBUS_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
 /// 入力ポーリング間隔 (タック内で輝度操作を素早く反映するための刻み幅)
 const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -85,11 +88,14 @@ const RELOAD_DEBOUNCE: Duration = Duration::from_millis(200);
 
 /// デフォルト設定ファイル
 const DEFAULT_LAYOUT_CONFIG_PATH: &str = "crates/stream-deck/config/layout.toml";
+const DBUS_SERVICE_ENV: &str = "STREAM_DECK_DBUS_SERVICE";
+const DBUS_PATH_ENV: &str = "STREAM_DECK_DBUS_PATH";
+const DBUS_INTERFACE_ENV: &str = "STREAM_DECK_DBUS_INTERFACE";
+const DBUS_PROPERTY_ENV: &str = "STREAM_DECK_DBUS_PROPERTY";
 
 /// ボタン画像用フォント (NotoSans-Regular, 120x120 ボタン用)
 const BUTTON_FONT_SIZE: f32 = 18.0;
 const BUTTON_FONT_DATA: &[u8] = include_bytes!("../assets/NotoSans-Regular.ttf");
-
 /// Stream Deck CPU モニター
 #[derive(Parser)]
 #[command(
@@ -283,6 +289,8 @@ fn run_loop(
     let reader = hw.get_reader();
     hw.set_brightness(brightness.get())?;
     let mut page_state = PageState::new(config_manager.current());
+    let mut window_context_provider = build_window_context_provider();
+    let mut ssh_registry = SshSessionRegistry::new();
 
     // 接続時: 全ボタンをクリアしてから通知状態を復元する
     hw.clear_buttons()?;
@@ -314,6 +322,19 @@ fn run_loop(
         let notification_state_changed =
             poll_notification_state(notification_source, notification_state)?;
         if notification_state_changed {
+            refresh_button_display(
+                hw,
+                &notification_state.borrow(),
+                config_manager.current(),
+                &page_state,
+            )?;
+        }
+
+        if apply_context_auto_transition(
+            config_manager.current(),
+            &mut page_state,
+            window_context_provider.as_mut(),
+        ) {
             refresh_button_display(
                 hw,
                 &notification_state.borrow(),
@@ -369,12 +390,18 @@ fn run_loop(
                 notification_state,
                 config_manager.current(),
                 &mut page_state,
+                &mut ssh_registry,
             );
             let brightness_changed = input_outcome.brightness_changed;
             notification_state_changed |= input_outcome.notification_state_changed;
             let page_state_changed = input_outcome.page_state_changed;
+            let context_state_changed = apply_context_auto_transition(
+                config_manager.current(),
+                &mut page_state,
+                window_context_provider.as_mut(),
+            );
 
-            if notification_state_changed || page_state_changed {
+            if notification_state_changed || page_state_changed || context_state_changed {
                 refresh_button_display(
                     hw,
                     &notification_state.borrow(),
@@ -588,6 +615,222 @@ impl PageState {
             self.current_page_id = prev;
         }
     }
+
+    /// 自動コンテキスト遷移は履歴へ push せず現在ページのみ差し替える。
+    fn set_context_page(&mut self, target: String) {
+        self.current_page_id = target;
+    }
+}
+
+/// Step 7: アクティブウィンドウ情報から SSH ホスト文脈を得る境界。
+/// 現段階は no-op 実装で、DBus 実装を後続で差し替える。
+trait WindowContextProvider {
+    fn poll_active_ssh_host(&mut self) -> Option<String>;
+}
+
+struct NoopWindowContextProvider;
+
+impl WindowContextProvider for NoopWindowContextProvider {
+    fn poll_active_ssh_host(&mut self) -> Option<String> {
+        None
+    }
+}
+
+/// 環境差分を吸収するため、取得元 DBus プロパティは環境変数で指定する。
+/// プロパティ値に `rs-common:ssh:<host>` が含まれる場合に `<host>` を抽出する。
+struct DbusWindowContextProvider {
+    connection: Connection,
+    service: String,
+    path: String,
+    interface: String,
+    property: String,
+    last_host: Option<String>,
+    next_poll: Instant,
+}
+
+impl DbusWindowContextProvider {
+    fn from_env() -> anyhow::Result<Option<Self>> {
+        let service = std::env::var(DBUS_SERVICE_ENV).ok();
+        let path = std::env::var(DBUS_PATH_ENV).ok();
+        let interface = std::env::var(DBUS_INTERFACE_ENV).ok();
+        let property = std::env::var(DBUS_PROPERTY_ENV).ok();
+
+        let Some(service) = service else {
+            return Ok(None);
+        };
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        let Some(interface) = interface else {
+            return Ok(None);
+        };
+        let Some(property) = property else {
+            return Ok(None);
+        };
+
+        let connection = Connection::new_session()
+            .map_err(|e| anyhow::anyhow!("DBus セッションバス接続に失敗しました: {e}"))?;
+
+        Ok(Some(Self {
+            connection,
+            service,
+            path,
+            interface,
+            property,
+            last_host: None,
+            next_poll: Instant::now(),
+        }))
+    }
+
+    fn proxy(&self) -> Proxy<'_, &Connection> {
+        self.connection.with_proxy(
+            self.service.as_str(),
+            self.path.as_str(),
+            Duration::from_millis(80),
+        )
+    }
+
+    fn fetch_context_text(&self) -> anyhow::Result<String> {
+        let proxy = self.proxy();
+        let (value,): (dbus::arg::Variant<Box<dyn RefArg + 'static>>,) = proxy
+            .method_call(
+                "org.freedesktop.DBus.Properties",
+                "Get",
+                (self.interface.as_str(), self.property.as_str()),
+            )
+            .map_err(|e| anyhow::anyhow!("DBus Properties.Get 呼び出しに失敗しました: {e}"))?;
+
+        refarg_to_string(value.0.as_ref())
+            .ok_or_else(|| anyhow::anyhow!("DBus プロパティ値を文字列へ変換できませんでした"))
+    }
+}
+
+impl WindowContextProvider for DbusWindowContextProvider {
+    fn poll_active_ssh_host(&mut self) -> Option<String> {
+        // ポーリング間隔に達していない場合は DBus 呼び出しをスキップ
+        if Instant::now() < self.next_poll {
+            return None;
+        }
+        self.next_poll = Instant::now() + DBUS_POLL_INTERVAL;
+
+        let text = match self.fetch_context_text() {
+            Ok(text) => text,
+            Err(e) => {
+                debug!(err = %e, "DBus コンテキスト取得に失敗");
+                return None;
+            }
+        };
+
+        let host = parse_ssh_host_from_context(&text);
+
+        // 非 SSH ウィンドウに切り替わったら last_host をリセット（次の復帰を検出できるようにする）
+        if host.is_none() {
+            self.last_host = None;
+            return None;
+        }
+
+        let host = host.unwrap();
+        if self.last_host.as_ref() == Some(&host) {
+            return None;
+        }
+
+        self.last_host = Some(host.clone());
+        Some(host)
+    }
+}
+
+fn refarg_to_string(value: &dyn RefArg) -> Option<String> {
+    if let Some(s) = value.as_str() {
+        return Some(s.to_string());
+    }
+    if let Some(i) = value.as_i64() {
+        return Some(i.to_string());
+    }
+    if let Some(u) = value.as_u64() {
+        return Some(u.to_string());
+    }
+    None
+}
+
+fn parse_ssh_host_from_context(text: &str) -> Option<String> {
+    let marker = "rs-common:ssh:";
+    let start = text.find(marker)? + marker.len();
+    let rest = &text[start..];
+    let end = rest
+        .find(|c: char| c.is_whitespace() || c == '\u{7}' || c == '\u{1b}')
+        .unwrap_or(rest.len());
+    let host = rest[..end].trim();
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
+}
+
+fn build_window_context_provider() -> Box<dyn WindowContextProvider> {
+    match DbusWindowContextProvider::from_env() {
+        Ok(Some(provider)) => {
+            info!(
+                service = %provider.service,
+                path = %provider.path,
+                interface = %provider.interface,
+                property = %provider.property,
+                "DBus WindowContextProvider を有効化"
+            );
+            Box::new(provider)
+        }
+        Ok(None) => {
+            info!(
+                "DBus WindowContextProvider は無効（環境変数未設定）: {} {} {} {}",
+                DBUS_SERVICE_ENV, DBUS_PATH_ENV, DBUS_INTERFACE_ENV, DBUS_PROPERTY_ENV
+            );
+            Box::new(NoopWindowContextProvider)
+        }
+        Err(e) => {
+            warn!(err = %e, "DBus WindowContextProvider 初期化失敗のため no-op で継続");
+            Box::new(NoopWindowContextProvider)
+        }
+    }
+}
+
+fn resolve_ssh_host_target_page(config: &RuntimeConfig, host: &str) -> Option<String> {
+    for page in &config.pages {
+        for item in &page.items {
+            if let config::PageItemConfig::SshConnect {
+                host: item_host, ..
+            } = item
+            {
+                if item_host == host {
+                    return Some(page.id.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn apply_context_auto_transition(
+    config: &RuntimeConfig,
+    page_state: &mut PageState,
+    provider: &mut dyn WindowContextProvider,
+) -> bool {
+    let Some(host) = provider.poll_active_ssh_host() else {
+        return false;
+    };
+
+    let Some(target_page) = resolve_ssh_host_target_page(config, &host) else {
+        debug!(host = %host, "自動遷移対象外のホスト");
+        return false;
+    };
+
+    if page_state.current_page_id == target_page {
+        return false;
+    }
+
+    let from = page_state.current_page_id.clone();
+    page_state.set_context_page(target_page.clone());
+    info!(host = %host, from = %from, to = %target_page, "コンテキスト自動遷移");
+    true
 }
 
 fn fallback_page_id(config: &RuntimeConfig) -> Option<String> {
@@ -768,6 +1011,7 @@ fn handle_device_updates(
     notification_state: &Rc<RefCell<NotificationState>>,
     runtime_config: &RuntimeConfig,
     page_state: &mut PageState,
+    ssh_registry: &mut SshSessionRegistry,
 ) -> InputUpdateOutcome {
     let mut brightness_changed = false;
     let mut notification_state_changed = false;
@@ -863,12 +1107,9 @@ fn handle_device_updates(
                                     ssh_template = %ssh_template,
                                     "ページ ssh-connect を実行"
                                 );
-                                let action = ActionRequest::SshConnect {
-                                    host,
-                                    terminal,
-                                    ssh_template,
-                                };
-                                if let Err(e) = execute_action(action) {
+                                if let Err(e) =
+                                    ssh_registry.connect(&host, &terminal, &ssh_template)
+                                {
                                     warn!("ページ ssh-connect 実行失敗: {e:#}");
                                 }
                             }
@@ -910,31 +1151,15 @@ fn apply_brightness_delta(current: u8, delta: i8) -> u8 {
         .clamp(BRIGHTNESS_MIN as i16, BRIGHTNESS_MAX as i16) as u8
 }
 
-#[allow(dead_code)]
 /// 実行境界で扱うアクション要求。
-/// 通知由来の open と将来の command/ssh-connect を同じ入口に載せる。
+/// 通知由来の open と将来の command を同じ入口に載せる。
+/// SSH 接続は SshSessionRegistry 経由で実行するため、ここには含まない。
 enum ActionRequest {
     OpenTarget(String),
     Command {
         program: String,
         args: Vec<String>,
     },
-    SshConnect {
-        host: String,
-        terminal: Vec<String>,
-        ssh_template: String,
-    },
-}
-
-#[derive(Debug, Clone)]
-struct SshSessionEntry {
-    pid: u32,
-    title: String,
-}
-
-fn ssh_session_registry() -> &'static Mutex<HashMap<String, SshSessionEntry>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<String, SshSessionEntry>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn resolve_default_terminal_program() -> String {
@@ -1028,56 +1253,74 @@ fn compose_terminal_launch(
     Ok((program, args))
 }
 
-fn is_pid_alive(pid: u32) -> bool {
-    Path::new(&format!("/proc/{pid}")).exists()
+/// host -> 起動済みプロセス ID のレジストリ。セッション再利用とウィンドウフォーカスを管理する。
+struct SshSessionRegistry {
+    sessions: HashMap<String, u32>,
 }
 
-fn focus_window_best_effort(window_title: &str) -> bool {
-    let status = Command::new("wmctrl").arg("-a").arg(window_title).status();
-    matches!(status, Ok(s) if s.success())
-}
-
-fn execute_ssh_connect(host: &str, terminal: &[String], ssh_template: &str) -> anyhow::Result<()> {
-    let session_title = format!("rs-common:ssh:{host}");
-
-    {
-        let mut registry = ssh_session_registry()
-            .lock()
-            .map_err(|_| anyhow::anyhow!("SSH セッションレジストリのロックに失敗しました"))?;
-
-        if let Some(entry) = registry.get(host).cloned() {
-            if is_pid_alive(entry.pid) {
-                if focus_window_best_effort(&entry.title) {
-                    info!(host = %host, pid = entry.pid, "既存 SSH ウィンドウへフォーカスしました");
-                } else {
-                    info!(host = %host, pid = entry.pid, "既存 SSH セッションを再利用します（フォーカスは未保証）");
-                }
-                return Ok(());
-            }
-            registry.remove(host);
+impl SshSessionRegistry {
+    fn new() -> Self {
+        Self {
+            sessions: HashMap::new(),
         }
     }
 
-    let shell_command = build_ssh_shell_command(host, ssh_template, &session_title);
-    let (program, args) = compose_terminal_launch(terminal, &shell_command, &session_title)?;
-    let child = Command::new(&program).args(&args).spawn().map_err(|e| {
-        anyhow::anyhow!("SSH 接続用端末の起動に失敗しました program={program}: {e}")
-    })?;
+    /// `/proc/<pid>` の存在でプロセス生存を確認する。
+    fn is_alive(pid: u32) -> bool {
+        Path::new(&format!("/proc/{pid}")).exists()
+    }
 
-    let pid = child.id();
-    ssh_session_registry()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("SSH セッションレジストリのロックに失敗しました"))?
-        .insert(
-            host.to_string(),
-            SshSessionEntry {
-                pid,
-                title: session_title,
-            },
-        );
+    /// ウィンドウタイトルで既存セッションへのフォーカスを試みる。
+    /// `wmctrl -a` → `xdotool search --name windowactivate` の順にフォールバックする。
+    fn try_focus(title: &str) -> bool {
+        if Command::new("wmctrl")
+            .args(["-a", title])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        Command::new("xdotool")
+            .args(["search", "--name", title, "windowactivate"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
 
-    info!(host = %host, pid, program = %program, "SSH セッションを新規起動しました");
-    Ok(())
+    /// 既存セッションがあればフォーカス、なければ新規起動する。
+    fn connect(
+        &mut self,
+        host: &str,
+        terminal: &[String],
+        ssh_template: &str,
+    ) -> anyhow::Result<()> {
+        let session_title = format!("rs-common:ssh:{host}");
+
+        if let Some(&pid) = self.sessions.get(host) {
+            if Self::is_alive(pid) {
+                if Self::try_focus(&session_title) {
+                    info!(host, pid, "既存 SSH ウィンドウへフォーカスしました");
+                } else {
+                    info!(host, pid, "既存 SSH セッションを再利用します（フォーカスは未保証）");
+                }
+                return Ok(());
+            }
+            // PID が死んでいる場合はレジストリから削除して新規起動へ
+            self.sessions.remove(host);
+        }
+
+        let shell_command = build_ssh_shell_command(host, ssh_template, &session_title);
+        let (program, args) = compose_terminal_launch(terminal, &shell_command, &session_title)?;
+        let child = Command::new(&program).args(&args).spawn().map_err(|e| {
+            anyhow::anyhow!("SSH 接続用端末の起動に失敗しました program={program}: {e}")
+        })?;
+
+        let pid = child.id();
+        self.sessions.insert(host.to_string(), pid);
+        info!(host, pid, program = %program, "SSH セッションを新規起動しました");
+        Ok(())
+    }
 }
 
 fn execute_action(action: ActionRequest) -> anyhow::Result<()> {
@@ -1095,17 +1338,10 @@ fn execute_action(action: ActionRequest) -> anyhow::Result<()> {
                 anyhow::bail!("実行プログラム名が空です");
             }
             info!(program = %program, args = ?args, "command アクションを実行");
-            let status = Command::new(&program).args(args).status()?;
-            if !status.success() {
-                anyhow::bail!("コマンド実行が失敗しました: status={status}, program={program}");
-            }
+            let child = Command::new(&program).args(args).spawn()?;
+            info!(program = %program, pid = child.id(), "command を非同期起動しました");
             Ok(())
         }
-        ActionRequest::SshConnect {
-            host,
-            terminal,
-            ssh_template,
-        } => execute_ssh_connect(&host, &terminal, &ssh_template),
     }
 }
 
@@ -1367,6 +1603,16 @@ fn normalize_path(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
+    struct TestWindowContextProvider {
+        host: Option<String>,
+    }
+
+    impl WindowContextProvider for TestWindowContextProvider {
+        fn poll_active_ssh_host(&mut self) -> Option<String> {
+            self.host.take()
+        }
+    }
+
     fn runtime_with_items(items: Vec<config::PageItemConfig>) -> RuntimeConfig {
         RuntimeConfig {
             sections: vec![],
@@ -1376,6 +1622,15 @@ mod tests {
                 title: "Home".to_string(),
                 items,
             }],
+            watch_targets: vec![],
+        }
+    }
+
+    fn runtime_with_pages(pages: Vec<config::PageConfig>) -> RuntimeConfig {
+        RuntimeConfig {
+            sections: vec![],
+            home_page_id: "home".to_string(),
+            pages,
             watch_targets: vec![],
         }
     }
@@ -1597,5 +1852,104 @@ mod tests {
 
         assert!(args.iter().any(|a| a == "-e"));
         assert!(!args.iter().any(|a| a == "--"));
+    }
+
+    #[test]
+    fn test_resolve_ssh_host_target_page_finds_matching_page() {
+        let config = runtime_with_pages(vec![
+            config::PageConfig {
+                id: "home".to_string(),
+                title: "Home".to_string(),
+                items: vec![config::PageItemConfig::Nav {
+                    label: "SSH".to_string(),
+                    target: "ssh_hosts".to_string(),
+                    priority: None,
+                }],
+            },
+            config::PageConfig {
+                id: "ssh_hosts".to_string(),
+                title: "SSH".to_string(),
+                items: vec![config::PageItemConfig::SshConnect {
+                    label: "VM01".to_string(),
+                    host: "ubuntu@10.0.0.10".to_string(),
+                    terminal: vec![],
+                    ssh_template: "ssh {host}".to_string(),
+                    priority: None,
+                }],
+            },
+        ]);
+
+        let page = resolve_ssh_host_target_page(&config, "ubuntu@10.0.0.10");
+        assert_eq!(page.as_deref(), Some("ssh_hosts"));
+    }
+
+    #[test]
+    fn test_apply_context_auto_transition_switches_page_when_host_is_known() {
+        let config = runtime_with_pages(vec![
+            config::PageConfig {
+                id: "home".to_string(),
+                title: "Home".to_string(),
+                items: vec![],
+            },
+            config::PageConfig {
+                id: "ssh_hosts".to_string(),
+                title: "SSH".to_string(),
+                items: vec![config::PageItemConfig::SshConnect {
+                    label: "VM01".to_string(),
+                    host: "ubuntu@10.0.0.10".to_string(),
+                    terminal: vec![],
+                    ssh_template: "ssh {host}".to_string(),
+                    priority: None,
+                }],
+            },
+        ]);
+        let mut page_state = PageState {
+            current_page_id: "home".to_string(),
+            history: vec!["apps".to_string()],
+        };
+        let mut provider = TestWindowContextProvider {
+            host: Some("ubuntu@10.0.0.10".to_string()),
+        };
+
+        let changed = apply_context_auto_transition(&config, &mut page_state, &mut provider);
+
+        assert!(changed);
+        assert_eq!(page_state.current_page_id, "ssh_hosts");
+        assert_eq!(page_state.history, vec!["apps".to_string()]);
+    }
+
+    #[test]
+    fn test_apply_context_auto_transition_ignores_unknown_host() {
+        let config = runtime_with_pages(vec![config::PageConfig {
+            id: "home".to_string(),
+            title: "Home".to_string(),
+            items: vec![],
+        }]);
+        let mut page_state = PageState {
+            current_page_id: "home".to_string(),
+            history: vec![],
+        };
+        let mut provider = TestWindowContextProvider {
+            host: Some("ubuntu@10.0.0.99".to_string()),
+        };
+
+        let changed = apply_context_auto_transition(&config, &mut page_state, &mut provider);
+
+        assert!(!changed);
+        assert_eq!(page_state.current_page_id, "home");
+    }
+
+    #[test]
+    fn test_parse_ssh_host_from_context_extracts_marker_value() {
+        let text = "active=rs-common:ssh:ubuntu@10.149.39.52 title=terminal";
+        let host = parse_ssh_host_from_context(text);
+        assert_eq!(host.as_deref(), Some("ubuntu@10.149.39.52"));
+    }
+
+    #[test]
+    fn test_parse_ssh_host_from_context_returns_none_without_marker() {
+        let text = "active=Terminal title=home";
+        let host = parse_ssh_host_from_context(text);
+        assert_eq!(host, None);
     }
 }

@@ -17,9 +17,11 @@ mod section;
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use ab_glyph::{FontVec, PxScale};
@@ -716,6 +718,16 @@ fn resolve_page_button_decision(
         .unwrap_or(PageButtonDecision::Noop)
 }
 
+fn page_decision_name(decision: &PageButtonDecision) -> &'static str {
+    match decision {
+        PageButtonDecision::Navigate(_) => "navigate",
+        PageButtonDecision::Back => "back",
+        PageButtonDecision::Command(_) => "command",
+        PageButtonDecision::SshConnect { .. } => "ssh-connect",
+        PageButtonDecision::Noop => "noop",
+    }
+}
+
 fn resolve_encoder_role(idx: u8) -> Option<EncoderRole> {
     match idx {
         ENCODER_BRIGHTNESS => Some(EncoderRole::Brightness),
@@ -782,6 +794,7 @@ fn handle_device_updates(
 
                 match decision {
                     ButtonRoutingDecision::Notification(action) => {
+                        debug!(button = idx, "通知ボタン入力を処理");
                         notification_state_changed = true;
                         if let NotificationPressAction::Execute(payload) = action {
                             if let Err(e) = execute_payload(&payload) {
@@ -790,21 +803,46 @@ fn handle_device_updates(
                         }
                     }
                     ButtonRoutingDecision::BrightnessReset => {
+                        info!(button = idx, "輝度リセットを実行");
                         brightness.set(DEFAULT_BRIGHTNESS);
                         brightness_changed = true;
                     }
                     ButtonRoutingDecision::Noop => {
-                        match resolve_page_button_decision(runtime_config, page_state, idx) {
+                        let page_decision =
+                            resolve_page_button_decision(runtime_config, page_state, idx);
+                        debug!(
+                            button = idx,
+                            page = %page_state.current_page_id,
+                            decision = page_decision_name(&page_decision),
+                            "ページ入力を解決"
+                        );
+
+                        match page_decision {
                             PageButtonDecision::Navigate(target) => {
+                                let from = page_state.current_page_id.clone();
                                 page_state.navigate_to(target);
                                 page_state_changed = true;
+                                info!(
+                                    button = idx,
+                                    from = %from,
+                                    to = %page_state.current_page_id,
+                                    "ページ遷移"
+                                );
                             }
                             PageButtonDecision::Back => {
                                 let before = page_state.current_page_id.clone();
                                 page_state.back();
                                 page_state_changed = page_state.current_page_id != before;
+                                info!(
+                                    button = idx,
+                                    from = %before,
+                                    to = %page_state.current_page_id,
+                                    changed = page_state_changed,
+                                    "戻る操作"
+                                );
                             }
                             PageButtonDecision::Command(command) => {
+                                info!(button = idx, command = ?command, "ページ command を実行");
                                 let action = ActionRequest::Command {
                                     program: command[0].clone(),
                                     args: command[1..].to_vec(),
@@ -818,6 +856,13 @@ fn handle_device_updates(
                                 terminal,
                                 ssh_template,
                             } => {
+                                info!(
+                                    button = idx,
+                                    host = %host,
+                                    terminal = ?terminal,
+                                    ssh_template = %ssh_template,
+                                    "ページ ssh-connect を実行"
+                                );
                                 let action = ActionRequest::SshConnect {
                                     host,
                                     terminal,
@@ -881,9 +926,164 @@ enum ActionRequest {
     },
 }
 
+#[derive(Debug, Clone)]
+struct SshSessionEntry {
+    pid: u32,
+    title: String,
+}
+
+fn ssh_session_registry() -> &'static Mutex<HashMap<String, SshSessionEntry>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<String, SshSessionEntry>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn resolve_default_terminal_program() -> String {
+    let output = Command::new("readlink")
+        .arg("-e")
+        .arg("/usr/bin/x-terminal-emulator")
+        .output();
+
+    if let Ok(out) = output {
+        if out.status.success() {
+            let candidate = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !candidate.is_empty() {
+                return candidate;
+            }
+        }
+    }
+
+    "/usr/bin/x-terminal-emulator".to_string()
+}
+
+fn shell_escape_single_quoted(raw: &str) -> String {
+    raw.replace('\'', "'\"'\"'")
+}
+
+fn build_ssh_shell_command(host: &str, ssh_template: &str, title: &str) -> String {
+    let ssh_command = ssh_template.replace("{host}", host);
+    let escaped_title = shell_escape_single_quoted(title);
+    format!(
+        "printf '\\033]0;{}\\007'; exec {}",
+        escaped_title, ssh_command
+    )
+}
+
+fn compose_terminal_launch(
+    terminal: &[String],
+    shell_command: &str,
+    title: &str,
+) -> anyhow::Result<(String, Vec<String>)> {
+    let (program, mut args) = if terminal.is_empty() {
+        (resolve_default_terminal_program(), Vec::new())
+    } else {
+        (terminal[0].clone(), terminal[1..].to_vec())
+    };
+
+    if program.trim().is_empty() {
+        anyhow::bail!("terminal command の program が空です");
+    }
+
+    let bin_name = Path::new(&program)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    match bin_name {
+        "xterm" => {
+            args.push("-T".to_string());
+            args.push(title.to_string());
+            args.push("-e".to_string());
+            args.push("bash".to_string());
+            args.push("-lc".to_string());
+            args.push(shell_command.to_string());
+        }
+        // Debian/Ubuntu alternatives entry. Many implementations (e.g. terminator)
+        // reject "-- bash -lc ..." but accept "-e ...".
+        "x-terminal-emulator" => {
+            args.push("-T".to_string());
+            args.push(title.to_string());
+            args.push("-e".to_string());
+            args.push("bash".to_string());
+            args.push("-lc".to_string());
+            args.push(shell_command.to_string());
+        }
+        "konsole" => {
+            args.push("-p".to_string());
+            args.push(format!("tabtitle={title}"));
+            args.push("-e".to_string());
+            args.push("bash".to_string());
+            args.push("-lc".to_string());
+            args.push(shell_command.to_string());
+        }
+        _ => {
+            args.push("--title".to_string());
+            args.push(title.to_string());
+            args.push("--".to_string());
+            args.push("bash".to_string());
+            args.push("-lc".to_string());
+            args.push(shell_command.to_string());
+        }
+    }
+
+    Ok((program, args))
+}
+
+fn is_pid_alive(pid: u32) -> bool {
+    Path::new(&format!("/proc/{pid}")).exists()
+}
+
+fn focus_window_best_effort(window_title: &str) -> bool {
+    let status = Command::new("wmctrl").arg("-a").arg(window_title).status();
+    matches!(status, Ok(s) if s.success())
+}
+
+fn execute_ssh_connect(host: &str, terminal: &[String], ssh_template: &str) -> anyhow::Result<()> {
+    let session_title = format!("rs-common:ssh:{host}");
+
+    {
+        let mut registry = ssh_session_registry()
+            .lock()
+            .map_err(|_| anyhow::anyhow!("SSH セッションレジストリのロックに失敗しました"))?;
+
+        if let Some(entry) = registry.get(host).cloned() {
+            if is_pid_alive(entry.pid) {
+                if focus_window_best_effort(&entry.title) {
+                    info!(host = %host, pid = entry.pid, "既存 SSH ウィンドウへフォーカスしました");
+                } else {
+                    info!(host = %host, pid = entry.pid, "既存 SSH セッションを再利用します（フォーカスは未保証）");
+                }
+                return Ok(());
+            }
+            registry.remove(host);
+        }
+    }
+
+    let shell_command = build_ssh_shell_command(host, ssh_template, &session_title);
+    let (program, args) = compose_terminal_launch(terminal, &shell_command, &session_title)?;
+    let child = Command::new(&program).args(&args).spawn().map_err(|e| {
+        anyhow::anyhow!("SSH 接続用端末の起動に失敗しました program={program}: {e}")
+    })?;
+
+    let pid = child.id();
+    ssh_session_registry()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("SSH セッションレジストリのロックに失敗しました"))?
+        .insert(
+            host.to_string(),
+            SshSessionEntry {
+                pid,
+                title: session_title,
+            },
+        );
+
+    info!(host = %host, pid, program = %program, "SSH セッションを新規起動しました");
+    Ok(())
+}
+
 fn execute_action(action: ActionRequest) -> anyhow::Result<()> {
     match action {
         ActionRequest::OpenTarget(target) => {
+            info!(target = %target, "open アクションを実行");
             let status = Command::new("xdg-open").arg(&target).status()?;
             if !status.success() {
                 anyhow::bail!("xdg-open が失敗しました: status={status}");
@@ -894,6 +1094,7 @@ fn execute_action(action: ActionRequest) -> anyhow::Result<()> {
             if program.trim().is_empty() {
                 anyhow::bail!("実行プログラム名が空です");
             }
+            info!(program = %program, args = ?args, "command アクションを実行");
             let status = Command::new(&program).args(args).status()?;
             if !status.success() {
                 anyhow::bail!("コマンド実行が失敗しました: status={status}, program={program}");
@@ -904,13 +1105,7 @@ fn execute_action(action: ActionRequest) -> anyhow::Result<()> {
             host,
             terminal,
             ssh_template,
-        } => {
-            anyhow::bail!(
-                "SSH 接続アクションは未実装です: host={host}, terminal={:?}, ssh_template={}",
-                terminal,
-                ssh_template
-            )
-        }
+        } => execute_ssh_connect(&host, &terminal, &ssh_template),
     }
 }
 
@@ -1377,5 +1572,30 @@ mod tests {
         let labels: Vec<&str> = assignments.iter().map(|a| a.label.as_str()).collect();
 
         assert_eq!(labels, vec!["Back", "Apps", "MidA", "MidB", "Late"]);
+    }
+
+    #[test]
+    fn test_build_ssh_shell_command_replaces_host_placeholder() {
+        let cmd = build_ssh_shell_command("user@example", "ssh {host}", "title");
+        assert!(cmd.contains("exec ssh user@example"));
+        assert!(cmd.contains("printf"));
+    }
+
+    #[test]
+    fn test_compose_terminal_launch_falls_back_to_default_terminal() {
+        let (program, args) =
+            compose_terminal_launch(&[], "echo hi", "rs-common:ssh:test").expect("compose");
+        assert!(!program.trim().is_empty());
+        assert!(args.len() >= 4);
+    }
+
+    #[test]
+    fn test_compose_terminal_launch_for_x_terminal_emulator_uses_e_form() {
+        let terminal = vec!["/usr/bin/x-terminal-emulator".to_string()];
+        let (_, args) =
+            compose_terminal_launch(&terminal, "echo hi", "rs-common:ssh:test").expect("ok");
+
+        assert!(args.iter().any(|a| a == "-e"));
+        assert!(!args.iter().any(|a| a == "--"));
     }
 }

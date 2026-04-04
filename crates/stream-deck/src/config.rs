@@ -90,6 +90,11 @@ pub enum PageItemConfig {
         target: String,
         #[serde(default)]
         priority: Option<i32>,
+        /// ボタンとして表示するかどうか。`false` にするとボタン割り当てから除外される。
+        /// エンコーダによるページ遷移には影響しない（`find_page_nav_target` は常に走査する）。
+        /// TOML 未指定時は `true`（後方互換性を保つ）。
+        #[serde(default = "default_true")]
+        visible: bool,
     },
     Command {
         label: String,
@@ -114,6 +119,14 @@ pub enum PageItemConfig {
         #[serde(default)]
         priority: Option<i32>,
     },
+    /// Podman コンテナ監視ボタン。動的ページ生成時に programmatic に追加される。
+    #[serde(rename = "podman-monitor")]
+    PodmanMonitor {
+        container_id: String,
+        label: String,
+        #[serde(default)]
+        priority: Option<i32>,
+    },
 }
 
 /// priority の推奨レンジ。
@@ -126,7 +139,8 @@ fn page_item_priority(item: &PageItemConfig) -> Option<i32> {
         PageItemConfig::Nav { priority, .. }
         | PageItemConfig::Command { priority, .. }
         | PageItemConfig::Back { priority, .. }
-        | PageItemConfig::SshConnect { priority, .. } => *priority,
+        | PageItemConfig::SshConnect { priority, .. }
+        | PageItemConfig::PodmanMonitor { priority, .. } => *priority,
     }
 }
 
@@ -135,6 +149,38 @@ fn page_item_priority(item: &PageItemConfig) -> Option<i32> {
 pub struct DynamicConfig {
     #[serde(default)]
     pub ssh_hosts: Option<DynamicSshConfig>,
+    #[serde(default)]
+    pub podman: Option<DynamicPodmanConfig>,
+}
+
+/// Podman コンテナ監視の動的ページ設定。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DynamicPodmanConfig {
+    /// 監視を有効にするか
+    #[serde(default)]
+    pub enabled: bool,
+    /// 生成ページ ID の共通プレフィックス
+    #[serde(default = "default_podman_page_prefix")]
+    pub page_id_prefix: String,
+    /// 1ページに表示するコンテナ数
+    #[serde(default = "default_podman_page_size")]
+    pub page_size: usize,
+    /// Podman Unix ソケットパス。省略時は XDG_RUNTIME_DIR から自動解決
+    #[serde(default)]
+    pub socket: Option<String>,
+    /// ポーリング間隔 (ミリ秒)
+    #[serde(default = "default_podman_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+    /// CPU 使用率の履歴長 (バー本数)
+    #[serde(default = "default_podman_cpu_history_len")]
+    pub cpu_history_len: usize,
+    /// logs 表示コマンド (container_id を末尾に付加して実行)
+    #[serde(default = "default_podman_log_command")]
+    pub log_command: Vec<String>,
+    /// logs を表示する端末コマンド (log_command の前に置く)
+    #[serde(default)]
+    pub terminal: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -211,6 +257,8 @@ pub struct ConfigValidationReport {
     pub warnings: Vec<String>,
     pub ssh_enabled: bool,
     pub ssh_disabled_reason: Option<String>,
+    pub podman_enabled: bool,
+    pub podman_disabled_reason: Option<String>,
 }
 
 impl ConfigValidationReport {
@@ -246,11 +294,7 @@ impl AppConfigBundle {
             }
         }
 
-        let report = validate_app_config(
-            &app,
-            ssh_hosts.as_ref().map(Vec::as_slice),
-            terminal_title_capable,
-        );
+        let report = validate_app_config(&app, ssh_hosts.as_deref(), terminal_title_capable);
 
         Ok(Self {
             app,
@@ -319,6 +363,22 @@ pub fn validate_app_config(
                         ));
                     }
                 }
+                PageItemConfig::PodmanMonitor {
+                    container_id,
+                    label,
+                    ..
+                } => {
+                    if container_id.trim().is_empty() {
+                        report
+                            .errors
+                            .push(format!("page={id}: podman-monitor container_id が空です"));
+                    }
+                    if label.trim().is_empty() {
+                        report
+                            .warnings
+                            .push(format!("page={id}: podman-monitor label が空です"));
+                    }
+                }
             }
 
             if let Some(priority) = page_item_priority(item) {
@@ -364,6 +424,11 @@ pub fn validate_app_config(
         // nav target 検証より前にプレフィックスを page_ids へ追加する。
         if !ssh.page_id_prefix.trim().is_empty() {
             page_ids.insert(ssh.page_id_prefix.trim().to_string());
+        }
+    }
+    if let Some(podman) = &app.dynamic.podman {
+        if podman.enabled && !podman.page_id_prefix.trim().is_empty() {
+            page_ids.insert(podman.page_id_prefix.trim().to_string());
         }
     }
 
@@ -427,6 +492,45 @@ pub fn validate_app_config(
                         .errors
                         .push(format!("SSH host の接続先が空です: id={id}"));
                 }
+            }
+        }
+    }
+
+    if let Some(podman) = &app.dynamic.podman {
+        if podman.enabled {
+            let mut podman_errors = false;
+            if podman.page_size == 0 {
+                report
+                    .errors
+                    .push("dynamic.podman.page_size は 1 以上が必要です".to_string());
+                podman_errors = true;
+            }
+            if podman.poll_interval_ms < 100 {
+                report
+                    .errors
+                    .push("dynamic.podman.poll_interval_ms は 100 以上が必要です".to_string());
+                podman_errors = true;
+            }
+            if podman.cpu_history_len < 2 {
+                report
+                    .errors
+                    .push("dynamic.podman.cpu_history_len は 2 以上が必要です".to_string());
+                podman_errors = true;
+            }
+            if podman.log_command.is_empty() {
+                report
+                    .errors
+                    .push("dynamic.podman.log_command が空です".to_string());
+                podman_errors = true;
+            }
+            if podman.terminal.is_empty() {
+                report.warnings.push(
+                    "dynamic.podman.terminal が未指定のため logs 実行時解決に依存します"
+                        .to_string(),
+                );
+            }
+            if !podman_errors {
+                report.podman_enabled = true;
             }
         }
     }
@@ -532,6 +636,7 @@ pub fn build_dynamic_ssh_pages(input: &SshPageBuildInput, hosts: &[HostEntry]) -
                 label: "Prev".to_string(),
                 target: page_ids[page_idx - 1].clone(),
                 priority: Some(-90),
+                visible: false,
             });
         }
         if page_idx + 1 < page_ids.len() {
@@ -539,6 +644,7 @@ pub fn build_dynamic_ssh_pages(input: &SshPageBuildInput, hosts: &[HostEntry]) -
                 label: "Next".to_string(),
                 target: page_ids[page_idx + 1].clone(),
                 priority: Some(-80),
+                visible: false,
             });
         }
 
@@ -621,6 +727,10 @@ fn normalize_path(path: &Path) -> PathBuf {
     })
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_home_page_id() -> String {
     "home".to_string()
 }
@@ -660,4 +770,484 @@ fn default_ssh_page_prefix() -> String {
 
 fn default_ssh_template() -> String {
     "ssh {host}".to_string()
+}
+
+fn default_podman_page_size() -> usize {
+    6
+}
+
+fn default_podman_page_prefix() -> String {
+    "podman".to_string()
+}
+
+fn default_podman_poll_interval_ms() -> u64 {
+    500
+}
+
+fn default_podman_cpu_history_len() -> usize {
+    30
+}
+
+fn default_podman_log_command() -> Vec<String> {
+    vec!["podman".to_string(), "logs".to_string(), "-f".to_string()]
+}
+
+// ── Podman ページ生成 ──────────────────────────────────────────────
+
+/// `build_dynamic_podman_pages` への入力パラメータ。
+#[derive(Debug, Clone)]
+pub struct PodmanPageBuildInput {
+    pub page_size: usize,
+    pub page_id_prefix: String,
+    pub terminal: Vec<String>,
+    pub log_command: Vec<String>,
+}
+
+/// `DynamicPodmanConfig` から `PodmanPageBuildInput` を組み立てる。
+/// `enabled = false` または必須フィールドが不正な場合は `None` を返す。
+pub fn build_podman_page_build_input(cfg: &DynamicPodmanConfig) -> Option<PodmanPageBuildInput> {
+    if !cfg.enabled {
+        return None;
+    }
+    let prefix = cfg.page_id_prefix.trim();
+    if prefix.is_empty() || cfg.page_size == 0 {
+        return None;
+    }
+    Some(PodmanPageBuildInput {
+        page_size: cfg.page_size,
+        page_id_prefix: prefix.to_string(),
+        terminal: cfg.terminal.clone(),
+        log_command: cfg.log_command.clone(),
+    })
+}
+
+/// Podman コンテナエントリ（ページ生成に必要な最小フィールド）。
+#[derive(Debug, Clone)]
+pub struct PodmanContainerEntry {
+    pub id: String,
+    pub label: String,
+}
+
+/// Podman コンテナ一覧から動的ページ群を生成する。
+/// SSH ページと同じページング規則（Back 固定 / Prev / Next）を使う。
+pub fn build_dynamic_podman_pages(
+    input: &PodmanPageBuildInput,
+    entries: &[PodmanContainerEntry],
+) -> Vec<PageConfig> {
+    if input.page_size == 0 || entries.is_empty() {
+        return Vec::new();
+    }
+
+    let chunk_count = entries.len().div_ceil(input.page_size);
+    let page_ids: Vec<String> = (0..chunk_count)
+        .map(|idx| {
+            if idx == 0 {
+                input.page_id_prefix.clone()
+            } else {
+                format!("{}_{}", input.page_id_prefix, idx + 1)
+            }
+        })
+        .collect();
+
+    let mut pages = Vec::with_capacity(chunk_count);
+    for (page_idx, chunk) in entries.chunks(input.page_size).enumerate() {
+        let mut items: Vec<PageItemConfig> = Vec::new();
+
+        items.push(PageItemConfig::Back {
+            label: "Back".to_string(),
+            priority: Some(-100),
+        });
+        if page_idx > 0 {
+            items.push(PageItemConfig::Nav {
+                label: "Prev".to_string(),
+                target: page_ids[page_idx - 1].clone(),
+                priority: Some(-90),
+                visible: false,
+            });
+        }
+        if page_idx + 1 < page_ids.len() {
+            items.push(PageItemConfig::Nav {
+                label: "Next".to_string(),
+                target: page_ids[page_idx + 1].clone(),
+                priority: Some(-80),
+                visible: false,
+            });
+        }
+
+        for entry in chunk {
+            items.push(PageItemConfig::PodmanMonitor {
+                container_id: entry.id.clone(),
+                label: entry.label.clone(),
+                priority: Some(0),
+            });
+        }
+
+        pages.push(PageConfig {
+            id: page_ids[page_idx].clone(),
+            title: format!("Podman {} / {}", page_idx + 1, page_ids.len()),
+            items,
+        });
+    }
+
+    pages
+}
+
+/// Podman Unix ソケットパスを解決する。
+/// `cfg.socket` が指定されていればそれを使い、なければ `XDG_RUNTIME_DIR` から解決する。
+pub fn resolve_podman_socket_path(cfg: &DynamicPodmanConfig) -> String {
+    if let Some(socket) = &cfg.socket {
+        let trimmed = socket.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+        .unwrap_or_else(|_| format!("/run/user/{}", read_process_uid()));
+    format!("{}/podman/podman.sock", runtime_dir)
+}
+
+/// `/proc/self/status` から実行中プロセスの UID を読み取る。失敗時は 1000 を返す。
+fn read_process_uid() -> u32 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("Uid:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|s| s.parse().ok())
+        })
+        .unwrap_or(1000)
+}
+
+// ── テスト ─────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_podman_cfg(
+        page_size: usize,
+        poll_ms: u64,
+        hist_len: usize,
+        log_cmd: Vec<String>,
+    ) -> DynamicPodmanConfig {
+        DynamicPodmanConfig {
+            enabled: true,
+            page_id_prefix: "podman".to_string(),
+            page_size,
+            socket: None,
+            poll_interval_ms: poll_ms,
+            cpu_history_len: hist_len,
+            log_command: log_cmd,
+            terminal: vec![],
+        }
+    }
+
+    fn base_app(podman: Option<DynamicPodmanConfig>) -> AppConfig {
+        AppConfig {
+            app: AppMeta {
+                home: "home".to_string(),
+            },
+            dashboard: DashboardConfig {
+                sections: vec![DashboardSectionConfig {
+                    kind: DashboardSectionKind::Cpu,
+                    capacity: 10,
+                }],
+            },
+            pages: vec![PageConfig {
+                id: "home".to_string(),
+                title: "Home".to_string(),
+                items: vec![],
+            }],
+            dynamic: DynamicConfig {
+                ssh_hosts: None,
+                podman: podman.map(|p| p),
+            },
+            watch: WatchConfig::default(),
+        }
+    }
+
+    /// 値域確認: page_size=0 はエラー
+    #[test]
+    fn test_podman_validate_page_size_zero() {
+        let app = base_app(Some(make_podman_cfg(0, 500, 10, vec!["podman".into()])));
+        let report = validate_app_config(&app, None, false);
+        assert!(
+            report.errors.iter().any(|e| e.contains("page_size")),
+            "エラー一覧: {:?}",
+            report.errors
+        );
+        assert!(!report.podman_enabled);
+    }
+
+    /// 値域確認: poll_interval_ms<100 はエラー
+    #[test]
+    fn test_podman_validate_poll_interval_too_small() {
+        let app = base_app(Some(make_podman_cfg(6, 99, 10, vec!["podman".into()])));
+        let report = validate_app_config(&app, None, false);
+        assert!(
+            report.errors.iter().any(|e| e.contains("poll_interval_ms")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    /// 値域確認: cpu_history_len<2 はエラー
+    #[test]
+    fn test_podman_validate_history_len_too_small() {
+        let app = base_app(Some(make_podman_cfg(6, 500, 1, vec!["podman".into()])));
+        let report = validate_app_config(&app, None, false);
+        assert!(
+            report.errors.iter().any(|e| e.contains("cpu_history_len")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    /// 値域確認: log_command 空はエラー
+    #[test]
+    fn test_podman_validate_log_command_empty() {
+        let app = base_app(Some(make_podman_cfg(6, 500, 10, vec![])));
+        let report = validate_app_config(&app, None, false);
+        assert!(
+            report.errors.iter().any(|e| e.contains("log_command")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    /// 正常系: 有効設定で podman_enabled = true
+    #[test]
+    fn test_podman_validate_valid() {
+        let app = base_app(Some(make_podman_cfg(
+            6,
+            500,
+            10,
+            vec!["podman".into(), "logs".into(), "-f".into()],
+        )));
+        let report = validate_app_config(&app, None, false);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(report.podman_enabled);
+    }
+
+    fn make_entries(n: usize) -> Vec<PodmanContainerEntry> {
+        (0..n)
+            .map(|i| PodmanContainerEntry {
+                id: format!("id{i:012}"),
+                label: format!("container{i}"),
+            })
+            .collect()
+    }
+
+    fn make_input() -> PodmanPageBuildInput {
+        PodmanPageBuildInput {
+            page_size: 4,
+            page_id_prefix: "podman".to_string(),
+            terminal: vec![],
+            log_command: vec!["podman".into(), "logs".into(), "-f".into()],
+        }
+    }
+
+    /// 正常系: 0件でページ生成なし
+    #[test]
+    fn test_podman_pages_empty() {
+        let pages = build_dynamic_podman_pages(&make_input(), &[]);
+        assert!(pages.is_empty());
+    }
+
+    /// 正常系: 1件で1ページ (Back のみ、Prev/Next なし)
+    #[test]
+    fn test_podman_pages_single() {
+        let pages = build_dynamic_podman_pages(&make_input(), &make_entries(1));
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].id, "podman");
+        let has_back = pages[0]
+            .items
+            .iter()
+            .any(|i| matches!(i, PageItemConfig::Back { .. }));
+        let has_prev = pages[0]
+            .items
+            .iter()
+            .any(|i| matches!(i, PageItemConfig::Nav { label, .. } if label == "Prev"));
+        let has_next = pages[0]
+            .items
+            .iter()
+            .any(|i| matches!(i, PageItemConfig::Nav { label, .. } if label == "Next"));
+        assert!(has_back);
+        assert!(!has_prev);
+        assert!(!has_next);
+    }
+
+    /// 正常系: page_size=4 で5件 → 2ページ (Next/Back/Prev)
+    #[test]
+    fn test_podman_pages_pagination() {
+        let pages = build_dynamic_podman_pages(&make_input(), &make_entries(5));
+        assert_eq!(pages.len(), 2);
+        // page1: Back + Next + 4 containers
+        let p1 = &pages[0];
+        assert_eq!(p1.id, "podman");
+        let monitor_count = p1
+            .items
+            .iter()
+            .filter(|i| matches!(i, PageItemConfig::PodmanMonitor { .. }))
+            .count();
+        assert_eq!(monitor_count, 4);
+        let has_next = p1
+            .items
+            .iter()
+            .any(|i| matches!(i, PageItemConfig::Nav { label, .. } if label == "Next"));
+        assert!(has_next);
+        // page2: Back + Prev + 1 container
+        let p2 = &pages[1];
+        assert_eq!(p2.id, "podman_2");
+        let monitor_count2 = p2
+            .items
+            .iter()
+            .filter(|i| matches!(i, PageItemConfig::PodmanMonitor { .. }))
+            .count();
+        assert_eq!(monitor_count2, 1);
+        let has_prev = p2
+            .items
+            .iter()
+            .any(|i| matches!(i, PageItemConfig::Nav { label, .. } if label == "Prev"));
+        assert!(has_prev);
+    }
+
+    /// 後方互換: TOML に visible 未指定の Nav は visible=true として扱われる
+    #[test]
+    fn test_nav_visible_default_true() {
+        let toml = r#"
+            [[pages]]
+            id = "home"
+            title = "Home"
+            [[pages.items]]
+            kind = "nav"
+            label = "Go"
+            target = "home"
+        "#;
+        let app: AppConfig = toml::from_str(toml).unwrap();
+        let item = &app.pages[0].items[0];
+        if let PageItemConfig::Nav { visible, .. } = item {
+            assert!(*visible, "デフォルトは true であるべき");
+        } else {
+            panic!("Nav アイテムでない");
+        }
+    }
+
+    /// 値域確認: visible=false の Nav アイテムは TOML で明示的に設定できる
+    #[test]
+    fn test_nav_visible_false_in_toml() {
+        let toml = r#"
+            [[pages]]
+            id = "home"
+            title = "Home"
+            [[pages.items]]
+            kind = "nav"
+            label = "Prev"
+            target = "home"
+            visible = false
+        "#;
+        let app: AppConfig = toml::from_str(toml).unwrap();
+        let item = &app.pages[0].items[0];
+        if let PageItemConfig::Nav { visible, .. } = item {
+            assert!(!*visible, "visible=false が正しく設定されるべき");
+        } else {
+            panic!("Nav アイテムでない");
+        }
+    }
+
+    /// 正常系: 動的 SSH ページの Prev/Next は visible=false で生成される
+    #[test]
+    fn test_ssh_pages_prev_next_invisible() {
+        use crate::config::{HostEntry, SshPageBuildInput};
+        let input = SshPageBuildInput {
+            page_size: 1,
+            page_id_prefix: "ssh".to_string(),
+            terminal: vec![],
+            ssh_template: "ssh {host}".to_string(),
+        };
+        let hosts = vec![
+            HostEntry {
+                id: "h1".to_string(),
+                label: "Host1".to_string(),
+                host: "host1.example.com".to_string(),
+                tags: vec![],
+            },
+            HostEntry {
+                id: "h2".to_string(),
+                label: "Host2".to_string(),
+                host: "host2.example.com".to_string(),
+                tags: vec![],
+            },
+        ];
+        let pages = build_dynamic_ssh_pages(&input, &hosts);
+        // page1 の Next は visible=false
+        let next_item = pages[0]
+            .items
+            .iter()
+            .find(|i| matches!(i, PageItemConfig::Nav { label, .. } if label == "Next"));
+        let PageItemConfig::Nav { visible, .. } = next_item.unwrap() else {
+            panic!()
+        };
+        assert!(!*visible, "動的 SSH Next は visible=false であるべき");
+        // page2 の Prev は visible=false
+        let prev_item = pages[1]
+            .items
+            .iter()
+            .find(|i| matches!(i, PageItemConfig::Nav { label, .. } if label == "Prev"));
+        let PageItemConfig::Nav { visible, .. } = prev_item.unwrap() else {
+            panic!()
+        };
+        assert!(!*visible, "動的 SSH Prev は visible=false であるべき");
+    }
+
+    /// 正常系: 動的 Podman ページの Prev/Next は visible=false で生成される
+    #[test]
+    fn test_podman_pages_prev_next_invisible() {
+        let pages = build_dynamic_podman_pages(&make_input(), &make_entries(5));
+        // page1 の Next は visible=false
+        let next_item = pages[0]
+            .items
+            .iter()
+            .find(|i| matches!(i, PageItemConfig::Nav { label, .. } if label == "Next"));
+        let PageItemConfig::Nav { visible, .. } = next_item.unwrap() else {
+            panic!()
+        };
+        assert!(!*visible, "Podman Next は visible=false であるべき");
+        // page2 の Prev は visible=false
+        let prev_item = pages[1]
+            .items
+            .iter()
+            .find(|i| matches!(i, PageItemConfig::Nav { label, .. } if label == "Prev"));
+        let PageItemConfig::Nav { visible, .. } = prev_item.unwrap() else {
+            panic!()
+        };
+        assert!(!*visible, "Podman Prev は visible=false であるべき");
+    }
+
+    /// 正常系: container_id と label が正しく PodmanMonitor に入る
+    #[test]
+    fn test_podman_pages_item_fields() {
+        let entries = vec![PodmanContainerEntry {
+            id: "abc123".to_string(),
+            label: "myapp".to_string(),
+        }];
+        let pages = build_dynamic_podman_pages(&make_input(), &entries);
+        let item = pages[0]
+            .items
+            .iter()
+            .find(|i| matches!(i, PageItemConfig::PodmanMonitor { .. }))
+            .unwrap();
+        if let PageItemConfig::PodmanMonitor {
+            container_id,
+            label,
+            ..
+        } = item
+        {
+            assert_eq!(container_id, "abc123");
+            assert_eq!(label, "myapp");
+        } else {
+            panic!("PodmanMonitor が見つかりません");
+        }
+    }
 }

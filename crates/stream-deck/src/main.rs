@@ -11,7 +11,9 @@ mod device;
 mod error;
 mod metrics;
 mod notifications;
+mod paging;
 mod plugin;
+mod podman;
 mod renderer;
 mod section;
 
@@ -224,11 +226,49 @@ fn load_runtime_config(config_path: &str) -> anyhow::Result<RuntimeConfig> {
         }
     }
 
+    if bundle.report.podman_enabled {
+        if let Some(podman_cfg) = bundle.app.dynamic.podman.as_ref() {
+            if let Some(input) = config::build_podman_page_build_input(podman_cfg) {
+                let socket_path = config::resolve_podman_socket_path(podman_cfg);
+                let client = podman::PodmanClient::new(&socket_path);
+                match client.load_entries() {
+                    Ok(entries) => {
+                        let containers: Vec<config::PodmanContainerEntry> = entries
+                            .iter()
+                            .map(|entry| config::PodmanContainerEntry {
+                                id: entry.id.clone(),
+                                label: entry.display_label(),
+                            })
+                            .collect();
+                        let generated = config::build_dynamic_podman_pages(&input, &containers);
+                        if !generated.is_empty() {
+                            info!(
+                                socket = %socket_path,
+                                count = generated.len(),
+                                containers = containers.len(),
+                                "動的 Podman ページを生成しました"
+                            );
+                            pages.extend(generated);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            socket = %socket_path,
+                            err = %e,
+                            "Podman コンテナ一覧の取得に失敗したため Podman ページ生成をスキップ"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     Ok(RuntimeConfig {
         sections: bundle.app.dashboard.sections,
         home_page_id: bundle.app.app.home,
         pages,
         watch_targets: bundle.watch_targets,
+        podman: bundle.app.dynamic.podman,
     })
 }
 
@@ -291,6 +331,7 @@ fn run_loop(
     let mut page_state = PageState::new(config_manager.current());
     let mut window_context_provider = build_window_context_provider();
     let mut ssh_registry = SshSessionRegistry::new();
+    let mut page_nav_overlay = paging::PageNavOverlay::new();
 
     // 接続時: 全ボタンをクリアしてから通知状態を復元する
     hw.clear_buttons()?;
@@ -361,13 +402,15 @@ fn run_loop(
         }
 
         // LCD は常にメトリクス表示を維持する。
-        let frame = build_legacy_display_frame(sections);
-        let image = render_display_frame(renderer, frame);
-
-        if let Err(e) = hw.set_lcd_strip_image(image) {
-            error!("LCD 書き込みエラー: {e:#}");
-            return Err(anyhow::anyhow!("{e}"));
-        }
+        // ページ遷移操作直後 2 秒間だけ左端セクションをページ位置情報で上書きする。
+        render_lcd_display(
+            hw,
+            renderer,
+            sections,
+            &page_nav_overlay,
+            config_manager.current(),
+            &page_state,
+        )?;
 
         // 次のTickまで入力をポーリングする (INPUT_POLL_INTERVAL 刻み)
         let deadline = Instant::now() + TICK_INTERVAL;
@@ -391,6 +434,7 @@ fn run_loop(
                 config_manager.current(),
                 &mut page_state,
                 &mut ssh_registry,
+                &mut page_nav_overlay,
             );
             let brightness_changed = input_outcome.brightness_changed;
             notification_state_changed |= input_outcome.notification_state_changed;
@@ -416,6 +460,18 @@ fn run_loop(
                     error!("輝度設定エラー: {e:#}");
                     return Err(anyhow::anyhow!("{e}"));
                 }
+            }
+
+            // エンコーダ操作によるページ遷移時は LCD を即座に更新
+            if input_outcome.lcd_needs_update {
+                render_lcd_display(
+                    hw,
+                    renderer,
+                    sections,
+                    &page_nav_overlay,
+                    config_manager.current(),
+                    &page_state,
+                )?;
             }
         }
     }
@@ -526,6 +582,9 @@ struct InputUpdateOutcome {
     brightness_changed: bool,
     notification_state_changed: bool,
     page_state_changed: bool,
+    /// エンコーダ操作によるページ遷移が発生した場合、LCD を即座に更新する。
+    /// ボタン操作は 1 秒ティックで十分なため `false` のままにする。
+    lcd_needs_update: bool,
 }
 
 /// ボタン入力の優先順位ポリシーに基づくルーティング結果。
@@ -536,17 +595,25 @@ enum ButtonRoutingDecision {
 }
 
 /// エンコーダ入力のルーティング結果。
-/// 現状は輝度エンコーダのみを受理する。
 enum EncoderRoutingDecision {
     BrightnessDelta(i8),
+    PageNavigate(NavDirection),
     Noop,
 }
 
 /// エンコーダの責務割り当て。
-/// Step 3-6 ではページ操作を未接続とし、右端のみ輝度操作に固定する。
 enum EncoderRole {
     ReservedNoop,
     Brightness,
+    /// ページスクロール: エンコーダ 0（左端）がページ遷移を担う。
+    PageScroll,
+}
+
+/// ページ遷移方向。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NavDirection {
+    Prev,
+    Next,
 }
 
 /// 現在ページ上のボタン入力解釈結果。
@@ -559,6 +626,12 @@ enum PageButtonDecision {
         host: String,
         terminal: Vec<String>,
         ssh_template: String,
+    },
+    /// Podman コンテナへの logs 表示アクション。
+    PodmanLogs {
+        container_id: String,
+        terminal: Vec<String>,
+        log_command: Vec<String>,
     },
     Noop,
 }
@@ -871,7 +944,8 @@ fn page_item_priority(item: &config::PageItemConfig) -> i32 {
         config::PageItemConfig::Nav { priority, .. }
         | config::PageItemConfig::Command { priority, .. }
         | config::PageItemConfig::Back { priority, .. }
-        | config::PageItemConfig::SshConnect { priority, .. } => {
+        | config::PageItemConfig::SshConnect { priority, .. }
+        | config::PageItemConfig::PodmanMonitor { priority, .. } => {
             priority.unwrap_or(DEFAULT_ITEM_PRIORITY)
         }
     }
@@ -882,6 +956,7 @@ fn page_item_label(item: &config::PageItemConfig) -> String {
         config::PageItemConfig::Nav { label, .. } => label.clone(),
         config::PageItemConfig::Command { label, .. } => label.clone(),
         config::PageItemConfig::SshConnect { label, .. } => label.clone(),
+        config::PageItemConfig::PodmanMonitor { label, .. } => label.clone(),
         config::PageItemConfig::Back { label, .. } => {
             if label.is_empty() {
                 "Back".to_string()
@@ -901,6 +976,11 @@ fn resolve_button_assignments(
             .iter()
             .enumerate()
             .collect();
+
+    // visible=false の Nav アイテム（Prev/Next など）はボタン割り当てから除外する。
+    // エンコーダ遷移用の find_page_nav_target は全アイテムを走査するため影響しない。
+    indexed_items
+        .retain(|(_, item)| !matches!(item, config::PageItemConfig::Nav { visible: false, .. }));
 
     // priority 昇順 + 設定記述順で安定化して、先頭からボタンへ割り当てる。
     indexed_items.sort_by_key(|(source_idx, item)| (page_item_priority(item), *source_idx));
@@ -946,8 +1026,30 @@ fn resolve_button_assignments(
                     ssh_template: ssh_template.clone(),
                 },
             },
+            config::PageItemConfig::PodmanMonitor { container_id, .. } => {
+                let (terminal, log_command) = runtime_podman_log_launch(config);
+                ResolvedButtonAssignment {
+                    label: page_item_label(item),
+                    color: AssignedButtonColor::Command,
+                    decision: PageButtonDecision::PodmanLogs {
+                        container_id: container_id.clone(),
+                        terminal,
+                        log_command,
+                    },
+                }
+            }
         })
         .collect()
+}
+
+fn runtime_podman_log_launch(config: &RuntimeConfig) -> (Vec<String>, Vec<String>) {
+    if let Some(podman_cfg) = config.podman.as_ref() {
+        return (podman_cfg.terminal.clone(), podman_cfg.log_command.clone());
+    }
+    (
+        Vec::new(),
+        vec!["podman".to_string(), "logs".to_string(), "-f".to_string()],
+    )
 }
 
 fn resolve_page_button_decision(
@@ -967,23 +1069,82 @@ fn page_decision_name(decision: &PageButtonDecision) -> &'static str {
         PageButtonDecision::Back => "back",
         PageButtonDecision::Command(_) => "command",
         PageButtonDecision::SshConnect { .. } => "ssh-connect",
+        PageButtonDecision::PodmanLogs { .. } => "podman-logs",
         PageButtonDecision::Noop => "noop",
     }
 }
 
-fn resolve_encoder_role(idx: u8) -> Option<EncoderRole> {
+/// コンテキスト対応のエンコーダ責務割り当て。
+/// エンコーダ 0: 現在ページに Prev/Next nav があれば PageScroll、なければ ReservedNoop。
+/// エンコーダ 3: 常に Brightness。
+fn resolve_encoder_role_ctx(
+    idx: u8,
+    config: &RuntimeConfig,
+    page_state: &PageState,
+) -> Option<EncoderRole> {
     match idx {
         ENCODER_BRIGHTNESS => Some(EncoderRole::Brightness),
-        0..=2 => Some(EncoderRole::ReservedNoop),
+        0 => {
+            let has_paging = current_page_items(config, page_state).iter().any(|item| {
+                matches!(
+                    item,
+                    config::PageItemConfig::Nav { label, .. }
+                    if label == "Prev" || label == "Next"
+                )
+            });
+            if has_paging {
+                Some(EncoderRole::PageScroll)
+            } else {
+                Some(EncoderRole::ReservedNoop)
+            }
+        }
+        1..=2 => Some(EncoderRole::ReservedNoop),
         _ => None,
     }
 }
 
-fn resolve_encoder_twist_policy(idx: u8, delta: i8) -> EncoderRoutingDecision {
-    match resolve_encoder_role(idx) {
+fn resolve_encoder_twist_policy(
+    idx: u8,
+    delta: i8,
+    config: &RuntimeConfig,
+    page_state: &PageState,
+) -> EncoderRoutingDecision {
+    match resolve_encoder_role_ctx(idx, config, page_state) {
         Some(EncoderRole::Brightness) => EncoderRoutingDecision::BrightnessDelta(delta),
+        Some(EncoderRole::PageScroll) => {
+            if delta > 0 {
+                EncoderRoutingDecision::PageNavigate(NavDirection::Next)
+            } else if delta < 0 {
+                EncoderRoutingDecision::PageNavigate(NavDirection::Prev)
+            } else {
+                EncoderRoutingDecision::Noop
+            }
+        }
         Some(EncoderRole::ReservedNoop) | None => EncoderRoutingDecision::Noop,
     }
+}
+
+/// 現在ページの Nav アイテムから指定ラベルのページ遷移先 ID を返す。
+fn find_page_nav_target<'a>(
+    config: &'a RuntimeConfig,
+    page_state: &PageState,
+    label: &str,
+) -> Option<&'a str> {
+    current_page_items(config, page_state)
+        .iter()
+        .find_map(|item| {
+            if let config::PageItemConfig::Nav {
+                label: item_label,
+                target,
+                ..
+            } = item
+            {
+                if item_label == label {
+                    return Some(target.as_str());
+                }
+            }
+            None
+        })
 }
 
 fn resolve_button_down_policy(
@@ -1012,22 +1173,44 @@ fn handle_device_updates(
     runtime_config: &RuntimeConfig,
     page_state: &mut PageState,
     ssh_registry: &mut SshSessionRegistry,
+    page_nav_overlay: &mut paging::PageNavOverlay,
 ) -> InputUpdateOutcome {
     let mut brightness_changed = false;
     let mut notification_state_changed = false;
     let mut page_state_changed = false;
+    let mut encoder_page_nav = false;
 
     for update in updates {
         match update {
             DeviceStateUpdate::EncoderTwist(idx, delta) => {
-                if let EncoderRoutingDecision::BrightnessDelta(delta) =
-                    resolve_encoder_twist_policy(idx, delta)
-                {
-                    let new_b = apply_brightness_delta(brightness.get(), delta);
-                    if new_b != brightness.get() {
-                        brightness.set(new_b);
-                        brightness_changed = true;
+                // 先に決定を取得（page_state の不変借用を解放してから可変操作）
+                let decision = resolve_encoder_twist_policy(idx, delta, runtime_config, page_state);
+                match decision {
+                    EncoderRoutingDecision::BrightnessDelta(d) => {
+                        let new_b = apply_brightness_delta(brightness.get(), d);
+                        if new_b != brightness.get() {
+                            brightness.set(new_b);
+                            brightness_changed = true;
+                        }
                     }
+                    EncoderRoutingDecision::PageNavigate(dir) => {
+                        let nav_label = match dir {
+                            NavDirection::Next => "Next",
+                            NavDirection::Prev => "Prev",
+                        };
+                        if let Some(target) =
+                            find_page_nav_target(runtime_config, page_state, nav_label)
+                        {
+                            let target = target.to_string();
+                            info!(encoder = idx, dir = ?dir, to = %target, "エンコーダでページ遷移（グループ内ページング）");
+                            // Prev/Next によるページング操作は履歴に記録しない（グループ内ナビゲーション）
+                            page_state.set_context_page(target);
+                            page_state_changed = true;
+                            encoder_page_nav = true;
+                            page_nav_overlay.trigger();
+                        }
+                    }
+                    EncoderRoutingDecision::Noop => {}
                 }
             }
             DeviceStateUpdate::ButtonDown(idx) => {
@@ -1052,8 +1235,15 @@ fn handle_device_updates(
                         brightness_changed = true;
                     }
                     ButtonRoutingDecision::Noop => {
-                        let page_decision =
-                            resolve_page_button_decision(runtime_config, page_state, idx);
+                        // ラベルと決定を一度に取得してオーバーレイ判定に使う
+                        let assignments = resolve_button_assignments(runtime_config, page_state);
+                        let assignment = assignments.get(idx as usize);
+                        let is_paging_nav = assignment
+                            .map(|a| matches!(a.label.as_str(), "Prev" | "Next"))
+                            .unwrap_or(false);
+                        let page_decision = assignment
+                            .map(|a| a.decision.clone())
+                            .unwrap_or(PageButtonDecision::Noop);
                         debug!(
                             button = idx,
                             page = %page_state.current_page_id,
@@ -1064,12 +1254,20 @@ fn handle_device_updates(
                         match page_decision {
                             PageButtonDecision::Navigate(target) => {
                                 let from = page_state.current_page_id.clone();
-                                page_state.navigate_to(target);
+                                // ページング操作（Prev/Next）は履歴に記録しない（グループ内ナビゲーション）
+                                // Back ボタンはグループから抜けることを意味する
+                                if is_paging_nav {
+                                    page_state.set_context_page(target);
+                                    page_nav_overlay.trigger();
+                                } else {
+                                    page_state.navigate_to(target);
+                                }
                                 page_state_changed = true;
                                 info!(
                                     button = idx,
                                     from = %from,
                                     to = %page_state.current_page_id,
+                                    is_paging = is_paging_nav,
                                     "ページ遷移"
                                 );
                             }
@@ -1113,6 +1311,29 @@ fn handle_device_updates(
                                     warn!("ページ ssh-connect 実行失敗: {e:#}");
                                 }
                             }
+                            PageButtonDecision::PodmanLogs {
+                                container_id,
+                                terminal,
+                                log_command,
+                            } => {
+                                info!(
+                                    button = idx,
+                                    container_id = %container_id,
+                                    "Podman logs を起動"
+                                );
+                                let (program, mut cmd_args) = if terminal.is_empty() {
+                                    (resolve_default_terminal_program(), Vec::new())
+                                } else {
+                                    (terminal[0].clone(), terminal[1..].to_vec())
+                                };
+                                cmd_args.extend_from_slice(&log_command);
+                                cmd_args.push(container_id.clone());
+                                if let Err(e) =
+                                    std::process::Command::new(&program).args(&cmd_args).spawn()
+                                {
+                                    warn!(program = %program, args = ?cmd_args, "Podman logs 起動失敗: {e:#}");
+                                }
+                            }
                             PageButtonDecision::Noop => {}
                         }
                     }
@@ -1126,6 +1347,7 @@ fn handle_device_updates(
         brightness_changed,
         notification_state_changed,
         page_state_changed,
+        lcd_needs_update: encoder_page_nav,
     }
 }
 
@@ -1151,15 +1373,41 @@ fn apply_brightness_delta(current: u8, delta: i8) -> u8 {
         .clamp(BRIGHTNESS_MIN as i16, BRIGHTNESS_MAX as i16) as u8
 }
 
+/// LCD 表示をレンダリングして送信する共通ヘルパー。
+/// ページ遷移操作直後の 2 秒間を含む、あらゆるタイミングで呼ぶことができる。
+fn render_lcd_display(
+    hw: &device::HardwareManager,
+    renderer: &renderer::Renderer,
+    sections: &[Section],
+    page_nav_overlay: &paging::PageNavOverlay,
+    config: &RuntimeConfig,
+    page_state: &PageState,
+) -> anyhow::Result<()> {
+    let mut specs: Vec<SectionSpec> = sections.iter().map(Section::as_spec).collect();
+    if page_nav_overlay.is_active(Instant::now()) {
+        let title = config
+            .pages
+            .iter()
+            .find(|p| p.id == page_state.current_page_id)
+            .map(|p| p.title.as_str())
+            .unwrap_or("");
+        if let Some(overlay) = paging::PageNavOverlay::build_section_spec(title, HISTORY_LEN) {
+            if let Some(first) = specs.first_mut() {
+                *first = overlay;
+            }
+        }
+    }
+    let image = renderer.render(&specs);
+    hw.set_lcd_strip_image(image)?;
+    Ok(())
+}
+
 /// 実行境界で扱うアクション要求。
 /// 通知由来の open と将来の command を同じ入口に載せる。
 /// SSH 接続は SshSessionRegistry 経由で実行するため、ここには含まない。
 enum ActionRequest {
     OpenTarget(String),
-    Command {
-        program: String,
-        args: Vec<String>,
-    },
+    Command { program: String, args: Vec<String> },
 }
 
 fn resolve_default_terminal_program() -> String {
@@ -1302,7 +1550,10 @@ impl SshSessionRegistry {
                 if Self::try_focus(&session_title) {
                     info!(host, pid, "既存 SSH ウィンドウへフォーカスしました");
                 } else {
-                    info!(host, pid, "既存 SSH セッションを再利用します（フォーカスは未保証）");
+                    info!(
+                        host,
+                        pid, "既存 SSH セッションを再利用します（フォーカスは未保証）"
+                    );
                 }
                 return Ok(());
             }
@@ -1428,6 +1679,7 @@ struct RuntimeConfig {
     home_page_id: String,
     pages: Vec<config::PageConfig>,
     watch_targets: Vec<PathBuf>,
+    podman: Option<config::DynamicPodmanConfig>,
 }
 
 // ── ConfigManager ─────────────────────────────────────────────────
@@ -1623,6 +1875,7 @@ mod tests {
                 items,
             }],
             watch_targets: vec![],
+            podman: None,
         }
     }
 
@@ -1632,6 +1885,7 @@ mod tests {
             home_page_id: "home".to_string(),
             pages,
             watch_targets: vec![],
+            podman: None,
         }
     }
 
@@ -1732,16 +1986,27 @@ mod tests {
         assert!(matches!(decision, ButtonRoutingDecision::BrightnessReset));
     }
 
+    /// 値域確認: Prev/Next なしのページで encoder 0 は Noop
     #[test]
     fn test_encoder_policy_ignores_non_brightness_encoder() {
-        let decision = resolve_encoder_twist_policy(0, 1);
+        let config = runtime_with_items(vec![]);
+        let page_state = PageState {
+            current_page_id: "home".to_string(),
+            history: vec![],
+        };
+        let decision = resolve_encoder_twist_policy(0, 1, &config, &page_state);
         assert!(matches!(decision, EncoderRoutingDecision::Noop));
     }
 
+    /// 正常系: encoder 3 (輝度) は Prev/Next の有無によらず BrightnessDelta を返す
     #[test]
     fn test_encoder_policy_accepts_brightness_encoder_only() {
+        let config = runtime_with_items(vec![]);
+        let page_state = PageState {
+            current_page_id: "home".to_string(),
+            history: vec![],
+        };
         let cases = [
-            (0_u8, false),
             (1_u8, false),
             (2_u8, false),
             (ENCODER_BRIGHTNESS, true),
@@ -1749,7 +2014,7 @@ mod tests {
         ];
 
         for (idx, should_brightness) in cases {
-            let decision = resolve_encoder_twist_policy(idx, 1);
+            let decision = resolve_encoder_twist_policy(idx, 1, &config, &page_state);
             if should_brightness {
                 assert!(matches!(
                     decision,
@@ -1768,6 +2033,7 @@ mod tests {
                 label: "Apps".to_string(),
                 target: "home".to_string(),
                 priority: None,
+                visible: true,
             },
             config::PageItemConfig::Command {
                 label: "Terminal".to_string(),
@@ -1806,6 +2072,7 @@ mod tests {
                 label: "Apps".to_string(),
                 target: "home".to_string(),
                 priority: None,
+                visible: true,
             },
             config::PageItemConfig::Command {
                 label: "MidA".to_string(),
@@ -1864,6 +2131,7 @@ mod tests {
                     label: "SSH".to_string(),
                     target: "ssh_hosts".to_string(),
                     priority: None,
+                    visible: true,
                 }],
             },
             config::PageConfig {

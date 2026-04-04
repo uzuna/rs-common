@@ -102,6 +102,7 @@ fn test_validate_rejects_missing_nav_target() {
         label: "go".to_string(),
         target: "missing".to_string(),
         priority: None,
+        visible: true,
     }];
 
     let report = validate_app_config(&app, None, true);
@@ -209,7 +210,10 @@ tags = [" edge ", "", " field "]
     assert_eq!(loaded[0].id, "cam-01");
     assert_eq!(loaded[0].label, "Cam01");
     assert_eq!(loaded[0].host, "user@192.168.1.10");
-    assert_eq!(loaded[0].tags, vec!["edge".to_string(), "field".to_string()]);
+    assert_eq!(
+        loaded[0].tags,
+        vec!["edge".to_string(), "field".to_string()]
+    );
 }
 
 #[test]

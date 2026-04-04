@@ -31,6 +31,11 @@ kind = "nav"
 label = "Apps"
 target = "apps"
 
+[[pages.items]]
+kind = "nav"
+label = "Podman"
+target = "podman"
+
 [[pages]]
 id = "apps"
 title = "Apps"
@@ -44,3 +49,13 @@ label = "Back"
 kind = "command"
 label = "Terminal"
 command = ["/usr/bin/terminator"]
+
+[dynamic.podman]
+enabled = true
+page_id_prefix = "podman"
+page_size = 7
+poll_interval_ms = 500
+cpu_history_len = 30
+log_command = ["podman", "logs", "-f"]
+terminal = ["/usr/bin/x-terminal-emulator"]
+

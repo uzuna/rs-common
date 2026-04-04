@@ -23,6 +23,7 @@ pub struct RuntimeConfig {
     pub sections: Vec<config::DashboardSectionConfig>,
     pub home_page_id: String,
     pub pages: Vec<config::PageConfig>,
+    pub display: config::DisplayConfig,
     pub watch_targets: Vec<PathBuf>,
     pub podman: Option<config::DynamicPodmanConfig>,
 }

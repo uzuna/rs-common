@@ -11,6 +11,7 @@ mod cmd;
 mod config;
 mod context;
 mod device;
+mod display;
 mod error;
 mod metrics;
 mod notifications;
@@ -247,6 +248,7 @@ pub fn load_runtime_config(config_path: &str) -> anyhow::Result<RuntimeConfig> {
         sections: bundle.app.dashboard.sections,
         home_page_id: bundle.app.app.home,
         pages,
+        display: bundle.app.display,
         watch_targets: bundle.watch_targets,
         podman: bundle.app.dynamic.podman,
     })
@@ -1016,6 +1018,7 @@ mod tests {
                 title: "Home".to_string(),
                 items,
             }],
+            display: config::DisplayConfig::default(),
             watch_targets: vec![],
             podman: None,
         }
@@ -1026,6 +1029,7 @@ mod tests {
             sections: vec![],
             home_page_id: "home".to_string(),
             pages,
+            display: config::DisplayConfig::default(),
             watch_targets: vec![],
             podman: None,
         }

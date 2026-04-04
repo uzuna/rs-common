@@ -36,6 +36,11 @@ kind = "nav"
 label = "Podman"
 target = "podman"
 
+[[pages.items]]
+kind = "nav"
+label = "BtnSample"
+target = "BtnSample"
+
 [[pages]]
 id = "apps"
 title = "Apps"
@@ -49,6 +54,90 @@ label = "Back"
 kind = "command"
 label = "Terminal"
 command = ["/usr/bin/terminator"]
+
+[[pages]]
+id = "BtnSample"
+title = "BtnSample"
+
+[[pages.items]]
+kind = "back"
+label = "Back"
+
+[[pages.items]]
+kind = "sample"
+sample_id = "btn_label_only"
+label = "Label"
+
+[[pages.items]]
+kind = "sample"
+sample_id = "btn_label_value"
+label = "Value"
+
+[[pages.items]]
+kind = "sample"
+sample_id = "btn_icon_badge"
+label = "Badge"
+
+[[pages.items]]
+kind = "sample"
+sample_id = "btn_bar_trend"
+label = "Trend"
+
+[[pages.items]]
+kind = "sample"
+sample_id = "btn_error_fallback"
+label = "Error"
+
+[display]
+
+[[display.samples]]
+id = "btn_label_only"
+target = "button"
+pattern = "label_only"
+
+[display.samples.payload]
+label = "Apps"
+bg_color = [30, 80, 160]
+
+[[display.samples]]
+id = "btn_label_value"
+target = "button"
+pattern = "label_value"
+
+[display.samples.payload]
+title = "CPU"
+value = "27"
+unit = "%"
+severity = "normal"
+
+[[display.samples]]
+id = "btn_icon_badge"
+target = "button"
+pattern = "icon_badge"
+
+[display.samples.payload]
+icon = "bell"
+badge_count = 3
+status = "warn"
+
+[[display.samples]]
+id = "btn_bar_trend"
+target = "button"
+pattern = "bar_trend"
+
+[display.samples.payload]
+current = 62.0
+max = 100.0
+history = [45.0, 55.0, 62.0, 58.0, 62.0]
+
+[[display.samples]]
+id = "btn_error_fallback"
+target = "button"
+pattern = "error_fallback"
+
+[display.samples.payload]
+error_code = "E_CONN"
+message = "offline"
 
 [dynamic.podman]
 enabled = true

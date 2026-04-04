@@ -10,6 +10,7 @@ use imageproc::rect::Rect;
 
 use crate::config;
 use crate::device;
+use crate::display::{button_patterns, catalog};
 use crate::notifications::{NotificationPressAction, NotificationState, SlotState};
 use crate::runtime::RuntimeConfig;
 use crate::state::PageState;
@@ -113,6 +114,7 @@ pub struct ResolvedButtonAssignment {
     pub label: String,
     pub color: AssignedButtonColor,
     pub decision: PageButtonDecision,
+    pub sample_id: Option<String>,
     pub podman_is_running: bool,
 }
 
@@ -148,7 +150,8 @@ fn page_item_priority(item: &config::PageItemConfig) -> i32 {
         | config::PageItemConfig::Command { priority, .. }
         | config::PageItemConfig::Back { priority, .. }
         | config::PageItemConfig::SshConnect { priority, .. }
-        | config::PageItemConfig::PodmanMonitor { priority, .. } => {
+        | config::PageItemConfig::PodmanMonitor { priority, .. }
+        | config::PageItemConfig::Sample { priority, .. } => {
             priority.unwrap_or(DEFAULT_ITEM_PRIORITY)
         }
     }
@@ -160,6 +163,15 @@ pub fn page_item_label(item: &config::PageItemConfig) -> String {
         config::PageItemConfig::Command { label, .. } => label.clone(),
         config::PageItemConfig::SshConnect { label, .. } => label.clone(),
         config::PageItemConfig::PodmanMonitor { label, .. } => label.clone(),
+        config::PageItemConfig::Sample {
+            label, sample_id, ..
+        } => {
+            if label.is_empty() {
+                sample_id.clone()
+            } else {
+                label.clone()
+            }
+        }
         config::PageItemConfig::Back { label, .. } => {
             if label.is_empty() {
                 "Back".to_string()
@@ -209,12 +221,14 @@ pub fn resolve_button_assignments(
                 } else {
                     PageButtonDecision::Noop
                 },
+                sample_id: None,
                 podman_is_running: false,
             },
             config::PageItemConfig::Back { .. } => ResolvedButtonAssignment {
                 label: page_item_label(item),
                 color: AssignedButtonColor::Back,
                 decision: PageButtonDecision::Back,
+                sample_id: None,
                 podman_is_running: false,
             },
             config::PageItemConfig::Command { command, .. } => ResolvedButtonAssignment {
@@ -225,6 +239,7 @@ pub fn resolve_button_assignments(
                 } else {
                     PageButtonDecision::Command(command.clone())
                 },
+                sample_id: None,
                 podman_is_running: false,
             },
             config::PageItemConfig::SshConnect {
@@ -240,6 +255,7 @@ pub fn resolve_button_assignments(
                     terminal: terminal.clone(),
                     ssh_template: ssh_template.clone(),
                 },
+                sample_id: None,
                 podman_is_running: false,
             },
             config::PageItemConfig::PodmanMonitor {
@@ -256,9 +272,17 @@ pub fn resolve_button_assignments(
                         terminal,
                         log_command,
                     },
+                    sample_id: None,
                     podman_is_running: state.eq_ignore_ascii_case("running"),
                 }
             }
+            config::PageItemConfig::Sample { sample_id, .. } => ResolvedButtonAssignment {
+                label: page_item_label(item),
+                color: AssignedButtonColor::Command,
+                decision: PageButtonDecision::Noop,
+                sample_id: Some(sample_id.clone()),
+                podman_is_running: false,
+            },
         })
         .collect()
 }
@@ -433,6 +457,15 @@ pub fn refresh_button_display(
     for idx in 0..BUTTON_COUNT {
         if matches!(state.slots[idx], SlotState::Empty) {
             if let Some(assignment) = assignments.get(idx) {
+                if let Some(sample_id) = assignment.sample_id.as_deref() {
+                    if let Some(sample) = catalog::resolve_button_sample(runtime_config, sample_id)
+                    {
+                        let button_img = button_patterns::render_button_pattern(&sample)?;
+                        hw.set_button_image(idx as u8, button_img)?;
+                        continue;
+                    }
+                }
+
                 let bg_color = assignment.color.to_rgb();
                 let sparkline = match (&assignment.decision, assignment.color) {
                     (PageButtonDecision::PodmanLogs { container_id, .. }, _)

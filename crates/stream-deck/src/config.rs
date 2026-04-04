@@ -2,7 +2,7 @@
 //! 現行の DashboardConfig と並行して導入し、段階的移行を行う。
 #![allow(dead_code)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -17,9 +17,101 @@ pub struct AppConfig {
     #[serde(default)]
     pub pages: Vec<PageConfig>,
     #[serde(default)]
+    pub display: DisplayConfig,
+    #[serde(default)]
     pub dynamic: DynamicConfig,
     #[serde(default)]
     pub watch: WatchConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct DisplayConfig {
+    #[serde(default)]
+    pub samples: Vec<DisplaySampleConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisplaySampleConfig {
+    pub id: String,
+    pub target: DisplaySampleTarget,
+    pub pattern: DisplayPatternKind,
+    pub payload: DisplaySamplePayload,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DisplaySampleTarget {
+    Button,
+    Section,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayPatternKind {
+    LabelOnly,
+    LabelValue,
+    IconBadge,
+    BarTrend,
+    ErrorFallback,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum DisplaySamplePayload {
+    LabelOnly(LabelOnlyPayload),
+    LabelValue(LabelValuePayload),
+    IconBadge(IconBadgePayload),
+    BarTrend(BarTrendPayload),
+    ErrorFallback(ErrorFallbackPayload),
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DisplaySeverity {
+    Normal,
+    Warn,
+    Error,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LabelOnlyPayload {
+    pub label: String,
+    pub bg_color: [u8; 3],
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LabelValuePayload {
+    pub title: String,
+    pub value: String,
+    pub unit: String,
+    pub severity: DisplaySeverity,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IconBadgePayload {
+    pub icon: String,
+    pub badge_count: u32,
+    pub status: DisplaySeverity,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BarTrendPayload {
+    pub current: f32,
+    pub max: f32,
+    pub history: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ErrorFallbackPayload {
+    pub error_code: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -128,6 +220,13 @@ pub enum PageItemConfig {
         #[serde(default)]
         priority: Option<i32>,
     },
+    Sample {
+        sample_id: String,
+        #[serde(default)]
+        label: String,
+        #[serde(default)]
+        priority: Option<i32>,
+    },
 }
 
 /// priority の推奨レンジ。
@@ -141,7 +240,8 @@ fn page_item_priority(item: &PageItemConfig) -> Option<i32> {
         | PageItemConfig::Command { priority, .. }
         | PageItemConfig::Back { priority, .. }
         | PageItemConfig::SshConnect { priority, .. }
-        | PageItemConfig::PodmanMonitor { priority, .. } => *priority,
+        | PageItemConfig::PodmanMonitor { priority, .. }
+        | PageItemConfig::Sample { priority, .. } => *priority,
     }
 }
 
@@ -344,6 +444,63 @@ pub fn validate_app_config(
 ) -> ConfigValidationReport {
     let mut report = ConfigValidationReport::default();
 
+    let mut display_samples: BTreeMap<String, DisplaySampleTarget> = BTreeMap::new();
+    for sample in &app.display.samples {
+        let sample_id = sample.id.trim();
+        if sample_id.is_empty() {
+            report
+                .errors
+                .push("display.samples id が空です".to_string());
+            continue;
+        }
+        if display_samples
+            .insert(sample_id.to_string(), sample.target)
+            .is_some()
+        {
+            report
+                .errors
+                .push(format!("重複した display sample id です: {sample_id}"));
+        }
+
+        let pattern_matches_payload = matches!(
+            (&sample.pattern, &sample.payload),
+            (
+                DisplayPatternKind::LabelOnly,
+                DisplaySamplePayload::LabelOnly(_)
+            ) | (
+                DisplayPatternKind::LabelValue,
+                DisplaySamplePayload::LabelValue(_)
+            ) | (
+                DisplayPatternKind::IconBadge,
+                DisplaySamplePayload::IconBadge(_)
+            ) | (
+                DisplayPatternKind::BarTrend,
+                DisplaySamplePayload::BarTrend(_)
+            ) | (
+                DisplayPatternKind::ErrorFallback,
+                DisplaySamplePayload::ErrorFallback(_)
+            )
+        );
+        if !pattern_matches_payload {
+            report.errors.push(format!(
+                "display sample={sample_id}: pattern と payload の組み合わせが不正です"
+            ));
+        }
+
+        if let DisplaySamplePayload::BarTrend(payload) = &sample.payload {
+            if payload.max <= 0.0 {
+                report.errors.push(format!(
+                    "display sample={sample_id}: bar_trend.max は 0 より大きい値が必要です"
+                ));
+            }
+            if payload.history.is_empty() {
+                report.warnings.push(format!(
+                    "display sample={sample_id}: bar_trend.history が空です"
+                ));
+            }
+        }
+    }
+
     if app.dashboard.sections.is_empty() {
         report
             .errors
@@ -409,6 +566,28 @@ pub fn validate_app_config(
                         report
                             .warnings
                             .push(format!("page={id}: podman-monitor label が空です"));
+                    }
+                }
+                PageItemConfig::Sample { sample_id, .. } => {
+                    let sample_id = sample_id.trim();
+                    if sample_id.is_empty() {
+                        report
+                            .errors
+                            .push(format!("page={id}: sample sample_id が空です"));
+                    } else {
+                        match display_samples.get(sample_id) {
+                            Some(DisplaySampleTarget::Button) => {}
+                            Some(DisplaySampleTarget::Section) => {
+                                report.errors.push(format!(
+                                    "page={id}: sample_id={sample_id} は target=section のためボタンへ割り当てできません"
+                                ));
+                            }
+                            None => {
+                                report.errors.push(format!(
+                                    "page={id}: sample_id が存在しません: {sample_id}"
+                                ));
+                            }
+                        }
                     }
                 }
             }
@@ -1015,6 +1194,7 @@ mod tests {
                 title: "Home".to_string(),
                 items: vec![],
             }],
+            display: DisplayConfig::default(),
             dynamic: DynamicConfig {
                 ssh_hosts: None,
                 podman: podman.map(|p| p),

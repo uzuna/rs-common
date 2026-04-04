@@ -58,6 +58,7 @@ poll_interval_ms = 500
 cpu_history_len = 30
 log_command = ["podman", "logs", "-f"]
 terminal = ["/usr/bin/x-terminal-emulator", "-e"]
+container_list_poll_interval_ms = 5000
 
 [dynamic.podman.colors]
 running = [0, 180, 20]

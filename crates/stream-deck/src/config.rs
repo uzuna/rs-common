@@ -185,6 +185,9 @@ pub struct DynamicPodmanConfig {
     /// Podman ボタンの状態別表示色
     #[serde(default)]
     pub colors: PodmanButtonColors,
+    /// コンテナ一覧を再取得してページを再生成する周期 (ミリ秒)。poll_interval_ms より大きい値が推奨される。
+    #[serde(default = "default_podman_container_list_poll_interval_ms")]
+    pub container_list_poll_interval_ms: u64,
 }
 
 /// Podman ボタン色設定。各色は RGB 3要素で指定する。
@@ -837,6 +840,10 @@ fn default_podman_color_other() -> [u8; 3] {
     [80, 80, 80]
 }
 
+fn default_podman_container_list_poll_interval_ms() -> u64 {
+    5000
+}
+
 // ── Podman ページ生成 ──────────────────────────────────────────────
 
 /// `build_dynamic_podman_pages` への入力パラメータ。
@@ -988,6 +995,7 @@ mod tests {
             log_command: log_cmd,
             terminal: vec![],
             colors: PodmanButtonColors::default(),
+            container_list_poll_interval_ms: 5000,
         }
     }
 

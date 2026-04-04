@@ -336,6 +336,7 @@ fn run_loop(
     let mut page_nav_overlay = paging::PageNavOverlay::new();
     let mut podman_cpu_history: HashMap<String, VecDeque<f32>> = HashMap::new();
     let mut podman_last_polled = Instant::now() - Duration::from_secs(60);
+    let mut podman_last_list_polled = Instant::now() - Duration::from_secs(60);
 
     // 接続時: 全ボタンをクリアしてから通知状態を復元する
     hw.clear_buttons()?;
@@ -403,7 +404,12 @@ fn run_loop(
             &mut podman_cpu_history,
             &mut podman_last_polled,
         );
-        if podman_history_changed {
+        let podman_list_changed = update_podman_container_list(
+            config_manager,
+            &mut podman_last_list_polled,
+            &mut page_state,
+        );
+        if podman_history_changed || podman_list_changed {
             refresh_button_display(
                 hw,
                 &notification_state.borrow(),
@@ -1182,6 +1188,94 @@ fn update_podman_cpu_history(
     }
 
     changed
+}
+
+/// Podman コンテナ一覧を再取得し、ページを再生成する。
+/// 設定値 `container_list_poll_interval_ms` より長い周期で実行される。
+/// 変更があれば RuntimeConfig.pages を更新し true を返す。
+fn update_podman_container_list(
+    config_manager: &mut ConfigManager,
+    last_polled: &mut Instant,
+    page_state: &mut PageState,
+) -> bool {
+    // config からの設定情報を先に取得し、以降は config_manager.active に直接アクセス
+    let (podman_cfg_enabled, podman_cfg_clone, prefix) = {
+        let config = config_manager.current();
+        let Some(podman_cfg) = config.podman.as_ref() else {
+            return false;
+        };
+
+        if !podman_cfg.enabled {
+            return false;
+        }
+
+        (
+            podman_cfg.enabled,
+            podman_cfg.clone(),
+            podman_cfg.page_id_prefix.clone(),
+        )
+    };
+
+    if !podman_cfg_enabled {
+        return false;
+    }
+
+    let poll_interval = Duration::from_millis(podman_cfg_clone.container_list_poll_interval_ms.max(1000));
+    if last_polled.elapsed() < poll_interval {
+        return false;
+    }
+    *last_polled = Instant::now();
+
+    // コンテナリストを再取得
+    let socket_path = config::resolve_podman_socket_path(&podman_cfg_clone);
+    let client = podman::PodmanClient::new(&socket_path);
+    let entries = match client.load_entries() {
+        Ok(entries) => entries,
+        Err(e) => {
+            warn!(socket = %socket_path, err = %e, "Podman コンテナ一覧の再取得に失敗");
+            return false;
+        }
+    };
+
+    // ページビルド入力を構築
+    let Some(input) = config::build_podman_page_build_input(&podman_cfg_clone) else {
+        return false;
+    };
+
+    // 新しいコンテナエントリに変換
+    let containers: Vec<config::PodmanContainerEntry> = entries
+        .iter()
+        .map(|entry| config::PodmanContainerEntry {
+            id: entry.id.clone(),
+            label: entry.display_label(),
+            state: entry.state.clone(),
+        })
+        .collect();
+
+    // 新しいページを生成
+    let new_podman_pages = config::build_dynamic_podman_pages(&input, &containers);
+
+    // 既存ページから Podman ページを削除して新しいページを追加
+    let before_len = config_manager.active.pages.len();
+    config_manager.active.pages.retain(|page| {
+        !page.id.starts_with(&prefix)
+    });
+
+    if !new_podman_pages.is_empty() {
+        config_manager.active.pages.extend(new_podman_pages);
+        info!(
+            socket = %socket_path,
+            old_count = before_len,
+            new_count = config_manager.active.pages.len(),
+            containers = containers.len(),
+            "Podman コンテナ一覧を更新してページを再生成しました"
+        );
+    }
+
+    // ページ状態を調整（現在のページが削除されていないか確認）
+    page_state.reconcile(config_manager.current());
+
+    true
 }
 
 fn resolve_page_button_decision(

@@ -18,7 +18,7 @@ mod renderer;
 mod section;
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
@@ -30,7 +30,8 @@ use dbus::arg::RefArg;
 use dbus::blocking::{Connection, Proxy};
 use elgato_streamdeck::DeviceStateUpdate;
 use image::{DynamicImage, Rgb, RgbImage};
-use imageproc::drawing::draw_text_mut;
+use imageproc::drawing::{draw_filled_rect_mut, draw_text_mut};
+use imageproc::rect::Rect;
 use tracing::{debug, error, info, warn};
 
 use metrics::MetricsSource;
@@ -238,6 +239,7 @@ fn load_runtime_config(config_path: &str) -> anyhow::Result<RuntimeConfig> {
                             .map(|entry| config::PodmanContainerEntry {
                                 id: entry.id.clone(),
                                 label: entry.display_label(),
+                                state: entry.state.clone(),
                             })
                             .collect();
                         let generated = config::build_dynamic_podman_pages(&input, &containers);
@@ -332,6 +334,8 @@ fn run_loop(
     let mut window_context_provider = build_window_context_provider();
     let mut ssh_registry = SshSessionRegistry::new();
     let mut page_nav_overlay = paging::PageNavOverlay::new();
+    let mut podman_cpu_history: HashMap<String, VecDeque<f32>> = HashMap::new();
+    let mut podman_last_polled = Instant::now() - Duration::from_secs(60);
 
     // 接続時: 全ボタンをクリアしてから通知状態を復元する
     hw.clear_buttons()?;
@@ -340,6 +344,7 @@ fn run_loop(
         &notification_state.borrow(),
         config_manager.current(),
         &page_state,
+        &podman_cpu_history,
     )?;
 
     loop {
@@ -357,6 +362,7 @@ fn run_loop(
                 &notification_state.borrow(),
                 config_manager.current(),
                 &page_state,
+                &podman_cpu_history,
             )?
         }
 
@@ -368,6 +374,7 @@ fn run_loop(
                 &notification_state.borrow(),
                 config_manager.current(),
                 &page_state,
+                &podman_cpu_history,
             )?;
         }
 
@@ -381,6 +388,7 @@ fn run_loop(
                 &notification_state.borrow(),
                 config_manager.current(),
                 &page_state,
+                &podman_cpu_history,
             )?;
         }
 
@@ -388,6 +396,21 @@ fn run_loop(
         sys_source.borrow_mut().refresh();
         for section in sections.iter_mut() {
             section.tick();
+        }
+
+        let podman_history_changed = update_podman_cpu_history(
+            config_manager.current(),
+            &mut podman_cpu_history,
+            &mut podman_last_polled,
+        );
+        if podman_history_changed {
+            refresh_button_display(
+                hw,
+                &notification_state.borrow(),
+                config_manager.current(),
+                &page_state,
+                &podman_cpu_history,
+            )?;
         }
 
         let snap_log = sys_source.borrow();
@@ -451,6 +474,7 @@ fn run_loop(
                     &notification_state.borrow(),
                     config_manager.current(),
                     &page_state,
+                    &podman_cpu_history,
                 )?;
             }
 
@@ -642,6 +666,7 @@ enum AssignedButtonColor {
     Nav,
     Back,
     Command,
+    Podman([u8; 3]),
 }
 
 impl AssignedButtonColor {
@@ -650,7 +675,22 @@ impl AssignedButtonColor {
             AssignedButtonColor::Nav => image::Rgb([0, 80, 255]),
             AssignedButtonColor::Back => image::Rgb([255, 120, 0]),
             AssignedButtonColor::Command => image::Rgb([0, 180, 40]),
+            AssignedButtonColor::Podman(rgb) => image::Rgb(rgb),
         }
+    }
+}
+
+fn podman_color_from_state(config: &RuntimeConfig, state: &str) -> AssignedButtonColor {
+    let colors = config
+        .podman
+        .as_ref()
+        .map(|cfg| cfg.colors.clone())
+        .unwrap_or_default();
+    match state.to_ascii_lowercase().as_str() {
+        "running" => AssignedButtonColor::Podman(colors.running),
+        "exited" | "stopped" => AssignedButtonColor::Podman(colors.exited),
+        "paused" => AssignedButtonColor::Podman(colors.paused),
+        _ => AssignedButtonColor::Podman(colors.other),
     }
 }
 
@@ -935,6 +975,7 @@ struct ResolvedButtonAssignment {
     label: String,
     color: AssignedButtonColor,
     decision: PageButtonDecision,
+    podman_is_running: bool,
 }
 
 const DEFAULT_ITEM_PRIORITY: i32 = 0;
@@ -997,11 +1038,13 @@ fn resolve_button_assignments(
                 } else {
                     PageButtonDecision::Noop
                 },
+                podman_is_running: false,
             },
             config::PageItemConfig::Back { .. } => ResolvedButtonAssignment {
                 label: page_item_label(item),
                 color: AssignedButtonColor::Back,
                 decision: PageButtonDecision::Back,
+                podman_is_running: false,
             },
             config::PageItemConfig::Command { command, .. } => ResolvedButtonAssignment {
                 label: page_item_label(item),
@@ -1011,6 +1054,7 @@ fn resolve_button_assignments(
                 } else {
                     PageButtonDecision::Command(command.clone())
                 },
+                podman_is_running: false,
             },
             config::PageItemConfig::SshConnect {
                 host,
@@ -1025,17 +1069,23 @@ fn resolve_button_assignments(
                     terminal: terminal.clone(),
                     ssh_template: ssh_template.clone(),
                 },
+                podman_is_running: false,
             },
-            config::PageItemConfig::PodmanMonitor { container_id, .. } => {
+            config::PageItemConfig::PodmanMonitor {
+                container_id,
+                state,
+                ..
+            } => {
                 let (terminal, log_command) = runtime_podman_log_launch(config);
                 ResolvedButtonAssignment {
                     label: page_item_label(item),
-                    color: AssignedButtonColor::Command,
+                    color: podman_color_from_state(config, state),
                     decision: PageButtonDecision::PodmanLogs {
                         container_id: container_id.clone(),
                         terminal,
                         log_command,
                     },
+                    podman_is_running: state.eq_ignore_ascii_case("running"),
                 }
             }
         })
@@ -1050,6 +1100,88 @@ fn runtime_podman_log_launch(config: &RuntimeConfig) -> (Vec<String>, Vec<String
         Vec::new(),
         vec!["podman".to_string(), "logs".to_string(), "-f".to_string()],
     )
+}
+
+fn update_podman_cpu_history(
+    config: &RuntimeConfig,
+    histories: &mut HashMap<String, VecDeque<f32>>,
+    last_polled: &mut Instant,
+) -> bool {
+    let Some(podman_cfg) = config.podman.as_ref() else {
+        if histories.is_empty() {
+            return false;
+        }
+        histories.clear();
+        return true;
+    };
+
+    if !podman_cfg.enabled {
+        if histories.is_empty() {
+            return false;
+        }
+        histories.clear();
+        return true;
+    }
+
+    let poll_interval = Duration::from_millis(podman_cfg.poll_interval_ms.max(100));
+    if last_polled.elapsed() < poll_interval {
+        return false;
+    }
+    *last_polled = Instant::now();
+
+    let tracked_ids: BTreeSet<String> = config
+        .pages
+        .iter()
+        .flat_map(|p| p.items.iter())
+        .filter_map(|item| {
+            if let config::PageItemConfig::PodmanMonitor { container_id, .. } = item {
+                Some(container_id.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let before_len = histories.len();
+    histories.retain(|id, _| tracked_ids.contains(id));
+    let mut changed = histories.len() != before_len;
+
+    if tracked_ids.is_empty() {
+        return changed;
+    }
+
+    let socket_path = config::resolve_podman_socket_path(podman_cfg);
+    let client = podman::PodmanClient::new(&socket_path);
+    let stats = match client.load_stats() {
+        Ok(stats) => stats,
+        Err(e) => {
+            warn!(socket = %socket_path, err = %e, "Podman stats 取得失敗");
+            return changed;
+        }
+    };
+
+    let mut running_ids = BTreeSet::new();
+    for stat in stats {
+        if !tracked_ids.contains(&stat.id) {
+            continue;
+        }
+        running_ids.insert(stat.id.clone());
+        let history = histories.entry(stat.id).or_default();
+        history.push_back(stat.cpu_percent);
+        while history.len() > podman_cfg.cpu_history_len {
+            history.pop_front();
+        }
+        changed = true;
+    }
+
+    // running 以外は履歴を消して表示対象から外す。
+    for id in tracked_ids {
+        if !running_ids.contains(&id) && histories.remove(&id).is_some() {
+            changed = true;
+        }
+    }
+
+    changed
 }
 
 fn resolve_page_button_decision(
@@ -1328,10 +1460,13 @@ fn handle_device_updates(
                                 };
                                 cmd_args.extend_from_slice(&log_command);
                                 cmd_args.push(container_id.clone());
-                                if let Err(e) =
-                                    std::process::Command::new(&program).args(&cmd_args).spawn()
-                                {
-                                    warn!(program = %program, args = ?cmd_args, "Podman logs 起動失敗: {e:#}");
+                                let action = ActionRequest::PodmanLogs {
+                                    container_id,
+                                    program,
+                                    args: cmd_args,
+                                };
+                                if let Err(e) = execute_action(action) {
+                                    warn!("Podman logs 起動失敗: {e:#}");
                                 }
                             }
                             PageButtonDecision::Noop => {}
@@ -1407,7 +1542,15 @@ fn render_lcd_display(
 /// SSH 接続は SshSessionRegistry 経由で実行するため、ここには含まない。
 enum ActionRequest {
     OpenTarget(String),
-    Command { program: String, args: Vec<String> },
+    Command {
+        program: String,
+        args: Vec<String>,
+    },
+    PodmanLogs {
+        container_id: String,
+        program: String,
+        args: Vec<String>,
+    },
 }
 
 fn resolve_default_terminal_program() -> String {
@@ -1593,6 +1736,29 @@ fn execute_action(action: ActionRequest) -> anyhow::Result<()> {
             info!(program = %program, pid = child.id(), "command を非同期起動しました");
             Ok(())
         }
+        ActionRequest::PodmanLogs {
+            container_id,
+            program,
+            args,
+        } => {
+            if program.trim().is_empty() {
+                anyhow::bail!("Podman logs 実行プログラム名が空です");
+            }
+            info!(
+                container_id = %container_id,
+                program = %program,
+                args = ?args,
+                "Podman logs アクションを実行"
+            );
+            let child = Command::new(&program).args(args).spawn()?;
+            info!(
+                container_id = %container_id,
+                program = %program,
+                pid = child.id(),
+                "Podman logs を非同期起動しました"
+            );
+            Ok(())
+        }
     }
 }
 
@@ -1605,9 +1771,16 @@ fn execute_payload(payload: &str) -> anyhow::Result<()> {
 }
 
 /// ボタン画像にラベルテキストを描画して返す
-fn draw_button_with_label(label: &str, bg_color: image::Rgb<u8>) -> anyhow::Result<DynamicImage> {
+fn draw_button_with_label(
+    label: &str,
+    bg_color: image::Rgb<u8>,
+    sparkline_history: Option<&VecDeque<f32>>,
+) -> anyhow::Result<DynamicImage> {
     const BUTTON_SIZE: u32 = 120;
     const TEXT_COLOR: Rgb<u8> = Rgb([255, 255, 255]);
+    const SPARKLINE_BOTTOM_Y: i32 = 116;
+    const SPARKLINE_HEIGHT: i32 = 18;
+    const SPARKLINE_COLOR: Rgb<u8> = Rgb([240, 240, 240]);
 
     let mut img = RgbImage::from_pixel(BUTTON_SIZE, BUTTON_SIZE, bg_color);
 
@@ -1622,6 +1795,25 @@ fn draw_button_with_label(label: &str, bg_color: image::Rgb<u8>) -> anyhow::Resu
         draw_text_mut(&mut img, TEXT_COLOR, text_x, text_y, scale, &font, label);
     }
 
+    if let Some(history) = sparkline_history {
+        if !history.is_empty() {
+            let len = history.len() as i32;
+            for (idx, cpu) in history.iter().enumerate() {
+                let idx = idx as i32;
+                let x0 = idx * BUTTON_SIZE as i32 / len;
+                let x1 = ((idx + 1) * BUTTON_SIZE as i32 / len).max(x0 + 1);
+                let normalized = (cpu / 100.0).clamp(0.0, 1.0);
+                let bar_h = ((normalized * SPARKLINE_HEIGHT as f32).round() as i32).max(1);
+                let y = SPARKLINE_BOTTOM_Y - bar_h;
+                draw_filled_rect_mut(
+                    &mut img,
+                    Rect::at(x0, y).of_size((x1 - x0) as u32, bar_h as u32),
+                    SPARKLINE_COLOR,
+                );
+            }
+        }
+    }
+
     Ok(DynamicImage::ImageRgb8(img))
 }
 
@@ -1631,6 +1823,7 @@ fn refresh_button_display(
     state: &NotificationState,
     runtime_config: &RuntimeConfig,
     page_state: &PageState,
+    podman_cpu_history: &HashMap<String, VecDeque<f32>>,
 ) -> anyhow::Result<()> {
     let assignments = resolve_button_assignments(runtime_config, page_state);
 
@@ -1639,7 +1832,15 @@ fn refresh_button_display(
             // 割り当てあり: ラベル画像を描画
             if let Some(assignment) = assignments.get(idx) {
                 let bg_color = assignment.color.to_rgb();
-                let button_img = draw_button_with_label(&assignment.label, bg_color)?;
+                let sparkline = match (&assignment.decision, assignment.color) {
+                    (PageButtonDecision::PodmanLogs { container_id, .. }, _)
+                        if assignment.podman_is_running =>
+                    {
+                        podman_cpu_history.get(container_id)
+                    }
+                    _ => None,
+                };
+                let button_img = draw_button_with_label(&assignment.label, bg_color, sparkline)?;
                 hw.set_button_image(idx as u8, button_img)?;
             } else {
                 // 割り当てなし: 黒

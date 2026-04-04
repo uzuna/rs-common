@@ -57,5 +57,11 @@ page_size = 7
 poll_interval_ms = 500
 cpu_history_len = 30
 log_command = ["podman", "logs", "-f"]
-terminal = ["/usr/bin/x-terminal-emulator"]
+terminal = ["/usr/bin/x-terminal-emulator", "-e"]
+
+[dynamic.podman.colors]
+running = [0, 180, 20]
+exited = [50, 0, 0]
+paused = [200, 160, 0]
+other = [80, 80, 80]
 

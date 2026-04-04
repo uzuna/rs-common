@@ -124,6 +124,7 @@ pub enum PageItemConfig {
     PodmanMonitor {
         container_id: String,
         label: String,
+        state: String,
         #[serde(default)]
         priority: Option<i32>,
     },
@@ -181,6 +182,34 @@ pub struct DynamicPodmanConfig {
     /// logs を表示する端末コマンド (log_command の前に置く)
     #[serde(default)]
     pub terminal: Vec<String>,
+    /// Podman ボタンの状態別表示色
+    #[serde(default)]
+    pub colors: PodmanButtonColors,
+}
+
+/// Podman ボタン色設定。各色は RGB 3要素で指定する。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PodmanButtonColors {
+    #[serde(default = "default_podman_color_running")]
+    pub running: [u8; 3],
+    #[serde(default = "default_podman_color_exited")]
+    pub exited: [u8; 3],
+    #[serde(default = "default_podman_color_paused")]
+    pub paused: [u8; 3],
+    #[serde(default = "default_podman_color_other")]
+    pub other: [u8; 3],
+}
+
+impl Default for PodmanButtonColors {
+    fn default() -> Self {
+        Self {
+            running: default_podman_color_running(),
+            exited: default_podman_color_exited(),
+            paused: default_podman_color_paused(),
+            other: default_podman_color_other(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -792,6 +821,22 @@ fn default_podman_log_command() -> Vec<String> {
     vec!["podman".to_string(), "logs".to_string(), "-f".to_string()]
 }
 
+fn default_podman_color_running() -> [u8; 3] {
+    [0, 180, 40]
+}
+
+fn default_podman_color_exited() -> [u8; 3] {
+    [200, 30, 30]
+}
+
+fn default_podman_color_paused() -> [u8; 3] {
+    [200, 160, 0]
+}
+
+fn default_podman_color_other() -> [u8; 3] {
+    [80, 80, 80]
+}
+
 // ── Podman ページ生成 ──────────────────────────────────────────────
 
 /// `build_dynamic_podman_pages` への入力パラメータ。
@@ -826,6 +871,7 @@ pub fn build_podman_page_build_input(cfg: &DynamicPodmanConfig) -> Option<Podman
 pub struct PodmanContainerEntry {
     pub id: String,
     pub label: String,
+    pub state: String,
 }
 
 /// Podman コンテナ一覧から動的ページ群を生成する。
@@ -878,6 +924,7 @@ pub fn build_dynamic_podman_pages(
             items.push(PageItemConfig::PodmanMonitor {
                 container_id: entry.id.clone(),
                 label: entry.label.clone(),
+                state: entry.state.clone(),
                 priority: Some(0),
             });
         }
@@ -940,6 +987,7 @@ mod tests {
             cpu_history_len: hist_len,
             log_command: log_cmd,
             terminal: vec![],
+            colors: PodmanButtonColors::default(),
         }
     }
 
@@ -1035,6 +1083,7 @@ mod tests {
             .map(|i| PodmanContainerEntry {
                 id: format!("id{i:012}"),
                 label: format!("container{i}"),
+                state: "running".to_string(),
             })
             .collect()
     }
@@ -1231,6 +1280,7 @@ mod tests {
         let entries = vec![PodmanContainerEntry {
             id: "abc123".to_string(),
             label: "myapp".to_string(),
+            state: "running".to_string(),
         }];
         let pages = build_dynamic_podman_pages(&make_input(), &entries);
         let item = pages[0]
@@ -1241,11 +1291,13 @@ mod tests {
         if let PageItemConfig::PodmanMonitor {
             container_id,
             label,
+            state,
             ..
         } = item
         {
             assert_eq!(container_id, "abc123");
             assert_eq!(label, "myapp");
+            assert_eq!(state, "running");
         } else {
             panic!("PodmanMonitor が見つかりません");
         }

@@ -6118,6 +6118,7 @@ dependencies = [
  "notify 6.1.1",
  "serde",
  "serde_json",
+ "signal-hook",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.18",

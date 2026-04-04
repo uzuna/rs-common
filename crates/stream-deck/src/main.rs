@@ -26,10 +26,13 @@ mod state;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 use elgato_streamdeck::DeviceStateUpdate;
+use signal_hook::consts::{SIGINT, SIGTERM};
 use tracing::{debug, error, info, warn};
 
 use action::{execute_action, execute_payload, ActionRequest};
@@ -150,9 +153,16 @@ fn run_monitor(compaction_mode: SlotCompactionMode, config_path: &str) -> anyhow
         &notification_state,
     );
 
+    let shutdown_flag = install_shutdown_flag()?;
+
     let mut notification_source = NotificationSource::bind(NOTIFICATION_SOCKET_PATH)?;
 
     loop {
+        if should_shutdown(&shutdown_flag) {
+            info!("終了シグナルを受信したためモニターを終了します");
+            break;
+        }
+
         info!("Stream Deck+ への接続を試みています...");
 
         match device::HardwareManager::connect() {
@@ -167,6 +177,7 @@ fn run_monitor(compaction_mode: SlotCompactionMode, config_path: &str) -> anyhow
                     &brightness,
                     &mut notification_source,
                     &notification_state,
+                    &shutdown_flag,
                 ) {
                     warn!("デバイスエラー: {e:#} — 再接続します");
                 }
@@ -176,8 +187,13 @@ fn run_monitor(compaction_mode: SlotCompactionMode, config_path: &str) -> anyhow
             }
         }
 
+        if should_shutdown(&shutdown_flag) {
+            break;
+        }
         std::thread::sleep(RETRY_INTERVAL);
     }
+
+    Ok(())
 }
 
 pub fn load_runtime_config(config_path: &str) -> anyhow::Result<RuntimeConfig> {
@@ -310,6 +326,7 @@ fn run_loop(
     brightness: &Rc<Cell<u8>>,
     notification_source: &mut NotificationSource,
     notification_state: &Rc<RefCell<NotificationState>>,
+    shutdown_flag: &Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let reader = hw.get_reader();
     hw.set_brightness(brightness.get())?;
@@ -331,6 +348,11 @@ fn run_loop(
     )?;
 
     loop {
+        if should_shutdown(shutdown_flag) {
+            render_exit_display(hw, renderer, config_manager.current())?;
+            return Ok(());
+        }
+
         if config_manager.poll_reload() {
             info!("レイアウトをリロードしました");
             *sections = build_sections(
@@ -426,15 +448,28 @@ fn run_loop(
         // 次のTickまで入力をポーリングする (INPUT_POLL_INTERVAL 刻み)
         let deadline = Instant::now() + TICK_INTERVAL;
         loop {
+            if should_shutdown(shutdown_flag) {
+                render_exit_display(hw, renderer, config_manager.current())?;
+                return Ok(());
+            }
+
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 break;
             }
             let poll_timeout = INPUT_POLL_INTERVAL.min(remaining);
 
-            let updates = reader
-                .read(Some(poll_timeout))
-                .map_err(|e| anyhow::anyhow!("入力読み取りエラー: {e}"))?;
+            let updates = match reader.read(Some(poll_timeout)) {
+                Ok(updates) => updates,
+                Err(e) => {
+                    if should_shutdown(shutdown_flag) {
+                        info!("終了シグナル受信中のため Exit 画面を表示して終了します");
+                        render_exit_display(hw, renderer, config_manager.current())?;
+                        return Ok(());
+                    }
+                    return Err(anyhow::anyhow!("入力読み取りエラー: {e}"));
+                }
+            };
 
             let mut notification_state_changed =
                 poll_notification_state(notification_source, notification_state)?;
@@ -487,6 +522,39 @@ fn run_loop(
             }
         }
     }
+}
+
+/// 終了時に LCD へ明示的な終了画面を表示する。
+/// デフォルトでは全セクションに "exit" と表示する。
+fn render_exit_display(
+    hw: &device::HardwareManager,
+    renderer: &renderer::Renderer,
+    config: &RuntimeConfig,
+) -> anyhow::Result<()> {
+    let section_count = config.sections.len().max(1);
+    let specs: Vec<SectionSpec> = (0..section_count)
+        .map(|_| SectionSpec {
+            label: "exit".to_string(),
+            value_text: String::new(),
+            history: vec![0.0; HISTORY_LEN],
+        })
+        .collect();
+    let image = renderer.render(&specs);
+    hw.set_lcd_strip_image(image)?;
+    Ok(())
+}
+
+/// 終了シグナル検出用のフラグを初期化し、SIGINT/SIGTERM に紐づける。
+fn install_shutdown_flag() -> anyhow::Result<Arc<AtomicBool>> {
+    let shutdown_flag = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(SIGINT, Arc::clone(&shutdown_flag))?;
+    signal_hook::flag::register(SIGTERM, Arc::clone(&shutdown_flag))?;
+    Ok(shutdown_flag)
+}
+
+/// 終了シグナルの受信状態を返す。
+fn should_shutdown(shutdown_flag: &Arc<AtomicBool>) -> bool {
+    shutdown_flag.load(Ordering::Relaxed)
 }
 
 /// 描画入力の互換レイヤ。

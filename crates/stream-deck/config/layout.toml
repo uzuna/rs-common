@@ -88,6 +88,16 @@ kind = "sample"
 sample_id = "btn_error_fallback"
 label = "Error"
 
+[[pages.items]]
+kind = "sample"
+sample_id = "sec_label_value"
+label = "SecValue"
+
+[[pages.items]]
+kind = "sample"
+sample_id = "sec_bar_trend"
+label = "SecTrend"
+
 [display]
 
 [[display.samples]]
@@ -138,6 +148,27 @@ pattern = "error_fallback"
 [display.samples.payload]
 error_code = "E_CONN"
 message = "offline"
+
+[[display.samples]]
+id = "sec_label_value"
+target = "section"
+pattern = "label_value"
+
+[display.samples.payload]
+title = "SecCPU"
+value = "42"
+unit = "%"
+severity = "warn"
+
+[[display.samples]]
+id = "sec_bar_trend"
+target = "section"
+pattern = "bar_trend"
+
+[display.samples.payload]
+current = 68.0
+max = 100.0
+history = [22.0, 35.0, 48.0, 56.0, 68.0]
 
 [dynamic.podman]
 enabled = true

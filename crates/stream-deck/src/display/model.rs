@@ -12,3 +12,12 @@ pub enum ButtonSampleSpec {
     BarTrend(BarTrendPayload),
     ErrorFallback(ErrorFallbackPayload),
 }
+
+#[derive(Debug, Clone)]
+pub enum SectionSampleSpec {
+    LabelOnly(LabelOnlyPayload),
+    LabelValue(LabelValuePayload),
+    IconBadge(IconBadgePayload),
+    BarTrend(BarTrendPayload),
+    ErrorFallback(ErrorFallbackPayload),
+}

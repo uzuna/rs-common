@@ -3,3 +3,4 @@
 pub mod button_patterns;
 pub mod catalog;
 pub mod model;
+pub mod section_patterns;

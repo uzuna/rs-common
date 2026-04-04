@@ -39,6 +39,7 @@ use button::{
     EncoderRoutingDecision, NavDirection, PageButtonDecision,
 };
 use context::{apply_context_auto_transition, build_window_context_provider};
+use display::section_patterns;
 use metrics::MetricsSource;
 use notifications::{
     NotificationPressAction, NotificationSource, NotificationState, SlotCompactionMode,
@@ -810,6 +811,7 @@ fn render_lcd_display(
     page_state: &PageState,
 ) -> anyhow::Result<()> {
     let mut specs: Vec<SectionSpec> = sections.iter().map(Section::as_spec).collect();
+    section_patterns::apply_section_pattern_overrides(&mut specs, config, page_state);
     if page_nav_overlay.is_active(Instant::now()) {
         let title = config
             .pages

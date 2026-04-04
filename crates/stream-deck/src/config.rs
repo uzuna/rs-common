@@ -576,12 +576,7 @@ pub fn validate_app_config(
                             .push(format!("page={id}: sample sample_id が空です"));
                     } else {
                         match display_samples.get(sample_id) {
-                            Some(DisplaySampleTarget::Button) => {}
-                            Some(DisplaySampleTarget::Section) => {
-                                report.errors.push(format!(
-                                    "page={id}: sample_id={sample_id} は target=section のためボタンへ割り当てできません"
-                                ));
-                            }
+                            Some(DisplaySampleTarget::Button | DisplaySampleTarget::Section) => {}
                             None => {
                                 report.errors.push(format!(
                                     "page={id}: sample_id が存在しません: {sample_id}"

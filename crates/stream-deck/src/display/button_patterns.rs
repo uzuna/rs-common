@@ -36,7 +36,8 @@ pub fn render_button_pattern(sample: &ButtonSampleSpec) -> anyhow::Result<Dynami
     let font = get_font();
     let img = match sample {
         ButtonSampleSpec::LabelOnly(payload) => {
-            let mut img = RgbImage::from_pixel(BUTTON_SIZE, BUTTON_SIZE, Rgb(payload.bg_color));
+            let mut img =
+                RgbImage::from_pixel(BUTTON_SIZE, BUTTON_SIZE, Rgb(payload.bg_color.as_array()));
             draw_text_mut(
                 &mut img,
                 TEXT_COLOR,
@@ -44,7 +45,7 @@ pub fn render_button_pattern(sample: &ButtonSampleSpec) -> anyhow::Result<Dynami
                 ((BUTTON_SIZE as f32 - FONT_SIZE_TITLE) / 2.0) as i32,
                 PxScale::from(FONT_SIZE_TITLE),
                 font,
-                &payload.label,
+                payload.label.as_str(),
             );
             img
         }
@@ -58,7 +59,7 @@ pub fn render_button_pattern(sample: &ButtonSampleSpec) -> anyhow::Result<Dynami
                 8,
                 PxScale::from(FONT_SIZE_SUB),
                 font,
-                &payload.title,
+                payload.title.as_str(),
             );
             draw_text_mut(
                 &mut img,
@@ -67,7 +68,7 @@ pub fn render_button_pattern(sample: &ButtonSampleSpec) -> anyhow::Result<Dynami
                 38,
                 PxScale::from(FONT_SIZE_VALUE),
                 font,
-                &payload.value,
+                payload.value.as_str(),
             );
             draw_text_mut(
                 &mut img,
@@ -94,7 +95,7 @@ pub fn render_button_pattern(sample: &ButtonSampleSpec) -> anyhow::Result<Dynami
                 44,
                 PxScale::from(30.0),
                 font,
-                &payload.icon,
+                payload.icon.as_str(),
             );
 
             let badge_color = severity_color(payload.status);
@@ -112,8 +113,8 @@ pub fn render_button_pattern(sample: &ButtonSampleSpec) -> anyhow::Result<Dynami
         }
         ButtonSampleSpec::BarTrend(payload) => {
             let mut img = RgbImage::from_pixel(BUTTON_SIZE, BUTTON_SIZE, Rgb([20, 20, 20]));
-            let max = payload.max.max(1.0);
-            let ratio = (payload.current / max).clamp(0.0, 1.0);
+            let max = payload.max.get();
+            let ratio = f32::from(payload.percent.get()) / 100.0;
             let bar_width = ((BUTTON_SIZE as f32 * ratio).round() as u32).max(1);
             draw_filled_rect_mut(
                 &mut img,
@@ -127,14 +128,14 @@ pub fn render_button_pattern(sample: &ButtonSampleSpec) -> anyhow::Result<Dynami
                 20,
                 PxScale::from(FONT_SIZE_SUB),
                 font,
-                &format!("{:.0}/{:.0}", payload.current, payload.max),
+                &format!("{:.0}/{:.0}", payload.current.get(), max),
             );
 
-            let len = payload.history.len().max(1) as i32;
-            for (idx, v) in payload.history.iter().enumerate() {
+            let len = payload.history.as_slice().len().max(1) as i32;
+            for (idx, v) in payload.history.as_slice().iter().enumerate() {
                 let x0 = idx as i32 * BUTTON_SIZE as i32 / len;
                 let x1 = ((idx as i32 + 1) * BUTTON_SIZE as i32 / len).max(x0 + 1);
-                let normalized = (v / max).clamp(0.0, 1.0);
+                let normalized = v.get();
                 let h = (normalized * 50.0).round() as i32;
                 let y = 114 - h.max(1);
                 draw_filled_rect_mut(
@@ -154,7 +155,7 @@ pub fn render_button_pattern(sample: &ButtonSampleSpec) -> anyhow::Result<Dynami
                 12,
                 PxScale::from(FONT_SIZE_SUB),
                 font,
-                &payload.error_code,
+                payload.error_code.as_str(),
             );
             draw_text_mut(
                 &mut img,
@@ -163,7 +164,7 @@ pub fn render_button_pattern(sample: &ButtonSampleSpec) -> anyhow::Result<Dynami
                 58,
                 PxScale::from(FONT_SIZE_TITLE),
                 font,
-                &payload.message,
+                payload.message.as_str(),
             );
             img
         }

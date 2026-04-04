@@ -182,6 +182,8 @@ fn run_monitor(compaction_mode: SlotCompactionMode, config_path: &str) -> anyhow
 
 pub fn load_runtime_config(config_path: &str) -> anyhow::Result<RuntimeConfig> {
     let bundle = config::AppConfigBundle::load(config_path, terminal_title_capable())?;
+    let display = display::dto::DisplayConfigDto::try_from(&bundle.app.display)
+        .map_err(|e| anyhow::anyhow!("display DTO 変換に失敗しました: {e}"))?;
     if bundle.report.has_errors() {
         warn!(errors = ?bundle.report.errors, "新設定モデル検証でエラーを検出しました");
     }
@@ -249,7 +251,7 @@ pub fn load_runtime_config(config_path: &str) -> anyhow::Result<RuntimeConfig> {
         sections: bundle.app.dashboard.sections,
         home_page_id: bundle.app.app.home,
         pages,
-        display: bundle.app.display,
+        display,
         watch_targets: bundle.watch_targets,
         podman: bundle.app.dynamic.podman,
     })
@@ -1020,7 +1022,7 @@ mod tests {
                 title: "Home".to_string(),
                 items,
             }],
-            display: config::DisplayConfig::default(),
+            display: display::dto::DisplayConfigDto::default(),
             watch_targets: vec![],
             podman: None,
         }
@@ -1031,7 +1033,7 @@ mod tests {
             sections: vec![],
             home_page_id: "home".to_string(),
             pages,
-            display: config::DisplayConfig::default(),
+            display: display::dto::DisplayConfigDto::default(),
             watch_targets: vec![],
             podman: None,
         }

@@ -25,78 +25,147 @@ capacity = 12
 [[pages]]
 id = "home"
 title = "Home"
+# canonical_layout: nav_reserved (StreamDeck Plus 4×2)
+# ANCHOR_BACK:      なし（トップページのため不要）
+# ANCHOR_HOME:      なし（自己遷移のため非表示）
+# ANCHOR_PREV/NEXT: encoder 0 がページグループ内移動を担当（将来拡張時に有効化）
+# content_band:     PRIMARY_1=Apps, PRIMARY_2=Podman, PRIMARY_3=BtnSample
 
 [[pages.items]]
 kind = "nav"
 label = "Apps"
 target = "apps"
+priority = 10     # PRIMARY_1 → ボタン 0
 
 [[pages.items]]
 kind = "nav"
 label = "Podman"
 target = "podman"
+priority = 20     # PRIMARY_2 → ボタン 1
 
 [[pages.items]]
 kind = "nav"
 label = "BtnSample"
 target = "BtnSample"
+priority = 30     # PRIMARY_3 → ボタン 2
 
 [[pages]]
 id = "apps"
 title = "Apps"
+# canonical_layout: nav_reserved
+# ANCHOR_BACK: priority=-100 → ボタン 0 (左上固定)
+# content_band: PRIMARY_1=Terminal
 
-# サブページで左上に戻る操作を置きたい場合は、back を先頭に定義する。
 [[pages.items]]
 kind = "back"
 label = "Back"
+priority = -100   # ANCHOR_BACK → ボタン 0 (左上)
 
 [[pages.items]]
 kind = "command"
 label = "Terminal"
 command = ["/usr/bin/terminator"]
+priority = 10     # PRIMARY_1 → ボタン 1
 
 [[pages]]
 id = "BtnSample"
 title = "BtnSample"
+# canonical_layout: nav_reserved
+# ANCHOR_BACK: priority=-100 → ボタン 0 (左上固定)
+# content_band: PRIMARY_1..7 = サンプル 7 種（button/section 混在）
 
 [[pages.items]]
 kind = "back"
 label = "Back"
+priority = -100   # ANCHOR_BACK → ボタン 0 (左上)
 
 [[pages.items]]
 kind = "sample"
 sample_id = "btn_label_only"
 label = "Label"
+priority = 10     # PRIMARY_1
 
 [[pages.items]]
 kind = "sample"
 sample_id = "btn_label_value"
 label = "Value"
+action_ref = "act_btnsample_mode"
+priority = 20     # PRIMARY_2
 
 [[pages.items]]
 kind = "sample"
 sample_id = "btn_icon_badge"
 label = "Badge"
+action_ref = "act_btnsample_set_50"
+priority = 30     # PRIMARY_3
 
 [[pages.items]]
 kind = "sample"
 sample_id = "btn_bar_trend"
 label = "Trend"
+action_ref = "act_btnsample_value_up"
+priority = 40     # PRIMARY_4
 
 [[pages.items]]
 kind = "sample"
 sample_id = "btn_error_fallback"
 label = "Error"
+action_ref = "act_btnsample_value_down"
+priority = 50     # PRIMARY_5
 
 [[pages.items]]
 kind = "sample"
 sample_id = "sec_label_value"
 label = "SecValue"
+action_ref = "act_btnsample_sec_mode"
+priority = 60     # PRIMARY_6
 
 [[pages.items]]
 kind = "sample"
 sample_id = "sec_bar_trend"
 label = "SecTrend"
+priority = 70     # PRIMARY_7
+
+[[actions]]
+kind = "transition"
+id = "act_btnsample_mode"
+states = ["idle", "active", "paused"]
+initial_state = "idle"
+
+[[actions]]
+kind = "set_value"
+id = "act_btnsample_value_up"
+min = 0
+max = 100
+initial = 20
+step = 20
+operation = "increment"
+wrap = true
+
+[[actions]]
+kind = "set_value"
+id = "act_btnsample_value_down"
+min = 0
+max = 100
+initial = 20
+step = 20
+operation = "decrement"
+wrap = true
+
+[[actions]]
+kind = "set_value"
+id = "act_btnsample_set_50"
+min = 0
+max = 100
+initial = 20
+operation = "set"
+set_value = 50
+
+[[actions]]
+kind = "transition"
+id = "act_btnsample_sec_mode"
+states = ["sec_idle", "sec_watch", "sec_alert"]
+initial_state = "sec_idle"
 
 [display]
 

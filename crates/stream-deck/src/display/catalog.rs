@@ -203,6 +203,7 @@ mod tests {
             sections: vec![],
             home_page_id: "home".to_string(),
             pages: vec![],
+            actions: vec![],
             display,
             watch_targets: vec![],
             podman: None,

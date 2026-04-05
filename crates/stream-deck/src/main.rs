@@ -53,7 +53,9 @@ use plugin::{BrightnessPlugin, CpuPlugin, DataPlugin, LoadPlugin, MemPlugin, Not
 use renderer::SectionSpec;
 use runtime::{ConfigManager, RuntimeConfig};
 use section::Section;
-use state::{InputUpdateOutcome, PageState, SshSessionRegistry};
+use state::{
+    InputUpdateOutcome, PageState, Phase0ActionResultKind, Phase0ActionRuntime, SshSessionRegistry,
+};
 use storage::MemoryStorage;
 
 #[cfg(test)]
@@ -276,6 +278,7 @@ pub fn load_runtime_config(config_path: &str) -> anyhow::Result<RuntimeConfig> {
         sections: bundle.app.dashboard.sections,
         home_page_id: bundle.app.app.home,
         pages,
+        actions: bundle.app.actions,
         display,
         watch_targets: bundle.watch_targets,
         podman: bundle.app.dynamic.podman,
@@ -344,6 +347,7 @@ fn run_loop(
     let mut page_state = PageState::new(config_manager.current());
     let mut window_context_provider = build_window_context_provider();
     let mut ssh_registry = SshSessionRegistry::default();
+    let mut phase0_actions = Phase0ActionRuntime::from_config(config_manager.current());
     let mut page_nav_overlay = paging::PageNavOverlay::new();
     let mut podman_cpu_history: HashMap<String, VecDeque<f32>> = HashMap::new();
     let mut podman_last_polled = Instant::now() - Duration::from_secs(60);
@@ -356,6 +360,7 @@ fn run_loop(
         config_manager.current(),
         &page_state,
         &podman_cpu_history,
+        &phase0_actions,
     )?;
 
     loop {
@@ -374,12 +379,14 @@ fn run_loop(
                 section_storage,
             );
             page_state.reconcile(config_manager.current());
+            phase0_actions = Phase0ActionRuntime::from_config(config_manager.current());
             refresh_button_display(
                 hw,
                 &notification_state.borrow(),
                 config_manager.current(),
                 &page_state,
                 &podman_cpu_history,
+                &phase0_actions,
             )?
         }
 
@@ -392,6 +399,7 @@ fn run_loop(
                 config_manager.current(),
                 &page_state,
                 &podman_cpu_history,
+                &phase0_actions,
             )?;
         }
 
@@ -406,6 +414,7 @@ fn run_loop(
                 config_manager.current(),
                 &page_state,
                 &podman_cpu_history,
+                &phase0_actions,
             )?;
         }
 
@@ -432,6 +441,7 @@ fn run_loop(
                 config_manager.current(),
                 &page_state,
                 &podman_cpu_history,
+                &phase0_actions,
             )?;
         }
 
@@ -455,6 +465,7 @@ fn run_loop(
             &page_nav_overlay,
             config_manager.current(),
             &page_state,
+            &phase0_actions,
         )?;
 
         // 次のTickまで入力をポーリングする (INPUT_POLL_INTERVAL 刻み)
@@ -492,6 +503,7 @@ fn run_loop(
                 config_manager.current(),
                 &mut page_state,
                 &mut ssh_registry,
+                &mut phase0_actions,
                 &mut page_nav_overlay,
             );
             let brightness_changed = input_outcome.brightness_changed;
@@ -503,13 +515,18 @@ fn run_loop(
                 window_context_provider.as_mut(),
             );
 
-            if notification_state_changed || page_state_changed || context_state_changed {
+            if notification_state_changed
+                || page_state_changed
+                || input_outcome.action_state_changed
+                || context_state_changed
+            {
                 refresh_button_display(
                     hw,
                     &notification_state.borrow(),
                     config_manager.current(),
                     &page_state,
                     &podman_cpu_history,
+                    &phase0_actions,
                 )?;
             }
 
@@ -530,6 +547,7 @@ fn run_loop(
                     &page_nav_overlay,
                     config_manager.current(),
                     &page_state,
+                    &phase0_actions,
                 )?;
             }
         }
@@ -673,6 +691,7 @@ fn handle_device_updates(
     runtime_config: &RuntimeConfig,
     page_state: &mut PageState,
     ssh_registry: &mut SshSessionRegistry,
+    phase0_actions: &mut Phase0ActionRuntime,
     page_nav_overlay: &mut paging::PageNavOverlay,
 ) -> InputUpdateOutcome {
     let mut outcome = InputUpdateOutcome::default();
@@ -703,6 +722,27 @@ fn handle_device_updates(
                             outcome.page_state_changed = true;
                             outcome.lcd_needs_update = true;
                             page_nav_overlay.trigger();
+                        }
+                    }
+                    EncoderRoutingDecision::SampleAction { action_id } => {
+                        let apply_outcome = phase0_actions.apply(&action_id);
+                        if apply_outcome.result == Phase0ActionResultKind::Success {
+                            info!(
+                                encoder = idx,
+                                delta,
+                                action_id = %action_id,
+                                feedback = %apply_outcome.feedback,
+                                "左端ノブで section sample action を適用"
+                            );
+                            outcome.action_state_changed = true;
+                            outcome.lcd_needs_update = true;
+                        } else {
+                            warn!(
+                                encoder = idx,
+                                delta,
+                                action_id = %action_id,
+                                "左端ノブの section sample action が reject されました"
+                            );
                         }
                     }
                     EncoderRoutingDecision::Noop => {}
@@ -835,6 +875,24 @@ fn handle_device_updates(
                                     warn!("Podman logs 起動失敗: {e:#}");
                                 }
                             }
+                            PageButtonDecision::SampleAction { action_id } => {
+                                let apply_outcome = phase0_actions.apply(&action_id);
+                                if apply_outcome.result == Phase0ActionResultKind::Success {
+                                    info!(
+                                        button = idx,
+                                        action_id = %action_id,
+                                        feedback = %apply_outcome.feedback,
+                                        "Phase0 sample action を適用"
+                                    );
+                                    outcome.action_state_changed = true;
+                                } else {
+                                    warn!(
+                                        button = idx,
+                                        action_id = %action_id,
+                                        "Phase0 sample action が reject されました"
+                                    );
+                                }
+                            }
                             PageButtonDecision::Noop => {}
                         }
                     }
@@ -891,9 +949,15 @@ fn render_lcd_display(
     page_nav_overlay: &paging::PageNavOverlay,
     config: &RuntimeConfig,
     page_state: &PageState,
+    phase0_actions: &Phase0ActionRuntime,
 ) -> anyhow::Result<()> {
     let mut specs: Vec<SectionSpec> = sections.iter().map(Section::as_spec).collect();
-    section_patterns::apply_section_pattern_overrides(&mut specs, config, page_state);
+    section_patterns::apply_section_pattern_overrides(
+        &mut specs,
+        config,
+        page_state,
+        phase0_actions,
+    );
     if page_nav_overlay.is_active(Instant::now()) {
         let title = config
             .pages
@@ -1102,6 +1166,7 @@ mod tests {
                 title: "Home".to_string(),
                 items,
             }],
+            actions: vec![],
             display: display::dto::DisplayConfigDto::default(),
             watch_targets: vec![],
             podman: None,
@@ -1113,6 +1178,7 @@ mod tests {
             sections: vec![],
             home_page_id: "home".to_string(),
             pages,
+            actions: vec![],
             display: display::dto::DisplayConfigDto::default(),
             watch_targets: vec![],
             podman: None,
@@ -1228,6 +1294,49 @@ mod tests {
         };
         let decision = resolve_encoder_twist_policy(0, 1, &config, &page_state);
         assert!(matches!(decision, EncoderRoutingDecision::Noop));
+    }
+
+    #[test]
+    fn test_encoder_policy_maps_left_knob_to_section_sample_action() {
+        let config = RuntimeConfig {
+            sections: vec![],
+            home_page_id: "home".to_string(),
+            pages: vec![config::PageConfig {
+                id: "home".to_string(),
+                title: "Home".to_string(),
+                items: vec![config::PageItemConfig::Sample {
+                    sample_id: "sec_mode".to_string(),
+                    label: "SecMode".to_string(),
+                    action_ref: Some("act_sec_mode".to_string()),
+                    priority: Some(10),
+                }],
+            }],
+            actions: vec![],
+            display: display::dto::DisplayConfigDto {
+                samples: vec![display::dto::DisplaySampleDto {
+                    id: "sec_mode".to_string(),
+                    target: display::dto::DisplayTargetDto::Section,
+                    payload: display::dto::DisplayPayloadDto::LabelValue {
+                        title: "Sec".to_string(),
+                        value: "0".to_string(),
+                        unit: "%".to_string(),
+                        severity: config::DisplaySeverity::Normal,
+                    },
+                }],
+            },
+            watch_targets: vec![],
+            podman: None,
+        };
+        let page_state = PageState {
+            current_page_id: "home".to_string(),
+            history: vec![],
+        };
+
+        let decision = resolve_encoder_twist_policy(0, 1, &config, &page_state);
+        assert!(matches!(
+            decision,
+            EncoderRoutingDecision::SampleAction { action_id } if action_id == "act_sec_mode"
+        ));
     }
 
     /// 正常系: encoder 3 (輝度) は Prev/Next の有無によらず BrightnessDelta を返す

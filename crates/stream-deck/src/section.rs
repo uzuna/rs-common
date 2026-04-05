@@ -196,7 +196,11 @@ mod tests {
         }
 
         let spec = sec.as_spec();
-        assert_eq!(spec.history.len(), section_capacity, "capacity=30 分が確保される");
+        assert_eq!(
+            spec.history.len(),
+            section_capacity,
+            "capacity=30 分が確保される"
+        );
         // 30 件全てに実値が入っていること（パディングなし）
         for &v in &spec.history {
             assert!((v - 0.5).abs() < 1e-5, "実値が想定外: {v}");

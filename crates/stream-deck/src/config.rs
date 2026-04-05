@@ -17,6 +17,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub pages: Vec<PageConfig>,
     #[serde(default)]
+    pub actions: Vec<ActionConfig>,
+    #[serde(default)]
     pub display: DisplayConfig,
     #[serde(default)]
     pub dynamic: DynamicConfig,
@@ -175,6 +177,57 @@ pub struct PageConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ActionConfig {
+    Transition {
+        id: String,
+        states: Vec<String>,
+        #[serde(default)]
+        initial_state: Option<String>,
+    },
+    SetValue {
+        id: String,
+        min: i32,
+        max: i32,
+        #[serde(default)]
+        initial: Option<i32>,
+        #[serde(default = "default_set_value_step")]
+        step: i32,
+        #[serde(default = "default_set_value_operation")]
+        operation: SetValueOperation,
+        #[serde(default)]
+        set_value: Option<i32>,
+        #[serde(default)]
+        wrap: bool,
+    },
+}
+
+impl ActionConfig {
+    pub fn id(&self) -> &str {
+        match self {
+            ActionConfig::Transition { id, .. } | ActionConfig::SetValue { id, .. } => id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SetValueOperation {
+    Increment,
+    Decrement,
+    Set,
+}
+
+fn default_set_value_step() -> i32 {
+    1
+}
+
+fn default_set_value_operation() -> SetValueOperation {
+    SetValueOperation::Increment
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum PageItemConfig {
     Nav {
@@ -224,6 +277,8 @@ pub enum PageItemConfig {
         sample_id: String,
         #[serde(default)]
         label: String,
+        #[serde(default)]
+        action_ref: Option<String>,
         #[serde(default)]
         priority: Option<i32>,
     },
@@ -443,6 +498,86 @@ pub fn validate_app_config(
     terminal_title_capable: bool,
 ) -> ConfigValidationReport {
     let mut report = ConfigValidationReport::default();
+    let mut action_ids = BTreeSet::new();
+
+    for action in &app.actions {
+        let id = action.id().trim();
+        if id.is_empty() {
+            report.errors.push("actions id が空です".to_string());
+            continue;
+        }
+        if !action_ids.insert(id.to_string()) {
+            report.errors.push(format!("重複した action id です: {id}"));
+        }
+
+        match action {
+            ActionConfig::Transition {
+                states,
+                initial_state,
+                ..
+            } => {
+                if states.is_empty() {
+                    report
+                        .errors
+                        .push(format!("action={id}: transition states が空です"));
+                }
+                for (idx, state) in states.iter().enumerate() {
+                    if state.trim().is_empty() {
+                        report
+                            .errors
+                            .push(format!("action={id}: states[{idx}] が空です"));
+                    }
+                }
+                if let Some(initial_state) = initial_state {
+                    if !states.iter().any(|s| s == initial_state) {
+                        report.errors.push(format!(
+                            "action={id}: initial_state が states に存在しません: {initial_state}"
+                        ));
+                    }
+                }
+            }
+            ActionConfig::SetValue {
+                min,
+                max,
+                initial,
+                step,
+                operation,
+                set_value,
+                ..
+            } => {
+                if min > max {
+                    report.errors.push(format!(
+                        "action={id}: set_value の min({min}) が max({max}) より大きいです"
+                    ));
+                }
+                if *step <= 0 {
+                    report
+                        .errors
+                        .push(format!("action={id}: set_value.step は 1 以上が必要です"));
+                }
+                if let Some(initial) = initial {
+                    if *initial < *min || *initial > *max {
+                        report.errors.push(format!(
+                            "action={id}: initial={initial} が範囲外です ({min}..={max})"
+                        ));
+                    }
+                }
+                if *operation == SetValueOperation::Set {
+                    if let Some(v) = set_value {
+                        if *v < *min || *v > *max {
+                            report.errors.push(format!(
+                                "action={id}: set_value={v} が範囲外です ({min}..={max})"
+                            ));
+                        }
+                    } else {
+                        report.errors.push(format!(
+                            "action={id}: operation=set の場合 set_value が必要です"
+                        ));
+                    }
+                }
+            }
+        }
+    }
 
     let mut display_samples: BTreeMap<String, DisplaySampleTarget> = BTreeMap::new();
     for sample in &app.display.samples {
@@ -568,7 +703,11 @@ pub fn validate_app_config(
                             .push(format!("page={id}: podman-monitor label が空です"));
                     }
                 }
-                PageItemConfig::Sample { sample_id, .. } => {
+                PageItemConfig::Sample {
+                    sample_id,
+                    action_ref,
+                    ..
+                } => {
                     let sample_id = sample_id.trim();
                     if sample_id.is_empty() {
                         report
@@ -582,6 +721,18 @@ pub fn validate_app_config(
                                     "page={id}: sample_id が存在しません: {sample_id}"
                                 ));
                             }
+                        }
+                    }
+                    if let Some(action_ref) = action_ref {
+                        let action_ref = action_ref.trim();
+                        if action_ref.is_empty() {
+                            report
+                                .errors
+                                .push(format!("page={id}: sample action_ref が空です"));
+                        } else if !action_ids.contains(action_ref) {
+                            report.errors.push(format!(
+                                "page={id}: sample action_ref が存在しません: {action_ref}"
+                            ));
                         }
                     }
                 }
@@ -1189,6 +1340,7 @@ mod tests {
                 title: "Home".to_string(),
                 items: vec![],
             }],
+            actions: vec![],
             display: DisplayConfig::default(),
             dynamic: DynamicConfig {
                 ssh_hosts: None,
@@ -1484,5 +1636,87 @@ mod tests {
         } else {
             panic!("PodmanMonitor が見つかりません");
         }
+    }
+
+    #[test]
+    fn test_validate_rejects_sample_action_ref_not_found() {
+        let app = AppConfig {
+            app: AppMeta {
+                home: "home".to_string(),
+            },
+            dashboard: DashboardConfig {
+                sections: vec![DashboardSectionConfig {
+                    kind: DashboardSectionKind::Cpu,
+                    capacity: 10,
+                }],
+            },
+            pages: vec![PageConfig {
+                id: "home".to_string(),
+                title: "Home".to_string(),
+                items: vec![PageItemConfig::Sample {
+                    sample_id: "btn_label_only".to_string(),
+                    label: "Label".to_string(),
+                    action_ref: Some("missing_action".to_string()),
+                    priority: None,
+                }],
+            }],
+            actions: vec![],
+            display: DisplayConfig {
+                samples: vec![DisplaySampleConfig {
+                    id: "btn_label_only".to_string(),
+                    target: DisplaySampleTarget::Button,
+                    pattern: DisplayPatternKind::LabelOnly,
+                    payload: DisplaySamplePayload::LabelOnly(LabelOnlyPayload {
+                        label: "Apps".to_string(),
+                        bg_color: [10, 20, 30],
+                    }),
+                }],
+            },
+            dynamic: DynamicConfig::default(),
+            watch: WatchConfig::default(),
+        };
+
+        let report = validate_app_config(&app, None, true);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("sample action_ref が存在しません")),
+            "errors={:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_set_value_action() {
+        let mut app = base_app(None);
+        app.actions = vec![ActionConfig::SetValue {
+            id: "act_invalid".to_string(),
+            min: 100,
+            max: 0,
+            initial: Some(50),
+            step: 0,
+            operation: SetValueOperation::Set,
+            set_value: None,
+            wrap: false,
+        }];
+
+        let report = validate_app_config(&app, None, true);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("min(100) が max(0)")),
+            "errors={:?}",
+            report.errors
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("operation=set の場合 set_value が必要")),
+            "errors={:?}",
+            report.errors
+        );
     }
 }

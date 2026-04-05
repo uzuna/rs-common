@@ -274,11 +274,7 @@ mod tests {
         assert_eq!(hist.len(), 30);
         // デフォルト capacity(10) だと末尾 10 件しか残らない。
         // 正しく 30 件保持されることを確認する。
-        assert!(
-            (hist[0] - 0.0).abs() < 1e-5,
-            "先頭は0番目: got={}",
-            hist[0]
-        );
+        assert!((hist[0] - 0.0).abs() < 1e-5, "先頭は0番目: got={}", hist[0]);
         assert!(
             (hist[29] - 29.0).abs() < 1e-5,
             "末尾は29番目: got={}",

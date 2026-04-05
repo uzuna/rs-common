@@ -13,7 +13,7 @@ use crate::device;
 use crate::display::{button_patterns, catalog};
 use crate::notifications::{NotificationPressAction, NotificationState, SlotState};
 use crate::runtime::RuntimeConfig;
-use crate::state::PageState;
+use crate::state::{PageState, Phase0ActionRuntime};
 
 /// Stream Deck+ 物理ボタン数
 pub const BUTTON_COUNT: usize = 8;
@@ -57,6 +57,9 @@ pub enum PageButtonDecision {
         terminal: Vec<String>,
         log_command: Vec<String>,
     },
+    SampleAction {
+        action_id: String,
+    },
     Noop,
 }
 
@@ -91,6 +94,7 @@ pub enum ButtonRoutingDecision {
 pub enum EncoderRoutingDecision {
     BrightnessDelta(i8),
     PageNavigate(NavDirection),
+    SampleAction { action_id: String },
     Noop,
 }
 
@@ -115,6 +119,7 @@ pub struct ResolvedButtonAssignment {
     pub color: AssignedButtonColor,
     pub decision: PageButtonDecision,
     pub sample_id: Option<String>,
+    pub action_ref: Option<String>,
     pub podman_is_running: bool,
 }
 
@@ -222,6 +227,7 @@ pub fn resolve_button_assignments(
                     PageButtonDecision::Noop
                 },
                 sample_id: None,
+                action_ref: None,
                 podman_is_running: false,
             },
             config::PageItemConfig::Back { .. } => ResolvedButtonAssignment {
@@ -229,6 +235,7 @@ pub fn resolve_button_assignments(
                 color: AssignedButtonColor::Back,
                 decision: PageButtonDecision::Back,
                 sample_id: None,
+                action_ref: None,
                 podman_is_running: false,
             },
             config::PageItemConfig::Command { command, .. } => ResolvedButtonAssignment {
@@ -240,6 +247,7 @@ pub fn resolve_button_assignments(
                     PageButtonDecision::Command(command.clone())
                 },
                 sample_id: None,
+                action_ref: None,
                 podman_is_running: false,
             },
             config::PageItemConfig::SshConnect {
@@ -256,6 +264,7 @@ pub fn resolve_button_assignments(
                     ssh_template: ssh_template.clone(),
                 },
                 sample_id: None,
+                action_ref: None,
                 podman_is_running: false,
             },
             config::PageItemConfig::PodmanMonitor {
@@ -273,14 +282,25 @@ pub fn resolve_button_assignments(
                         log_command,
                     },
                     sample_id: None,
+                    action_ref: None,
                     podman_is_running: state.eq_ignore_ascii_case("running"),
                 }
             }
-            config::PageItemConfig::Sample { sample_id, .. } => ResolvedButtonAssignment {
+            config::PageItemConfig::Sample {
+                sample_id,
+                action_ref,
+                ..
+            } => ResolvedButtonAssignment {
                 label: page_item_label(item),
                 color: AssignedButtonColor::Command,
-                decision: PageButtonDecision::Noop,
+                decision: action_ref
+                    .as_ref()
+                    .map(|id| PageButtonDecision::SampleAction {
+                        action_id: id.clone(),
+                    })
+                    .unwrap_or(PageButtonDecision::Noop),
                 sample_id: Some(sample_id.clone()),
+                action_ref: action_ref.clone(),
                 podman_is_running: false,
             },
         })
@@ -305,6 +325,7 @@ pub fn page_decision_name(decision: &PageButtonDecision) -> &'static str {
         PageButtonDecision::Command(_) => "command",
         PageButtonDecision::SshConnect { .. } => "ssh-connect",
         PageButtonDecision::PodmanLogs { .. } => "podman-logs",
+        PageButtonDecision::SampleAction { .. } => "sample-action",
         PageButtonDecision::Noop => "noop",
     }
 }
@@ -353,7 +374,30 @@ pub fn resolve_encoder_twist_policy(
                 EncoderRoutingDecision::Noop
             }
         }
-        Some(EncoderRole::ReservedNoop) | None => EncoderRoutingDecision::Noop,
+        Some(EncoderRole::ReservedNoop) | None => {
+            if idx == 0 && delta != 0 {
+                if let Some(action_id) =
+                    current_page_items(config, page_state)
+                        .iter()
+                        .find_map(|item| {
+                            if let config::PageItemConfig::Sample {
+                                sample_id,
+                                action_ref: Some(action_id),
+                                ..
+                            } = item
+                            {
+                                if catalog::resolve_section_sample(config, sample_id).is_some() {
+                                    return Some(action_id.clone());
+                                }
+                            }
+                            None
+                        })
+                {
+                    return EncoderRoutingDecision::SampleAction { action_id };
+                }
+            }
+            EncoderRoutingDecision::Noop
+        }
     }
 }
 
@@ -444,6 +488,28 @@ pub fn draw_button_with_label(
     Ok(DynamicImage::ImageRgb8(img))
 }
 
+fn overlay_feedback_text(base: DynamicImage, feedback: &str) -> DynamicImage {
+    if feedback.trim().is_empty() {
+        return base;
+    }
+
+    let mut img = base.to_rgb8();
+    let font = get_button_font();
+
+    draw_filled_rect_mut(&mut img, Rect::at(0, 92).of_size(120, 28), Rgb([0, 0, 0]));
+    draw_text_mut(
+        &mut img,
+        Rgb([255, 255, 255]),
+        8,
+        96,
+        PxScale::from(14.0),
+        font,
+        feedback,
+    );
+
+    DynamicImage::ImageRgb8(img)
+}
+
 /// ボタンにラベルテキスト画像を設定する
 pub fn refresh_button_display(
     hw: &device::HardwareManager,
@@ -451,6 +517,7 @@ pub fn refresh_button_display(
     runtime_config: &RuntimeConfig,
     page_state: &PageState,
     podman_cpu_history: &HashMap<String, VecDeque<f32>>,
+    phase0_actions: &Phase0ActionRuntime,
 ) -> anyhow::Result<()> {
     let assignments = resolve_button_assignments(runtime_config, page_state);
 
@@ -460,7 +527,14 @@ pub fn refresh_button_display(
                 if let Some(sample_id) = assignment.sample_id.as_deref() {
                     if let Some(sample) = catalog::resolve_button_sample(runtime_config, sample_id)
                     {
-                        let button_img = button_patterns::render_button_pattern(&sample)?;
+                        let mut button_img = button_patterns::render_button_pattern(&sample)?;
+                        if let Some(feedback) = assignment
+                            .action_ref
+                            .as_deref()
+                            .and_then(|id| phase0_actions.feedback_text(id))
+                        {
+                            button_img = overlay_feedback_text(button_img, &feedback);
+                        }
                         hw.set_button_image(idx as u8, button_img)?;
                         continue;
                     }

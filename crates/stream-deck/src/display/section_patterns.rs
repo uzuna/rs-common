@@ -5,7 +5,7 @@ use crate::display::catalog;
 use crate::display::model::SectionSampleSpec;
 use crate::renderer::SectionSpec;
 use crate::runtime::RuntimeConfig;
-use crate::state::PageState;
+use crate::state::{PageState, Phase0ActionRuntime};
 
 /// `SectionSampleSpec` を `SectionSpec` に変換する。
 /// `history_len` はレンダラが期待する履歴の要素数で、スパークラインの円滑な描画のためにパディングまたは山切りを行う。
@@ -65,6 +65,7 @@ pub fn apply_section_pattern_overrides(
     specs: &mut [SectionSpec],
     config: &RuntimeConfig,
     page_state: &PageState,
+    phase0_actions: &Phase0ActionRuntime,
 ) {
     let Some(page) = config
         .pages
@@ -79,12 +80,91 @@ pub fn apply_section_pattern_overrides(
         if section_idx >= specs.len() {
             break;
         }
-        if let PageItemConfig::Sample { sample_id, .. } = item {
+        if let PageItemConfig::Sample {
+            sample_id,
+            action_ref,
+            ..
+        } = item
+        {
             if let Some(sample) = catalog::resolve_section_sample(config, sample_id) {
                 let history_len = specs[section_idx].history.len().max(1);
                 specs[section_idx] = render_section_pattern(&sample, history_len);
+                if let Some(feedback) = action_ref
+                    .as_deref()
+                    .and_then(|id| phase0_actions.feedback_text(id))
+                {
+                    specs[section_idx].value_text = feedback;
+                }
                 section_idx += 1;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config;
+    use crate::display::dto::{
+        DisplayConfigDto, DisplayPayloadDto, DisplaySampleDto, DisplayTargetDto,
+    };
+    use crate::state::Phase0ActionRuntime;
+
+    fn runtime_with_section_sample() -> RuntimeConfig {
+        RuntimeConfig {
+            sections: vec![],
+            home_page_id: "home".to_string(),
+            pages: vec![config::PageConfig {
+                id: "home".to_string(),
+                title: "Home".to_string(),
+                items: vec![config::PageItemConfig::Sample {
+                    sample_id: "sec_mode".to_string(),
+                    label: "SecMode".to_string(),
+                    action_ref: Some("act_sec_mode".to_string()),
+                    priority: Some(10),
+                }],
+            }],
+            actions: vec![config::ActionConfig::Transition {
+                id: "act_sec_mode".to_string(),
+                states: vec!["idle".to_string(), "watch".to_string()],
+                initial_state: Some("idle".to_string()),
+            }],
+            display: DisplayConfigDto {
+                samples: vec![DisplaySampleDto {
+                    id: "sec_mode".to_string(),
+                    target: DisplayTargetDto::Section,
+                    payload: DisplayPayloadDto::LabelValue {
+                        title: "Sec".to_string(),
+                        value: "42".to_string(),
+                        unit: "%".to_string(),
+                        severity: config::DisplaySeverity::Normal,
+                    },
+                }],
+            },
+            watch_targets: vec![],
+            podman: None,
+        }
+    }
+
+    #[test]
+    fn test_apply_section_pattern_overrides_prefers_action_feedback_text() {
+        let config = runtime_with_section_sample();
+        let page_state = PageState {
+            current_page_id: "home".to_string(),
+            history: vec![],
+        };
+        let mut phase0_actions = Phase0ActionRuntime::from_config(&config);
+        let mut specs = vec![SectionSpec {
+            label: "orig".to_string(),
+            value_text: "orig".to_string(),
+            history: vec![0.0; 4],
+        }];
+
+        apply_section_pattern_overrides(&mut specs, &config, &page_state, &phase0_actions);
+        assert_eq!(specs[0].value_text, "idle");
+
+        let _ = phase0_actions.apply("act_sec_mode");
+        apply_section_pattern_overrides(&mut specs, &config, &page_state, &phase0_actions);
+        assert_eq!(specs[0].value_text, "watch");
     }
 }

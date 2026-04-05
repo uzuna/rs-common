@@ -14,6 +14,7 @@ fn minimal_app() -> AppConfig {
             title: "Home".to_string(),
             items: vec![],
         }],
+        actions: vec![],
         display: DisplayConfig::default(),
         dynamic: DynamicConfig::default(),
         watch: WatchConfig::default(),

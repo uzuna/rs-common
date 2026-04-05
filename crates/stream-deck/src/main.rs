@@ -17,11 +17,13 @@ mod metrics;
 mod notifications;
 mod paging;
 mod plugin;
+mod plugin_contract;
 mod podman;
 mod renderer;
 mod runtime;
 mod section;
 mod state;
+mod storage;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, VecDeque};
@@ -52,6 +54,7 @@ use renderer::SectionSpec;
 use runtime::{ConfigManager, RuntimeConfig};
 use section::Section;
 use state::{InputUpdateOutcome, PageState, SshSessionRegistry};
+use storage::MemoryStorage;
 
 #[cfg(test)]
 use notifications::{NotificationItem, SlotState};
@@ -146,11 +149,16 @@ fn run_monitor(compaction_mode: SlotCompactionMode, config_path: &str) -> anyhow
     let notification_state: Rc<RefCell<NotificationState>> =
         Rc::new(RefCell::new(NotificationState::new(compaction_mode)));
 
+    // 設定再読込をまたいで履歴を保持するストレージ（ライフタイムを config_manager より長く保つ）
+    let section_storage: Rc<RefCell<MemoryStorage>> =
+        Rc::new(RefCell::new(MemoryStorage::new(HISTORY_LEN)));
+
     let mut sections = build_sections(
         config_manager.current(),
         &sys_source,
         &brightness,
         &notification_state,
+        &section_storage,
     );
 
     let shutdown_flag = install_shutdown_flag()?;
@@ -177,6 +185,7 @@ fn run_monitor(compaction_mode: SlotCompactionMode, config_path: &str) -> anyhow
                     &brightness,
                     &mut notification_source,
                     &notification_state,
+                    &section_storage,
                     &shutdown_flag,
                 ) {
                     warn!("デバイスエラー: {e:#} — 再接続します");
@@ -288,6 +297,7 @@ fn build_sections(
     sys_source: &Rc<RefCell<MetricsSource>>,
     brightness: &Rc<Cell<u8>>,
     notification_state: &Rc<RefCell<NotificationState>>,
+    storage: &Rc<RefCell<MemoryStorage>>,
 ) -> Vec<Section> {
     config
         .sections
@@ -310,7 +320,7 @@ fn build_sections(
                     Box::new(NotifPlugin::new(Rc::clone(notification_state)))
                 }
             };
-            Section::new(plugin, sec.capacity)
+            Section::new(plugin, sec.capacity, Rc::clone(storage))
         })
         .collect()
 }
@@ -326,6 +336,7 @@ fn run_loop(
     brightness: &Rc<Cell<u8>>,
     notification_source: &mut NotificationSource,
     notification_state: &Rc<RefCell<NotificationState>>,
+    section_storage: &Rc<RefCell<MemoryStorage>>,
     shutdown_flag: &Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let reader = hw.get_reader();
@@ -360,6 +371,7 @@ fn run_loop(
                 sys_source,
                 brightness,
                 notification_state,
+                section_storage,
             );
             page_state.reconcile(config_manager.current());
             refresh_button_display(

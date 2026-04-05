@@ -8,6 +8,10 @@ use std::rc::Rc;
 
 use crate::metrics::{format_memory, MetricsSource};
 use crate::notifications::NotificationState;
+use crate::plugin_contract::{
+    MetricKey, KEY_SYSTEM_BRIGHTNESS, KEY_SYSTEM_CPU_USAGE, KEY_SYSTEM_LOAD_ONE,
+    KEY_SYSTEM_MEM_USAGE, KEY_SYSTEM_NOTIF_COUNT,
+};
 
 /// データ収集プラグインの境界トレイト
 ///
@@ -25,6 +29,9 @@ pub trait DataPlugin {
 
     /// セクションラベル（例: "CPU", "MEM"）
     fn label(&self) -> &'static str;
+
+    /// このプラグインが書き込む MetricKey を返す。
+    fn metric_key(&self) -> MetricKey;
 }
 
 // ── CPU ──────────────────────────────────────────────────────────
@@ -61,6 +68,10 @@ impl DataPlugin for CpuPlugin {
 
     fn label(&self) -> &'static str {
         "CPU"
+    }
+
+    fn metric_key(&self) -> MetricKey {
+        MetricKey::new(KEY_SYSTEM_CPU_USAGE).expect("定数は常に有効")
     }
 }
 
@@ -106,6 +117,10 @@ impl DataPlugin for MemPlugin {
     fn label(&self) -> &'static str {
         "MEM"
     }
+
+    fn metric_key(&self) -> MetricKey {
+        MetricKey::new(KEY_SYSTEM_MEM_USAGE).expect("定数は常に有効")
+    }
 }
 
 // ── LOAD ─────────────────────────────────────────────────────────
@@ -147,6 +162,10 @@ impl DataPlugin for LoadPlugin {
     fn label(&self) -> &'static str {
         "LOAD"
     }
+
+    fn metric_key(&self) -> MetricKey {
+        MetricKey::new(KEY_SYSTEM_LOAD_ONE).expect("定数は常に有効")
+    }
 }
 
 // ── BRIGHT ───────────────────────────────────────────────────────
@@ -178,6 +197,10 @@ impl DataPlugin for BrightnessPlugin {
 
     fn label(&self) -> &'static str {
         "BRIGHT"
+    }
+
+    fn metric_key(&self) -> MetricKey {
+        MetricKey::new(KEY_SYSTEM_BRIGHTNESS).expect("定数は常に有効")
     }
 }
 
@@ -211,5 +234,9 @@ impl DataPlugin for NotifPlugin {
 
     fn label(&self) -> &'static str {
         "NOTIF"
+    }
+
+    fn metric_key(&self) -> MetricKey {
+        MetricKey::new(KEY_SYSTEM_NOTIF_COUNT).expect("定数は常に有効")
     }
 }

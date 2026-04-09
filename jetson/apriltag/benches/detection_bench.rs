@@ -7,12 +7,12 @@
 //!
 //! # 計測項目
 //! 1. RGB → Luma8 変換速度 (2560×1920)
-//! 2. AprilTag detect 実行時間 (タグなし / タグあり)
+//! 2. AprilTag detect 実行時間 (フル / 1/2 / 1/4 解像度、タグなし / タグあり)
 //! 3. パイプライン合計 (変換 + 検出)
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::hint::black_box;
-use image::{GrayImage, ImageBuffer, Luma, Rgb, RgbImage};
+use image::{GrayImage, ImageBuffer, Luma, Rgb, RgbImage, imageops};
 use jetson_apriltag::{
     convert::{rgb_to_luma8_wide, RgbConverter, PixelConverter},
     detector::{AprilTagDetector, DetectorConfig},
@@ -40,6 +40,30 @@ static BENCH_IMAGE_GRAY: Lazy<GrayImage> = Lazy::new(|| {
 static BENCH_IMAGE_WITH_TAG: Lazy<GrayImage> = Lazy::new(|| {
     let base = &*BENCH_IMAGE_GRAY;
     synthesize_tag_on_image(base)
+});
+
+/// フル解像度画像を 1/2 にリサイズした画像 (1280×960)
+static BENCH_IMAGE_HALF: Lazy<GrayImage> = Lazy::new(|| {
+    let src = &*BENCH_IMAGE_GRAY;
+    imageops::resize(src, src.width() / 2, src.height() / 2, imageops::FilterType::Triangle)
+});
+
+/// タグあり画像を 1/2 にリサイズ (1280×960)
+static BENCH_IMAGE_WITH_TAG_HALF: Lazy<GrayImage> = Lazy::new(|| {
+    let src = &*BENCH_IMAGE_WITH_TAG;
+    imageops::resize(src, src.width() / 2, src.height() / 2, imageops::FilterType::Triangle)
+});
+
+/// フル解像度画像を 1/4 にリサイズした画像 (640×480)
+static BENCH_IMAGE_QUARTER: Lazy<GrayImage> = Lazy::new(|| {
+    let src = &*BENCH_IMAGE_GRAY;
+    imageops::resize(src, src.width() / 4, src.height() / 4, imageops::FilterType::Triangle)
+});
+
+/// タグあり画像を 1/4 にリサイズ (640×480)
+static BENCH_IMAGE_WITH_TAG_QUARTER: Lazy<GrayImage> = Lazy::new(|| {
+    let src = &*BENCH_IMAGE_WITH_TAG;
+    imageops::resize(src, src.width() / 4, src.height() / 4, imageops::FilterType::Triangle)
 });
 
 /// ベンチマーク用背景画像を読み込む
@@ -95,7 +119,6 @@ fn synthesize_tag_on_image(base: &GrayImage) -> GrayImage {
     // tag36h11 ID=0 のビットデータ (6×6 データビット + 2 ボーダー = 8×8 cells)
     // 外周は白 (明るい) ボーダー、その内側が黒 (暗い) ボーダー
     // データビット (6×6): tag36h11 ID=0 のコード
-    // ref: https://github.com/AprilRobotics/apriltag/blob/master/tagStandard41h12.h
     // ここでは 8×8 グリッドの各セルの明暗で定義 (0=黒, 1=白)
     #[rustfmt::skip]
     let tag_grid: [[u8; 8]; 8] = [
@@ -164,17 +187,13 @@ fn bench_rgb_converter_to_luma8(c: &mut Criterion) {
     );
 }
 
-// --- AprilTag 検出ベンチマーク ---
+// --- AprilTag 検出ベンチマーク (フル解像度: 2560×1920) ---
 
 fn bench_detect_no_tag(c: &mut Criterion) {
     let gray = &*BENCH_IMAGE_GRAY;
     let width = gray.width();
     let height = gray.height();
-    let config = DetectorConfig {
-        decimation: 2.0, // 大画像なので 2x デシメーション
-        ..DetectorConfig::default()
-    };
-    let mut detector = AprilTagDetector::new(&config).expect("Detector 構築失敗");
+    let mut detector = AprilTagDetector::new(&DetectorConfig::default()).expect("Detector 構築失敗");
 
     c.bench_function(
         &format!("detect_no_tag_{}x{}", width, height),
@@ -191,11 +210,79 @@ fn bench_detect_with_tag(c: &mut Criterion) {
     let gray = &*BENCH_IMAGE_WITH_TAG;
     let width = gray.width();
     let height = gray.height();
-    let config = DetectorConfig {
-        decimation: 2.0,
-        ..DetectorConfig::default()
-    };
-    let mut detector = AprilTagDetector::new(&config).expect("Detector 構築失敗");
+    let mut detector = AprilTagDetector::new(&DetectorConfig::default()).expect("Detector 構築失敗");
+
+    c.bench_function(
+        &format!("detect_with_tag_{}x{}", width, height),
+        |b| {
+            b.iter(|| {
+                let result = detector.detect_gray(black_box(gray));
+                black_box(result);
+            });
+        },
+    );
+}
+
+// --- AprilTag 検出ベンチマーク (1/2 解像度: 1280×960) ---
+
+fn bench_detect_no_tag_half(c: &mut Criterion) {
+    let gray = &*BENCH_IMAGE_HALF;
+    let width = gray.width();
+    let height = gray.height();
+    let mut detector = AprilTagDetector::new(&DetectorConfig::default()).expect("Detector 構築失敗");
+
+    c.bench_function(
+        &format!("detect_no_tag_{}x{}", width, height),
+        |b| {
+            b.iter(|| {
+                let result = detector.detect_gray(black_box(gray));
+                black_box(result);
+            });
+        },
+    );
+}
+
+fn bench_detect_with_tag_half(c: &mut Criterion) {
+    let gray = &*BENCH_IMAGE_WITH_TAG_HALF;
+    let width = gray.width();
+    let height = gray.height();
+    let mut detector = AprilTagDetector::new(&DetectorConfig::default()).expect("Detector 構築失敗");
+
+    c.bench_function(
+        &format!("detect_with_tag_{}x{}", width, height),
+        |b| {
+            b.iter(|| {
+                let result = detector.detect_gray(black_box(gray));
+                black_box(result);
+            });
+        },
+    );
+}
+
+// --- AprilTag 検出ベンチマーク (1/4 解像度: 640×480) ---
+
+fn bench_detect_no_tag_quarter(c: &mut Criterion) {
+    let gray = &*BENCH_IMAGE_QUARTER;
+    let width = gray.width();
+    let height = gray.height();
+    let mut detector = AprilTagDetector::new(&DetectorConfig::default()).expect("Detector 構築失敗");
+
+    c.bench_function(
+        &format!("detect_no_tag_{}x{}", width, height),
+        |b| {
+            b.iter(|| {
+                let result = detector.detect_gray(black_box(gray));
+                black_box(result);
+            });
+        },
+    );
+}
+
+fn bench_detect_with_tag_quarter(c: &mut Criterion) {
+    let gray = &*BENCH_IMAGE_WITH_TAG_QUARTER;
+    let width = gray.width();
+    let height = gray.height();
+    let mut detector = AprilTagDetector::new(&DetectorConfig::default()).expect("Detector 構築失敗");
 
     c.bench_function(
         &format!("detect_with_tag_{}x{}", width, height),
@@ -210,17 +297,11 @@ fn bench_detect_with_tag(c: &mut Criterion) {
 
 fn bench_pipeline_full(c: &mut Criterion) {
     let rgb_image = &*BENCH_IMAGE_WITH_TAG;
-    // GrayImage を RGB に戻す (パイプライン全体の計測のため)
-    // 実際の用途は RGB カメラ → Luma8 → 検出
     let width = rgb_image.width();
     let height = rgb_image.height();
     let gray_data = rgb_image.as_raw().clone();
 
-    let config = DetectorConfig {
-        decimation: 2.0,
-        ..DetectorConfig::default()
-    };
-    let mut detector = AprilTagDetector::new(&config).expect("Detector 構築失敗");
+    let mut detector = AprilTagDetector::new(&DetectorConfig::default()).expect("Detector 構築失敗");
 
     // GrayImage はすでに Luma8 なので、ここではグレーデータを直接渡すパイプラインを計測
     c.bench_function(
@@ -245,6 +326,10 @@ criterion_group!(
     bench_rgb_converter_to_luma8,
     bench_detect_no_tag,
     bench_detect_with_tag,
+    bench_detect_no_tag_half,
+    bench_detect_with_tag_half,
+    bench_detect_no_tag_quarter,
+    bench_detect_with_tag_quarter,
     bench_pipeline_full,
 );
 criterion_main!(benches);

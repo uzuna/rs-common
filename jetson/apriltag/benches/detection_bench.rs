@@ -10,12 +10,12 @@
 //! 2. AprilTag detect 実行時間 (フル / 1/2 / 1/4 解像度、タグなし / タグあり)
 //! 3. パイプライン合計 (変換 + 検出)
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::hint::black_box;
 use image::{GrayImage, ImageBuffer, Luma, Rgb, RgbImage, imageops};
 use jetson_apriltag::{
     convert::{rgb_to_luma8_wide, RgbConverter, PixelConverter},
-    detector::{AprilTagDetector, DetectorConfig},
+    detector::{AprilTagDetector, DetectorConfig, TagFamily},
 };
 use once_cell::sync::Lazy;
 use std::path::Path;
@@ -320,6 +320,46 @@ fn bench_pipeline_full(c: &mut Criterion) {
     );
 }
 
+/// 全タグファミリーの検出時間を 1/4 解像度 (640×480) で比較する
+///
+/// ファミリーごとに Detector を構築し、タグなし画像で推論時間を計測する。
+/// タグなし画像を使うことでタグの有無による影響を排除し、
+/// ファミリーのコードブック複雑度が処理時間に与える純粋な影響を比較できる。
+fn bench_detect_families_quarter(c: &mut Criterion) {
+    // 全ファミリーと表示名の対
+    let families: &[(TagFamily, &str)] = &[
+        (TagFamily::Tag36h11,        "Tag36h11"),
+        (TagFamily::Tag25h9,         "Tag25h9"),
+        (TagFamily::Tag16h5,         "Tag16h5"),
+        (TagFamily::TagCircle21h7,   "TagCircle21h7"),
+        (TagFamily::TagCircle49h12,  "TagCircle49h12"),
+        (TagFamily::TagCustom48h12,  "TagCustom48h12"),
+        (TagFamily::TagStandard41h12,"TagStandard41h12"),
+        (TagFamily::TagStandard52h13,"TagStandard52h13"),
+    ];
+
+    let gray = &*BENCH_IMAGE_QUARTER;
+    let mut group = c.benchmark_group("detect_family_640x480");
+
+    for &(family, name) in families {
+        let config = DetectorConfig {
+            family,
+            decimation: 1.0,
+            ..DetectorConfig::default()
+        };
+        let mut detector = AprilTagDetector::new(&config).expect("Detector 構築失敗");
+
+        group.bench_with_input(BenchmarkId::from_parameter(name), name, |b, _| {
+            b.iter(|| {
+                let result = detector.detect_gray(black_box(gray));
+                black_box(result);
+            });
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_rgb_to_luma8,
@@ -331,5 +371,6 @@ criterion_group!(
     bench_detect_no_tag_quarter,
     bench_detect_with_tag_quarter,
     bench_pipeline_full,
+    bench_detect_families_quarter,
 );
 criterion_main!(benches);

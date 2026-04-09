@@ -10,7 +10,8 @@
 //! 2. AprilTag detect 実行時間 (タグなし / タグあり)
 //! 3. パイプライン合計 (変換 + 検出)
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
+use std::hint::black_box;
 use image::{GrayImage, ImageBuffer, Luma, Rgb, RgbImage};
 use jetson_apriltag::{
     convert::{rgb_to_luma8_wide, RgbConverter, PixelConverter},

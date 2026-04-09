@@ -1,0 +1,11 @@
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=native"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=native"]
+linker = "aarch64-linux-gnu-gcc"
+
+[env]
+# システムの libapriltag.so は image_u8_* シンボルを非公開としてエクスポートしないため、
+# apriltag-sys の同梱ソースをスタティックコンパイルする
+APRILTAG_SYS_METHOD = "raw,static"

@@ -18,6 +18,10 @@ rust-version = "1.93"
 
 [workspace.dependencies]
 anyhow = "1.0.102"
+apriltag        = "0.4.0"
+apriltag-image  = "0.1.0"
+once_cell       = "1"
+wide            = "0.7"
 approx = "0.5.1"
 axum = "0.8.8"
 bytemuck = "1.25.0"
@@ -32,7 +36,7 @@ fs-err = "3.3.0"
 fxhash = "0.2.1"
 ab_glyph = "0.2.32"
 elgato-streamdeck = "0.12.1"
-image = { version = "0.25", default-features = false }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 imageproc = "0.26.1"
 sysinfo = "0.37.2"
 jetson-pixfmt = { path = "jetson/pixfmt" }

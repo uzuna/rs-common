@@ -30,7 +30,11 @@ eframe = "0.33.3"
 egui = "0.33.3"
 fs-err = "3.3.0"
 fxhash = "0.2.1"
+ab_glyph = "0.2.32"
+elgato-streamdeck = "0.12.1"
 image = { version = "0.25", default-features = false }
+imageproc = "0.26.1"
+sysinfo = "0.37.2"
 jetson-pixfmt = { path = "jetson/pixfmt" }
 khronos-egl = "6.0.0"
 mls-mpm = { path = "crates/mls-mpm" }

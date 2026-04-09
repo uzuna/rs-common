@@ -1,0 +1,21 @@
+[Unit]
+Description=Elgato Stream Deck+ ランチャー
+Documentation=https://github.com/uzuna/rs-common
+After=graphical-session.target stream-deck-tracker.service
+Wants=stream-deck-tracker.service
+
+[Service]
+Type=simple
+WorkingDirectory=%%REPO_ROOT%%
+Environment=RUST_LOG=info
+Environment=STREAM_DECK_DBUS_SERVICE=io.github.uzuna.StreamDeckHelper
+Environment=STREAM_DECK_DBUS_PATH=/io/github/uzuna/StreamDeckHelper
+Environment=STREAM_DECK_DBUS_INTERFACE=io.github.uzuna.StreamDeckHelper
+Environment=STREAM_DECK_DBUS_PROPERTY=ActiveWindowTitle
+ExecStart=%%REPO_ROOT%%/target/release/stream-deck \
+    --config %%REPO_ROOT%%/crates/stream-deck/config/layout.toml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

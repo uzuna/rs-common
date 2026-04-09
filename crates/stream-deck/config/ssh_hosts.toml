@@ -1,0 +1,6 @@
+[[hosts]]
+id = "vm-01"
+label = "VM01"
+host = "ubuntu@10.149.39.52"
+tags = ["multipass", "ssh-test"]
+

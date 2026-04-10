@@ -18,7 +18,6 @@ use jetson_apriltag::{
     detector::{AprilTagDetector, DetectorConfig, TagFamily},
 };
 use once_cell::sync::Lazy;
-use std::path::Path;
 
 // ベンチマーク用画像を一度だけ読み込む (I/O コストを計測から除外)
 static BENCH_IMAGE_RGB: Lazy<RgbImage> = Lazy::new(|| {
@@ -66,37 +65,21 @@ static BENCH_IMAGE_WITH_TAG_QUARTER: Lazy<GrayImage> = Lazy::new(|| {
     imageops::resize(src, src.width() / 4, src.height() / 4, imageops::FilterType::Triangle)
 });
 
-/// ベンチマーク用背景画像を読み込む
+/// ベンチマーク用背景画像を生成する
 ///
-/// testdata/ の実写 JPEG を使用。
-/// ファイルが存在しない場合はグレーの単色画像にフォールバック。
+/// 座標ベースのハッシュで決定的ノイズを生成する (2560×1920)。
+/// ファイル依存を持たず、環境に関係なく同一の画像が生成される。
+/// 単色画像と比べてエッジ検出処理に現実的な負荷を与える。
 fn load_bench_image() -> RgbImage {
-    // クレートルートからの相対パス探索
-    let candidates = [
-        "testdata/Tokyo-Japan-city-evening-street-people-buildings_2560x1920.jpg",
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/testdata/Tokyo-Japan-city-evening-street-people-buildings_2560x1920.jpg"
-        ),
-    ];
-
-    for path in &candidates {
-        if Path::new(path).exists() {
-            match image::open(path) {
-                Ok(img) => {
-                    eprintln!("ベンチマーク画像読み込み: {} ({}×{})", path, img.width(), img.height());
-                    return img.into_rgb8();
-                }
-                Err(e) => {
-                    eprintln!("画像読み込み失敗 {}: {}", path, e);
-                }
-            }
-        }
-    }
-
-    // フォールバック: 2560×1920 の単色画像
-    eprintln!("ベンチマーク画像が見つからないためフォールバック画像を使用 (2560×1920)");
-    RgbImage::from_fn(2560, 1920, |_, _| Rgb([128u8, 128, 128]))
+    RgbImage::from_fn(2560, 1920, |x, y| {
+        // Wang hash で決定的ノイズを生成
+        let mut h = x.wrapping_add(y.wrapping_mul(2560));
+        h = h.wrapping_add(0x9e3779b9).wrapping_add(h << 6).wrapping_add(h >> 2);
+        h ^= h >> 16;
+        h = h.wrapping_mul(0x45d9f3b);
+        h ^= h >> 16;
+        Rgb([(h & 0xff) as u8, ((h >> 8) & 0xff) as u8, ((h >> 16) & 0xff) as u8])
+    })
 }
 
 /// グレー画像に tag36h11 の ID=0 タグを合成する

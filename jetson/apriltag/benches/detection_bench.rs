@@ -343,6 +343,49 @@ fn bench_detect_families_quarter(c: &mut Criterion) {
     group.finish();
 }
 
+/// Tag36h11 の decimation × refine_edges パラメータ影響を計測する
+///
+/// decimation は apriltag 内部でのリサイズ比率。入力が大きいほど効果が顕著なため
+/// フル解像度 (2560×1920) で計測する。
+/// - decimation 1.0: フルスケール処理
+/// - decimation 2.0: 内部で 1/2 解像度に落として処理
+/// - decimation 4.0: 内部で 1/4 解像度に落として処理
+/// - refine_edges: コーナー座標のサブピクセル精度向上 (on/off)
+fn bench_tag36h11_params(c: &mut Criterion) {
+    // (decimation, refine_edges, ラベル) の組み合わせ
+    let variants: &[(f32, bool, &str)] = &[
+        (1.0, true,  "dec1.0_refine"),
+        (1.0, false, "dec1.0_no-refine"),
+        (2.0, true,  "dec2.0_refine"),
+        (2.0, false, "dec2.0_no-refine"),
+        (4.0, true,  "dec4.0_refine"),
+        (4.0, false, "dec4.0_no-refine"),
+    ];
+
+    // フル解像度で計測 (decimation の効果が最も顕著に出る)
+    let gray = &*BENCH_IMAGE_GRAY;
+    let mut group = c.benchmark_group("tag36h11_params_2560x1920");
+
+    for &(decimation, refine_edges, label) in variants {
+        let config = DetectorConfig {
+            family: TagFamily::Tag36h11,
+            decimation,
+            refine_edges,
+            ..DetectorConfig::default()
+        };
+        let mut detector = AprilTagDetector::new(&config).expect("Detector 構築失敗");
+
+        group.bench_with_input(BenchmarkId::from_parameter(label), label, |b, _| {
+            b.iter(|| {
+                let result = detector.detect_gray(black_box(gray));
+                black_box(result);
+            });
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_rgb_to_luma8,
@@ -355,5 +398,6 @@ criterion_group!(
     bench_detect_with_tag_quarter,
     bench_pipeline_full,
     bench_detect_families_quarter,
+    bench_tag36h11_params,
 );
 criterion_main!(benches);

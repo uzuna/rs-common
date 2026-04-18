@@ -27,9 +27,10 @@ pub fn open_reader(path: &Path) -> Result<Connection> {
 
 fn apply_writer_pragmas(conn: &Connection) -> Result<()> {
     conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
+        // auto_vacuum は DB 生成前（journal_mode より先）に設定しないと有効にならない
+        "PRAGMA auto_vacuum = INCREMENTAL;
+         PRAGMA journal_mode = WAL;
          PRAGMA synchronous = OFF;
-         PRAGMA auto_vacuum = INCREMENTAL;
          PRAGMA mmap_size = 268435456;",
     )?;
     Ok(())

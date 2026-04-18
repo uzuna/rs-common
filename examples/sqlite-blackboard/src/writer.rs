@@ -9,10 +9,34 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::db;
 
+/// Writer の動作パラメータ
+pub struct WriterConfig {
+    /// 生成するチャネル数
+    pub channel_count: usize,
+    /// 1 メッセージのデータサイズ (bytes)
+    pub data_size: usize,
+    /// 書き込み周波数 (Hz)
+    pub hz: u32,
+    /// コミット間隔 (ms)
+    pub commit_ms: u64,
+}
+
+impl Default for WriterConfig {
+    fn default() -> Self {
+        Self { channel_count: 1, data_size: 4096, hz: 1000, commit_ms: 100 }
+    }
+}
+
 struct Message {
     channel_id: i64,
     log_time: i64,
     data: Vec<u8>,
+}
+
+/// コミット 1 回分の計測値
+struct CommitStat {
+    duration_nanos: u64,
+    batch_size: usize,
 }
 
 fn now_nanos() -> i64 {
@@ -22,7 +46,6 @@ fn now_nanos() -> i64 {
         .as_nanos() as i64
 }
 
-/// プロセスIDと起動時刻からGUIDを生成する
 fn generate_guid() -> String {
     let pid = std::process::id();
     let ts = now_nanos();
@@ -55,7 +78,6 @@ fn register_channel(conn: &Connection, topic: &str, participant_id: i64) -> Resu
     Ok(id)
 }
 
-/// BEGIN IMMEDIATE でバッチ挿入し COMMIT
 fn commit_batch(conn: &Connection, messages: &[Message]) -> Result<()> {
     conn.execute_batch("BEGIN IMMEDIATE;")?;
     {
@@ -75,7 +97,6 @@ fn commit_batch(conn: &Connection, messages: &[Message]) -> Result<()> {
     Ok(())
 }
 
-/// 5秒以上経過したメッセージを削除し incremental_vacuum を実行
 fn cleanup(conn: &Connection) -> Result<()> {
     let cutoff = now_nanos() - 5_000_000_000i64;
     conn.execute("DELETE FROM messages WHERE log_time < ?1", params![cutoff])?;
@@ -83,32 +104,44 @@ fn cleanup(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// WAL ファイルサイズを KB 単位で返す（存在しない場合は 0）
+fn wal_size_kb(db_path: &Path) -> u64 {
+    // SQLite WAL は `<db>-wal` という名前になる
+    let mut wal = db_path.as_os_str().to_owned();
+    wal.push("-wal");
+    std::fs::metadata(wal).map(|m| m.len() / 1024).unwrap_or(0)
+}
+
 /// Writer を実行する
-///
-/// - `channel_count`: 生成するチャネル数
-/// - `duration`:      実行時間（`None` の場合は無限）
-pub fn run(path: &Path, channel_count: usize, duration: Option<Duration>) -> Result<()> {
+pub fn run(path: &Path, config: &WriterConfig, duration: Option<Duration>) -> Result<()> {
     let conn = db::open_writer(path)?;
 
-    // 参加者とチャネルの登録
     let guid = generate_guid();
     let participant_id = register_participant(&conn, &guid, "rust-writer")?;
     let mut channel_ids = Vec::new();
-    for i in 0..channel_count {
+    for i in 0..config.channel_count {
         let topic = format!("sensor/{i}");
         let ch_id = register_channel(&conn, &topic, participant_id)?;
         channel_ids.push(ch_id);
     }
-    tracing::info!("参加者 id={participant_id}, チャネル数={channel_count}");
+    tracing::info!(
+        "Writer 起動: channels={} hz={} data_size={}B commit_ms={}ms",
+        config.channel_count,
+        config.hz,
+        config.data_size,
+        config.commit_ms,
+    );
 
     let buffer: Arc<Mutex<Vec<Message>>> = Arc::new(Mutex::new(Vec::new()));
     let buf_clone = Arc::clone(&buffer);
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = Arc::clone(&stop);
+    let data_size = config.data_size;
+    let hz = config.hz;
 
-    // 1000Hz データ生成スレッド
+    // データ生成スレッド（hz 周期）
     let write_thread = std::thread::spawn(move || {
-        let interval = Duration::from_millis(1);
+        let interval = Duration::from_nanos(1_000_000_000 / hz as u64);
         let mut next = Instant::now() + interval;
         while !stop_clone.load(Ordering::Relaxed) {
             let now = Instant::now();
@@ -122,7 +155,7 @@ pub fn run(path: &Path, channel_count: usize, duration: Option<Duration>) -> Res
                     buf.push(Message {
                         channel_id: ch_id,
                         log_time: ts,
-                        data: vec![0u8; 4096],
+                        data: vec![0u8; data_size],
                     });
                 }
             }
@@ -130,11 +163,16 @@ pub fn run(path: &Path, channel_count: usize, duration: Option<Duration>) -> Res
         }
     });
 
-    // 100ms コミットループ（メインスレッド）
+    // コミットループ（メインスレッド）
     let start = Instant::now();
-    let mut next_commit = Instant::now() + Duration::from_millis(100);
+    let commit_interval = Duration::from_millis(config.commit_ms);
+    let mut next_commit = Instant::now() + commit_interval;
     let mut inserted_total = 0u64;
-    let mut commit_count = 0u64;
+
+    // 1 秒ウィンドウ統計
+    let mut sec_commits: Vec<CommitStat> = Vec::new();
+    let mut sec_inserted: u64 = 0;
+    let mut last_report = Instant::now();
 
     loop {
         if let Some(d) = duration {
@@ -147,7 +185,7 @@ pub fn run(path: &Path, channel_count: usize, duration: Option<Duration>) -> Res
         if let Some(rem) = next_commit.checked_duration_since(now) {
             std::thread::sleep(rem);
         }
-        next_commit += Duration::from_millis(100);
+        next_commit += commit_interval;
 
         let messages: Vec<Message> = {
             let mut buf = buffer.lock().unwrap();
@@ -155,12 +193,53 @@ pub fn run(path: &Path, channel_count: usize, duration: Option<Duration>) -> Res
         };
 
         if !messages.is_empty() {
-            let count = messages.len();
+            let batch_size = messages.len();
+            let t = Instant::now();
             commit_batch(&conn, &messages)?;
             cleanup(&conn)?;
-            inserted_total += count as u64;
-            commit_count += 1;
-            tracing::debug!("[commit #{commit_count}] {count} 件, 累計: {inserted_total}");
+            let d_nanos = t.elapsed().as_nanos() as u64;
+
+            inserted_total += batch_size as u64;
+            sec_inserted += batch_size as u64;
+            sec_commits.push(CommitStat { duration_nanos: d_nanos, batch_size });
+        }
+
+        // 1 秒ごとにスループット・コミット性能・WAL サイズを出力
+        if last_report.elapsed() >= Duration::from_secs(1) {
+            let elapsed_s = last_report.elapsed().as_secs_f64();
+            let tps = (sec_inserted as f64 / elapsed_s) as u64;
+            let target_tps = hz as u64 * config.channel_count as u64;
+            // 目標 Hz に対する実効達成率 (%)
+            let achieve_pct = if target_tps > 0 { tps * 100 / target_tps } else { 0 };
+            // 理論バッチサイズ = Hz × commit_ms / 1000
+            let theory_batch = hz as u64 * config.commit_ms / 1000;
+
+            let (c_avg_ns, c_max_ns, b_avg, b_max) = if sec_commits.is_empty() {
+                (0u64, 0u64, 0usize, 0usize)
+            } else {
+                let n = sec_commits.len() as u64;
+                let c_avg = sec_commits.iter().map(|s| s.duration_nanos).sum::<u64>() / n;
+                let c_max =
+                    sec_commits.iter().map(|s| s.duration_nanos).max().unwrap_or(0);
+                let b_sum: usize = sec_commits.iter().map(|s| s.batch_size).sum();
+                let b_avg = b_sum / sec_commits.len();
+                let b_max = sec_commits.iter().map(|s| s.batch_size).max().unwrap_or(0);
+                (c_avg, c_max, b_avg, b_max)
+            };
+            let wal_kb = wal_size_kb(path);
+
+            tracing::info!(
+                "[writer] tps={tps} ({achieve_pct}%/{target_tps}) | \
+                 commit: avg={:.3}ms max={:.3}ms | \
+                 batch: avg={b_avg} max={b_max} theory={theory_batch} | \
+                 wal_kb={wal_kb} total={inserted_total}",
+                c_avg_ns as f64 / 1e6,
+                c_max_ns as f64 / 1e6,
+            );
+
+            sec_commits.clear();
+            sec_inserted = 0;
+            last_report = Instant::now();
         }
     }
 

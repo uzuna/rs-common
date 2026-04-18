@@ -1,5 +1,6 @@
 use anyhow::Result;
 use rusqlite::params;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -83,6 +84,10 @@ pub fn run(
     let mut last_report = Instant::now();
     let mut last_count: i64 = 0;
 
+    // 最大 60 秒のローリングウィンドウ（(取得時刻, q1_ns, q2_ns)）
+    let mut rolling: VecDeque<(Instant, u64, u64)> = VecDeque::new();
+    const ROLLING_WINDOW: Duration = Duration::from_secs(60);
+
     // トピック指定の場合、channel_id を定期的に再解決（Writer 再起動追従）
     let mut last_channel_resolve = Instant::now();
     let channel_resolve_interval = Duration::from_secs(5);
@@ -148,23 +153,54 @@ pub fn run(
         let q2_nanos = t2.elapsed().as_nanos() as u64;
 
         last_count = count;
+        let now_instant = Instant::now();
         window.push(Sample { q1_nanos, q2_nanos, stale_nanos, q1_error });
+        rolling.push_back((now_instant, q1_nanos, q2_nanos));
 
         // 1秒ごとに統計を出力
         if last_report.elapsed() >= Duration::from_secs(1) {
-            print_stats(reader_id, &window, last_count);
+            // 60 秒より古いエントリを刈り取る
+            let cutoff_instant = now_instant
+                .checked_sub(ROLLING_WINDOW)
+                .unwrap_or(now_instant);
+            while rolling.front().is_some_and(|(t, _, _)| *t < cutoff_instant) {
+                rolling.pop_front();
+            }
+            let rolling_stats = compute_rolling_stats(&rolling);
+            print_stats(reader_id, &window, last_count, rolling_stats);
             window.clear();
             last_report = Instant::now();
         }
     }
 
     if !window.is_empty() {
-        print_stats(reader_id, &window, last_count);
+        let rolling_stats = compute_rolling_stats(&rolling);
+        print_stats(reader_id, &window, last_count, rolling_stats);
     }
     Ok(())
 }
 
-fn print_stats(reader_id: &str, window: &[Sample], msg_count: i64) {
+/// ローリングウィンドウから統計を計算する。(q1_avg, q1_max, q2_avg, q2_max, samples) を返す
+fn compute_rolling_stats(
+    rolling: &VecDeque<(Instant, u64, u64)>,
+) -> Option<(u64, u64, u64, u64, usize)> {
+    let n = rolling.len();
+    if n == 0 {
+        return None;
+    }
+    let q1_avg = rolling.iter().map(|(_, q1, _)| q1).sum::<u64>() / n as u64;
+    let q1_max = rolling.iter().map(|(_, q1, _)| *q1).max().unwrap_or(0);
+    let q2_avg = rolling.iter().map(|(_, _, q2)| q2).sum::<u64>() / n as u64;
+    let q2_max = rolling.iter().map(|(_, _, q2)| *q2).max().unwrap_or(0);
+    Some((q1_avg, q1_max, q2_avg, q2_max, n))
+}
+
+fn print_stats(
+    reader_id: &str,
+    window: &[Sample],
+    msg_count: i64,
+    rolling: Option<(u64, u64, u64, u64, usize)>,
+) {
     let n = window.len() as u64;
     if n == 0 {
         return;
@@ -187,10 +223,17 @@ fn print_stats(reader_id: &str, window: &[Sample], msg_count: i64) {
         "[{reader_id}] {n}回/s | \
          latest: avg={:.3}ms max={:.3}ms | \
          count({msg_count}): avg={:.3}ms max={:.3}ms | \
-         stale_max={max_stale_ms}ms errors={errors}",
+         stale_max={max_stale_ms}ms errors={errors}{}",
         q1_avg as f64 / 1e6,
         q1_max as f64 / 1e6,
         q2_avg as f64 / 1e6,
         q2_max as f64 / 1e6,
+        rolling.map_or(String::new(), |(r1a, r1x, r2a, r2x, rn)| format!(
+            " | 1min({rn}): latest avg={:.3}ms max={:.3}ms count avg={:.3}ms max={:.3}ms",
+            r1a as f64 / 1e6,
+            r1x as f64 / 1e6,
+            r2a as f64 / 1e6,
+            r2x as f64 / 1e6,
+        )),
     );
 }

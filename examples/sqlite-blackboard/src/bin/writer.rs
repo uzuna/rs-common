@@ -27,6 +27,14 @@ struct Args {
     #[arg(long, default_value = "100")]
     commit_ms: u64,
 
+    /// メッセージ保持期間 (秒)。これより古いレコードを定期的に削除する
+    #[arg(long, default_value = "300")]
+    retention_secs: u64,
+
+    /// クリーンアップ実行間隔 (秒)
+    #[arg(long, default_value = "30")]
+    cleanup_interval_secs: u64,
+
     /// 実行時間（秒）。省略時は無限
     #[arg(long)]
     duration: Option<u64>,
@@ -46,6 +54,8 @@ fn main() -> anyhow::Result<()> {
         data_size: args.data_size,
         hz: args.hz,
         commit_ms: args.commit_ms,
+        retention_secs: args.retention_secs,
+        cleanup_interval_secs: args.cleanup_interval_secs,
     };
     let duration = args.duration.map(Duration::from_secs);
     sqlite_blackboard::writer::run(&args.db, &config, duration)

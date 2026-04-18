@@ -19,11 +19,22 @@ pub struct WriterConfig {
     pub hz: u32,
     /// コミット間隔 (ms)
     pub commit_ms: u64,
+    /// メッセージ保持期間 (秒)。これより古いレコードを定期的に削除する
+    pub retention_secs: u64,
+    /// クリーンアップ実行間隔 (秒)
+    pub cleanup_interval_secs: u64,
 }
 
 impl Default for WriterConfig {
     fn default() -> Self {
-        Self { channel_count: 1, data_size: 4096, hz: 1000, commit_ms: 100 }
+        Self {
+            channel_count: 1,
+            data_size: 4096,
+            hz: 1000,
+            commit_ms: 100,
+            retention_secs: 300,
+            cleanup_interval_secs: 30,
+        }
     }
 }
 
@@ -97,11 +108,11 @@ fn commit_batch(conn: &Connection, messages: &[Message]) -> Result<()> {
     Ok(())
 }
 
-fn cleanup(conn: &Connection) -> Result<()> {
-    let cutoff = now_nanos() - 5_000_000_000i64;
-    conn.execute("DELETE FROM messages WHERE log_time < ?1", params![cutoff])?;
+fn cleanup(conn: &Connection, retention_nanos: i64) -> Result<usize> {
+    let cutoff = now_nanos() - retention_nanos;
+    let deleted = conn.execute("DELETE FROM messages WHERE log_time < ?1", params![cutoff])?;
     conn.execute_batch("PRAGMA incremental_vacuum(10);")?;
-    Ok(())
+    Ok(deleted)
 }
 
 /// WAL ファイルサイズを KB 単位で返す（存在しない場合は 0）
@@ -124,12 +135,18 @@ pub fn run(path: &Path, config: &WriterConfig, duration: Option<Duration>) -> Re
         let ch_id = register_channel(&conn, &topic, participant_id)?;
         channel_ids.push(ch_id);
     }
+
+    let retention_nanos = config.retention_secs as i64 * 1_000_000_000i64;
+    let cleanup_interval = Duration::from_secs(config.cleanup_interval_secs);
+
     tracing::info!(
-        "Writer 起動: channels={} hz={} data_size={}B commit_ms={}ms",
+        "Writer 起動: channels={} hz={} data_size={}B commit_ms={}ms retention={}s cleanup_every={}s",
         config.channel_count,
         config.hz,
         config.data_size,
         config.commit_ms,
+        config.retention_secs,
+        config.cleanup_interval_secs,
     );
 
     let buffer: Arc<Mutex<Vec<Message>>> = Arc::new(Mutex::new(Vec::new()));
@@ -167,6 +184,7 @@ pub fn run(path: &Path, config: &WriterConfig, duration: Option<Duration>) -> Re
     let start = Instant::now();
     let commit_interval = Duration::from_millis(config.commit_ms);
     let mut next_commit = Instant::now() + commit_interval;
+    let mut next_cleanup = Instant::now() + cleanup_interval;
     let mut inserted_total = 0u64;
 
     // 1 秒ウィンドウ統計
@@ -196,12 +214,25 @@ pub fn run(path: &Path, config: &WriterConfig, duration: Option<Duration>) -> Re
             let batch_size = messages.len();
             let t = Instant::now();
             commit_batch(&conn, &messages)?;
-            cleanup(&conn)?;
             let d_nanos = t.elapsed().as_nanos() as u64;
 
             inserted_total += batch_size as u64;
             sec_inserted += batch_size as u64;
-            sec_commits.push(CommitStat { duration_nanos: d_nanos, batch_size });
+            sec_commits.push(CommitStat {
+                duration_nanos: d_nanos,
+                batch_size,
+            });
+        }
+
+        // クリーンアップ（cleanup_interval ごと）
+        if Instant::now() >= next_cleanup {
+            let deleted = cleanup(&conn, retention_nanos)?;
+            let wal_kb = wal_size_kb(path);
+            tracing::info!(
+                "[cleanup] deleted={deleted} retention={}s wal_kb={wal_kb}",
+                config.retention_secs
+            );
+            next_cleanup += cleanup_interval;
         }
 
         // 1 秒ごとにスループット・コミット性能・WAL サイズを出力
@@ -210,7 +241,11 @@ pub fn run(path: &Path, config: &WriterConfig, duration: Option<Duration>) -> Re
             let tps = (sec_inserted as f64 / elapsed_s) as u64;
             let target_tps = hz as u64 * config.channel_count as u64;
             // 目標 Hz に対する実効達成率 (%)
-            let achieve_pct = if target_tps > 0 { tps * 100 / target_tps } else { 0 };
+            let achieve_pct = if target_tps > 0 {
+                tps * 100 / target_tps
+            } else {
+                0
+            };
             // 理論バッチサイズ = Hz × commit_ms / 1000
             let theory_batch = hz as u64 * config.commit_ms / 1000;
 
@@ -219,8 +254,11 @@ pub fn run(path: &Path, config: &WriterConfig, duration: Option<Duration>) -> Re
             } else {
                 let n = sec_commits.len() as u64;
                 let c_avg = sec_commits.iter().map(|s| s.duration_nanos).sum::<u64>() / n;
-                let c_max =
-                    sec_commits.iter().map(|s| s.duration_nanos).max().unwrap_or(0);
+                let c_max = sec_commits
+                    .iter()
+                    .map(|s| s.duration_nanos)
+                    .max()
+                    .unwrap_or(0);
                 let b_sum: usize = sec_commits.iter().map(|s| s.batch_size).sum();
                 let b_avg = b_sum / sec_commits.len();
                 let b_max = sec_commits.iter().map(|s| s.batch_size).max().unwrap_or(0);

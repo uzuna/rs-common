@@ -89,14 +89,20 @@ fn test_deleted_data_invisible_to_reader() -> anyhow::Result<()> {
         params![cutoff_15s],
         |r| r.get(0),
     )?;
-    assert_eq!(before_wide, 200, "DELETE前(cutoff=15s): 全200件が見えること");
+    assert_eq!(
+        before_wide, 200,
+        "DELETE前(cutoff=15s): 全200件が見えること"
+    );
 
     let before_narrow: i64 = conn.query_row(
         "SELECT count(*) FROM messages WHERE log_time > ?1",
         params![cutoff_5s],
         |r| r.get(0),
     )?;
-    assert_eq!(before_narrow, 100, "DELETE前(cutoff=5s): 直近100件のみ見えること");
+    assert_eq!(
+        before_narrow, 100,
+        "DELETE前(cutoff=5s): 直近100件のみ見えること"
+    );
 
     // ── DELETE 実行: 5秒より古いデータを削除 ───────────────────
     let deleted = conn.execute(
@@ -134,7 +140,10 @@ fn test_deleted_data_invisible_to_reader() -> anyhow::Result<()> {
         params![ch_id],
         |r| r.get(0),
     )?;
-    assert_eq!(ls_count, 1, "latest_states は messages の DELETE の影響を受けないこと");
+    assert_eq!(
+        ls_count, 1,
+        "latest_states は messages の DELETE の影響を受けないこと"
+    );
 
     Ok(())
 }
@@ -172,21 +181,15 @@ fn test_vacuum_reduces_free_pages() -> anyhow::Result<()> {
     conn.execute_batch("COMMIT;")?;
 
     // ── DELETE 前のページ情報 ──────────────────────────────────
-    let page_count_before: i64 =
-        conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
-    let freelist_before: i64 =
-        conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
+    let page_count_before: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+    let freelist_before: i64 = conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
 
     // ── DELETE 実行 ────────────────────────────────────────────
-    let deleted = conn.execute(
-        "DELETE FROM messages WHERE channel_id = ?1",
-        params![ch_id],
-    )?;
+    let deleted = conn.execute("DELETE FROM messages WHERE channel_id = ?1", params![ch_id])?;
     assert_eq!(deleted, 200, "DELETE: 200件削除されること");
 
     // DELETE 後: フリーページが増加しているはず
-    let freelist_after_delete: i64 =
-        conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
+    let freelist_after_delete: i64 = conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
     assert!(
         freelist_after_delete > freelist_before,
         "DELETE後: freelist_count が増加すること \
@@ -199,10 +202,8 @@ fn test_vacuum_reduces_free_pages() -> anyhow::Result<()> {
     conn.execute_batch("PRAGMA incremental_vacuum;")?;
 
     // VACUUM 後: フリーページが減少し、物理ページ数も削減されること
-    let freelist_after_vacuum: i64 =
-        conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
-    let page_count_after: i64 =
-        conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+    let freelist_after_vacuum: i64 = conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
+    let page_count_after: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
 
     assert!(
         freelist_after_vacuum < freelist_after_delete,

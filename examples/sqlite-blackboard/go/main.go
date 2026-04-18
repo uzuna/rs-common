@@ -153,9 +153,9 @@ func printStats(readerID string, window []sample, msgCount int64, rolling []roll
 // ────────────────────────────────────────────────────────────
 
 const (
-	intervalNs     = 33_333_333 * time.Nanosecond // 約 30Hz
-	rollingWindow  = 60 * time.Second
-	resolveEvery   = 5 * time.Second
+	intervalNs    = 33_333_333 * time.Nanosecond // 約 30Hz
+	rollingWindow = 60 * time.Second
+	resolveEvery  = 5 * time.Second
 )
 
 func run(dbPath string, channelID int64, topic string, readerID string, duration time.Duration) error {

@@ -106,8 +106,8 @@ pub fn run(
         next += interval;
 
         // トピック指定の場合: 5秒ごとに channel_id を再解決
-        if matches!(channel_spec, ChannelSpec::Topic(_)) {
-            if last_channel_resolve.elapsed() >= channel_resolve_interval {
+        if matches!(channel_spec, ChannelSpec::Topic(_))
+            && last_channel_resolve.elapsed() >= channel_resolve_interval {
                 if let ChannelSpec::Topic(ref topic) = channel_spec {
                     if let Ok(new_id) = resolve_channel_id(&conn, topic) {
                         if new_id != channel_id {
@@ -120,7 +120,6 @@ pub fn run(
                 }
                 last_channel_resolve = Instant::now();
             }
-        }
 
         // クエリ1: 最新値取得（タイムスタンプで鮮度を確認）
         let t1 = Instant::now();
@@ -154,7 +153,12 @@ pub fn run(
 
         last_count = count;
         let now_instant = Instant::now();
-        window.push(Sample { q1_nanos, q2_nanos, stale_nanos, q1_error });
+        window.push(Sample {
+            q1_nanos,
+            q2_nanos,
+            stale_nanos,
+            q1_error,
+        });
         rolling.push_back((now_instant, q1_nanos, q2_nanos));
 
         // 1秒ごとに統計を出力

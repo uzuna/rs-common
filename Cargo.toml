@@ -42,6 +42,7 @@ nalgebra = "0.34.1"
 ndarray = "0.17.2"
 num-traits = "0.2.19"
 rand = "0.10.0"
+rusqlite = "0.32"
 rawproc = { path = "crates/rawproc" }
 rhythm-core = { path = "crates/rhythm-core" }
 serde = "1.0.228"

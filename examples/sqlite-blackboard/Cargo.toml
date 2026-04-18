@@ -1,0 +1,22 @@
+[package]
+name = "sqlite-blackboard"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "writer"
+path = "src/bin/writer.rs"
+
+[[bin]]
+name = "reader"
+path = "src/bin/reader.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+rusqlite = { workspace = true, features = ["bundled"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }

@@ -1,4 +1,4 @@
-.PHONY: install test format lint bench run run-multi run-spike run-spike-noise
+.PHONY: install test format lint bench run run-multi run-spike run-spike-noise run-dual
 
 install:
 	uv sync --extra dev
@@ -26,3 +26,6 @@ run-spike:
 
 run-spike-noise:
 	uv run python -m esn_anomaly.train_spike_noise
+
+run-dual:
+	uv run python -m esn_anomaly.train_dual

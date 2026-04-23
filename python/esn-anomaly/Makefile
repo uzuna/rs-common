@@ -1,4 +1,4 @@
-.PHONY: install test format lint bench run run-multi run-spike run-spike-noise run-dual run-dual-ann
+.PHONY: install test format lint bench run run-multi run-spike run-spike-noise run-dual run-dual-ann run-multimode
 
 install:
 	uv sync --extra dev
@@ -32,3 +32,6 @@ run-dual:
 
 run-dual-ann:
 	uv run python -m esn_anomaly.train_dual_annotated
+
+run-multimode:
+	uv run python -m esn_anomaly.train_multimode

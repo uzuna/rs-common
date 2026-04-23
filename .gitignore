@@ -6,3 +6,5 @@ PLAN.md
 .venv
 
 *.dump
+
+__pycache__

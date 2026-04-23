@@ -104,6 +104,41 @@ def first_detection(
     return int(indices[0]) if len(indices) > 0 else None
 
 
+def spectral_peak_ratio(
+    sig: NDArray[np.float64],
+    target_freq: float,
+    fs: float,
+    window: int,
+) -> NDArray[np.float64]:
+    """因果的スライディング窓 FFT による目標周波数パワー比。
+
+    各時刻 t において直前 window サンプルの FFT を計算し、
+    target_freq ビンの電力 / 全電力 の比を返す。
+    目標周波数の信号が存在するモードでは比が大きく、
+    ノイズのみの未知モードでは比が小さくなる。
+
+    Args:
+        sig:         入力 1D 信号 shape (n,)
+        target_freq: 検出したい周波数 [Hz]
+        fs:          サンプリング周波数 [Hz]
+        window:      FFT 窓幅 [samples]（周波数分解能 = fs/window）
+
+    Returns:
+        shape (n,) のパワー比。先頭 window 要素は 0。
+    """
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    n = len(sig)
+    freq_bin = int(round(target_freq * window / fs))
+    # sliding_window_view(sig, W)[i] = sig[i : i+W]
+    # 因果窓 sig[t-W : t] は frames[t-W] → t=W..n-1 の範囲
+    frames = sliding_window_view(sig, window)              # (n-W+1, W)
+    specs  = np.abs(np.fft.rfft(frames, axis=1)) ** 2     # (n-W+1, W//2+1)
+    ratio  = specs[:, freq_bin] / (specs.sum(axis=1) + 1e-12)
+    # t=W に frames[0] が対応するため先頭 W 要素を 0 で埋める
+    return np.concatenate([np.zeros(window), ratio[:-1]])
+
+
 def detect_persistent(
     smoothed_errors: NDArray[np.float64],
     threshold: float,

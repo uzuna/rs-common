@@ -51,13 +51,45 @@ class ESNModel:
         """Readout 層をリッジ回帰で学習する。
 
         Args:
-            X_train: 入力系列 shape (n, 1)
-            y_train: 教師系列 shape (n, 1)
+            X_train: 入力系列 shape (n, d)
+            y_train: 教師系列 shape (n, d)
 
         Returns:
             self（メソッドチェーン用）
         """
         self._esn.fit(X_train, y_train, warmup=self.config.warmup)
+        self._reservoir.reset()
+        self._fitted = True
+        return self
+
+    def fit_masked(
+        self,
+        X_train: NDArray[np.float64],
+        y_train: NDArray[np.float64],
+        normal_mask: NDArray[np.bool_],
+    ) -> "ESNModel":
+        """リザーバを全データで実行し、正常区間のみで Readout を学習する。
+
+        リザーバは汚染データも含めて順次実行するため状態連続性が保たれる。
+        Readout は ``normal_mask=True`` の区間だけを使ってリッジ回帰を行う。
+
+        Args:
+            X_train: 入力系列 shape (n, d)
+            y_train: 教師系列 shape (n, d)
+            normal_mask: 正常フラグ shape (n,)。True = 正常（Readout 学習に使用）
+
+        Returns:
+            self（メソッドチェーン用）
+        """
+        # リザーバを初期化するために全データで一度 fit する（状態を確立）
+        self._esn.fit(X_train, y_train, warmup=self.config.warmup)
+        # リザーバを最初から全データで再実行して正確な状態列を得る
+        self._reservoir.reset()
+        states = self._reservoir.run(X_train)              # (n, units)
+        # ウォームアップ区間を除外してから正常マスクを適用
+        w = self.config.warmup
+        valid = normal_mask[w:]
+        self._readout.fit(states[w:][valid], y_train[w:][valid])
         self._reservoir.reset()
         self._fitted = True
         return self

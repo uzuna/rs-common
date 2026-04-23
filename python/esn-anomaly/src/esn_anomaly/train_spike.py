@@ -52,6 +52,7 @@ _SCENARIO_LABELS = {
 def _plot_scenario(
     t: np.ndarray,
     u: np.ndarray,
+    pred: np.ndarray,
     errors: np.ndarray,
     spike_results: list[dict],
     true_spikes: list[SpikeInfo],
@@ -59,39 +60,52 @@ def _plot_scenario(
     title: str,
     output_path: Path,
 ) -> None:
-    """スパイク検知結果を 2 段グラフで保存する。
+    """スパイク検知結果を 3 段グラフで保存する。
 
-    上段: 入力波形（正常スパイクを緑、異常スパイクを赤でハイライト）
+    上段: 入力波形（グレー）＋ESN 予測波形（オレンジ）にスパイク区間ハイライト
+    中段: 残差 |u(t) - pred(t)| の時系列
     下段: スパイク区間 MAE スコア（正常/異常を色分け）
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 6), sharex=True)
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 8), sharex=True)
     fig.suptitle(title, fontsize=11)
 
     u1d = u.ravel()
-    # 上段: 波形
-    ax1.plot(t, u1d, color="gray", linewidth=0.6, alpha=0.7, label="Input signal")
+    p1d = pred.ravel()
+    e1d = errors.ravel()
+
+    # 上段: 入力 + 予測波形
+    ax1.plot(t, u1d, color="steelblue", linewidth=0.7, alpha=0.8, label="Input")
+    ax1.plot(t, p1d, color="orange", linewidth=0.9, alpha=0.85, label="Prediction")
     for r in spike_results:
-        color = "red" if r["anomaly"] else "green"
-        ax1.axvspan(t[r["start"]], t[min(r["end"], len(t) - 1)], alpha=0.25, color=color)
-    # 凡例用ダミー
-    ax1.axvspan(0, 0, alpha=0.4, color="green", label="Normal spike")
-    ax1.axvspan(0, 0, alpha=0.4, color="red", label="Anomaly spike")
+        color = "red" if r["anomaly"] else "limegreen"
+        ax1.axvspan(t[r["start"]], t[min(r["end"], len(t) - 1)], alpha=0.20, color=color)
+    ax1.axvspan(0, 0, alpha=0.35, color="limegreen", label="Normal spike")
+    ax1.axvspan(0, 0, alpha=0.35, color="red", label="Anomaly spike")
     ax1.set_ylabel("Amplitude")
     ax1.legend(loc="upper right", fontsize=8)
     ax1.grid(True, alpha=0.3)
 
+    # 中段: 残差
+    ax2.plot(t, e1d, color="dimgray", linewidth=0.6, alpha=0.8, label="Residual |u - pred|")
+    for r in spike_results:
+        color = "red" if r["anomaly"] else "limegreen"
+        ax2.axvspan(t[r["start"]], t[min(r["end"], len(t) - 1)], alpha=0.20, color=color)
+    ax2.set_ylabel("Residual")
+    ax2.legend(loc="upper right", fontsize=8)
+    ax2.grid(True, alpha=0.3)
+
     # 下段: スパイクスコア（棒グラフ）
-    ax2.axhline(anomaly_threshold, color="crimson", linestyle="--", linewidth=1.2,
+    ax3.axhline(anomaly_threshold, color="crimson", linestyle="--", linewidth=1.2,
                 label=f"Threshold {anomaly_threshold:.3f}")
     for r in spike_results:
         center_t = t[(r["start"] + r["end"]) // 2]
-        color = "red" if r["anomaly"] else "green"
-        ax2.bar(center_t, r["score"], width=0.3, color=color, alpha=0.8)
-    ax2.set_xlabel("Time [s]")
-    ax2.set_ylabel("Spike MAE score")
-    ax2.legend(loc="upper right", fontsize=8)
-    ax2.grid(True, alpha=0.3)
+        color = "red" if r["anomaly"] else "limegreen"
+        ax3.bar(center_t, r["score"], width=0.3, color=color, alpha=0.8)
+    ax3.set_xlabel("Time [s]")
+    ax3.set_ylabel("Spike MAE score")
+    ax3.legend(loc="upper right", fontsize=8)
+    ax3.grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.savefig(output_path, dpi=150)
@@ -177,6 +191,7 @@ def run() -> None:
         _plot_scenario(
             t=t,
             u=u_test[:-1],
+            pred=pred,
             errors=e,
             spike_results=spike_results,
             true_spikes=true_spikes,

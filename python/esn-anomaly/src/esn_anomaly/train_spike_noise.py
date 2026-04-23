@@ -159,6 +159,7 @@ def _run_one(
         scenario_results[sid] = {"pass": ok, "anomaly": s["anomaly"], "total": s["total"]}
         plot_data[sid] = {
             "u": u_te[:-1].ravel(),
+            "pred": pred.ravel(),
             "errors": e.ravel(),
             "spike_results": results,
             "true_spikes": true_spikes,
@@ -309,21 +310,51 @@ def _plot_wave_on_ax(
     fs: float,
     title: str,
     *,
+    pred: np.ndarray | None = None,
     show_xlabel: bool = False,
 ) -> None:
-    """1 サブプロットに波形＋スパイク領域ハイライトを描画する。"""
+    """1 サブプロットに波形（＋オプションで予測波形）とスパイク領域ハイライトを描画する。"""
     t = np.arange(len(u)) / fs
-    ax.plot(t, u, color="steelblue", linewidth=0.6, alpha=0.8)
+    ax.plot(t, u, color="steelblue", linewidth=0.6, alpha=0.8, label="Input")
+    if pred is not None:
+        ax.plot(t, pred, color="orange", linewidth=0.8, alpha=0.85, label="Prediction")
+        ax.legend(loc="upper right", fontsize=6)
     for r in spike_results:
         color = "red" if r["anomaly"] else "limegreen"
         ax.axvspan(
             t[r["start"]],
             t[min(r["end"], len(t) - 1)],
-            alpha=0.35,
+            alpha=0.25,
             color=color,
         )
     ax.set_title(title, fontsize=8)
     ax.set_ylabel("Amplitude", fontsize=7)
+    if show_xlabel:
+        ax.set_xlabel("Time [s]", fontsize=7)
+    ax.tick_params(labelsize=6)
+    ax.grid(True, alpha=0.25)
+
+
+def _plot_residual_on_ax(
+    ax: plt.Axes,
+    errors: np.ndarray,
+    spike_results: list[dict],
+    fs: float,
+    *,
+    show_xlabel: bool = False,
+) -> None:
+    """1 サブプロットに残差（|u - pred|）の時系列を描画する。"""
+    t = np.arange(len(errors)) / fs
+    ax.plot(t, errors, color="dimgray", linewidth=0.6, alpha=0.8)
+    for r in spike_results:
+        color = "red" if r["anomaly"] else "limegreen"
+        ax.axvspan(
+            t[r["start"]],
+            t[min(r["end"], len(t) - 1)],
+            alpha=0.25,
+            color=color,
+        )
+    ax.set_ylabel("Residual", fontsize=7)
     if show_xlabel:
         ax.set_xlabel("Time [s]", fontsize=7)
     ax.tick_params(labelsize=6)
@@ -390,6 +421,7 @@ def _save_waveform_overview(results: list[dict]) -> None:
                 r["anomaly_threshold"],
                 FS,
                 title=f"{nt} / SNR={snr} [{status}]",
+                pred=pd.get("pred"),
                 show_xlabel=(i == n_rows - 1),
             )
 
@@ -402,10 +434,10 @@ def _save_waveform_overview(results: list[dict]) -> None:
 
 
 def _save_waveform_detail(results: list[dict]) -> None:
-    """ノイズ種類ごとに全 SNR × 全シナリオの詳細波形+MAE を保存する。
+    """ノイズ種類ごとに全 SNR × 全シナリオの詳細波形+残差+MAE を保存する。
 
     ファイル: result_spike_noise_waveform_{noise_type}.png
-    レイアウト: rows = SNR, cols = S1〜S4 (上段=波形, 下段=MAE)
+    レイアウト: rows = SNR (上=入力+予測, 中=残差, 下=MAE) × cols = S1〜S4
     """
     noise_types = list(dict.fromkeys(r["noise_type"] for r in results))
     snr_list = list(dict.fromkeys(r["snr"] for r in results))
@@ -421,37 +453,47 @@ def _save_waveform_detail(results: list[dict]) -> None:
     for nt in noise_types:
         n_snr = len(snr_list)
         n_sc = len(_SCENARIO_IDS)
-        # 各 SNR ごとに 2 行（波形+MAE）× n_sc 列
+        # 各 SNR ごとに 3 行（波形+予測 / 残差 / MAE）× n_sc 列
         fig, axes = plt.subplots(
-            n_snr * 2, n_sc,
-            figsize=(4 * n_sc, 2.5 * n_snr * 2),
+            n_snr * 3, n_sc,
+            figsize=(4 * n_sc, 2.2 * n_snr * 3),
             squeeze=False,
         )
-        fig.suptitle(f"Waveform detail — noise: {nt}  (green=normal, red=anomaly)", fontsize=11)
+        fig.suptitle(
+            f"Waveform detail — noise: {nt}  (green=normal, red=anomaly)\n"
+            "rows per SNR: [Input+Pred | Residual | MAE score]",
+            fontsize=10,
+        )
 
         for i, snr in enumerate(snr_list):
             r = data[(nt, snr)]
-            row_wave = i * 2
-            row_mae = i * 2 + 1
+            row_wave = i * 3
+            row_res  = i * 3 + 1
+            row_mae  = i * 3 + 2
             for j, sid in enumerate(_SCENARIO_IDS):
                 ax_w = axes[row_wave][j]
+                ax_r = axes[row_res][j]
                 ax_m = axes[row_mae][j]
                 pd = r["plot_data"].get(sid)
                 if pd is None:
-                    ax_w.set_visible(False)
-                    ax_m.set_visible(False)
+                    for ax in (ax_w, ax_r, ax_m):
+                        ax.set_visible(False)
                     continue
                 ok = r["scenario_results"][sid]["pass"]
                 status = "PASS" if ok else "FAIL"
                 title = (
                     f"{_s_labels[sid]}  SNR={snr} [{status}]"
-                    if row_wave == 0
+                    if i == 0
                     else f"SNR={snr} [{status}]"
                 )
                 _plot_wave_on_ax(
                     ax_w, pd["u"], pd["spike_results"],
                     r["anomaly_threshold"], FS,
                     title=title,
+                    pred=pd.get("pred"),
+                )
+                _plot_residual_on_ax(
+                    ax_r, pd["errors"], pd["spike_results"], FS,
                 )
                 _plot_mae_on_ax(
                     ax_m, pd["u"], pd["spike_results"],
@@ -460,6 +502,7 @@ def _save_waveform_detail(results: list[dict]) -> None:
                 )
                 if j == 0:
                     ax_w.set_ylabel(f"SNR={snr}\nAmplitude", fontsize=7)
+                    ax_r.set_ylabel(f"SNR={snr}\nResidual", fontsize=7)
 
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         path = OUTPUT_DIR / f"result_spike_noise_waveform_{nt}.png"

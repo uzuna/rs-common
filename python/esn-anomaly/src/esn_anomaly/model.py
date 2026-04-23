@@ -14,7 +14,7 @@ from reservoirpy.nodes import Reservoir, Ridge
 class ESNConfig:
     """ESN のハイパーパラメータ。"""
 
-    units: int = 100
+    units: int = 200
     sr: float = 0.9
     lr: float = 0.3
     ridge: float = 1e-6

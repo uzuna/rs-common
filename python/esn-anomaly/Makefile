@@ -1,4 +1,4 @@
-.PHONY: install test format lint bench run
+.PHONY: install test format lint bench run run-multi
 
 install:
 	uv sync --extra dev
@@ -17,3 +17,6 @@ bench:
 
 run:
 	uv run python -m esn_anomaly.train
+
+run-multi:
+	uv run python -m esn_anomaly.train_multi

@@ -27,9 +27,11 @@ def smooth(
     errors: NDArray[np.float64],
     window: int = 15,
 ) -> NDArray[np.float64]:
-    """移動平均による誤差平滑化。
+    """因果的移動平均による誤差平滑化（過去 window ステップのみ参照）。
 
-    端点は valid の畳み込みを使い、残りは元の値で埋める。
+    リアルタイム処理に対応するため、各時刻 t の平滑化値は
+    t 以前のデータのみを使って計算する。窓が満杯でない先頭部分は
+    利用可能なデータ点の平均を使う。
 
     Args:
         errors: 絶対誤差系列 shape (n,)
@@ -40,11 +42,12 @@ def smooth(
     """
     if window <= 1:
         return errors.copy()
-    kernel = np.ones(window) / window
-    smoothed = np.convolve(errors, kernel, mode="same")
-    # 端点の境界効果を補正（有効サンプル数で再スケール）
-    counts = np.convolve(np.ones_like(errors), kernel, mode="same")
-    return smoothed / counts * window / window  # counts は1に正規化済み
+    n = len(errors)
+    cs = np.cumsum(np.insert(errors, 0, 0.0))
+    end_idx = np.arange(1, n + 1)
+    start_idx = np.maximum(0, np.arange(n) - window + 1)
+    count = end_idx - start_idx
+    return (cs[end_idx] - cs[start_idx]) / count
 
 
 def compute_threshold(
@@ -98,4 +101,53 @@ def first_detection(
         最初の検知インデックス、または None
     """
     indices = detect(smoothed_errors, threshold)
+    return int(indices[0]) if len(indices) > 0 else None
+
+
+def detect_persistent(
+    smoothed_errors: NDArray[np.float64],
+    threshold: float,
+    min_duration: int = 30,
+) -> NDArray[np.intp]:
+    """閾値超過が min_duration ステップ以上連続した区間の開始インデックスを返す。
+
+    波形切り替え時の短期スパイクと、矩形波などによる持続的高誤差を区別するために使う。
+
+    Args:
+        smoothed_errors: 平滑化済み誤差系列
+        threshold: 検知閾値
+        min_duration: 異常と判定する最小連続ステップ数（デフォルト 30 = 1 s @ 30 Hz）
+
+    Returns:
+        持続異常区間の開始インデックス配列（空の場合は長さ0の配列）
+    """
+    above = smoothed_errors > threshold
+    starts = []
+    count = 0
+    for i, a in enumerate(above):
+        if a:
+            count += 1
+            if count == min_duration:
+                starts.append(i - min_duration + 1)
+        else:
+            count = 0
+    return np.array(starts, dtype=np.intp)
+
+
+def first_persistent_detection(
+    smoothed_errors: NDArray[np.float64],
+    threshold: float,
+    min_duration: int = 30,
+) -> int | None:
+    """最初の持続異常区間の開始インデックスを返す。存在しない場合は None。
+
+    Args:
+        smoothed_errors: 平滑化済み誤差系列
+        threshold: 検知閾値
+        min_duration: 異常と判定する最小連続ステップ数
+
+    Returns:
+        最初の検知インデックス、または None
+    """
+    indices = detect_persistent(smoothed_errors, threshold, min_duration)
     return int(indices[0]) if len(indices) > 0 else None

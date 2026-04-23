@@ -8,7 +8,9 @@ from esn_anomaly.detector import (
     compute_residual,
     compute_threshold,
     detect,
+    detect_persistent,
     first_detection,
+    first_persistent_detection,
     smooth,
 )
 from esn_anomaly.model import ESNConfig, ESNModel
@@ -36,7 +38,7 @@ def pipeline_result():
     smoothed = smooth(test_errors, window=15)
     threshold = compute_threshold(train_errors_stable)
 
-    EVAL_START = 30  # ウォームアップ過渡期（約30ステップ）を除いて評価
+    EVAL_START = 50  # ウォームアップ過渡期（因果的移動平均のウォームアップ込み）を除いて評価
 
     return {
         "smoothed": smoothed,
@@ -150,3 +152,52 @@ class TestEndToEnd:
             idx += eval_start
         assert idx is not None, "全区間で検知なし"
         assert idx >= switch - 20, f"切り替え前に検知: idx={idx}, switch_at={switch}"
+
+
+class TestDetectPersistent:
+    def test_empty_when_below_threshold(self):
+        e = np.array([0.1, 0.2, 0.3])
+        result = detect_persistent(e, threshold=1.0, min_duration=2)
+        assert len(result) == 0
+
+    def test_short_spike_not_detected(self):
+        """min_duration より短い超過は検知しないこと。"""
+        e = np.zeros(50)
+        e[10:15] = 2.0  # 5 ステップのスパイク
+        result = detect_persistent(e, threshold=1.0, min_duration=10)
+        assert len(result) == 0
+
+    def test_persistent_anomaly_detected(self):
+        """min_duration 以上続く超過を検知すること。"""
+        e = np.zeros(60)
+        e[20:50] = 2.0  # 30 ステップの持続異常
+        result = detect_persistent(e, threshold=1.0, min_duration=10)
+        assert len(result) > 0
+
+    def test_correct_start_index(self):
+        """検知開始インデックスが正しいこと。"""
+        e = np.zeros(60)
+        e[20:50] = 2.0  # 開始 index = 20
+        result = detect_persistent(e, threshold=1.0, min_duration=5)
+        assert len(result) > 0
+        assert result[0] == 20
+
+    def test_multiple_bursts(self):
+        """複数の持続区間をそれぞれ検知すること。"""
+        e = np.zeros(100)
+        e[10:20] = 2.0  # 10 step（= min_duration）
+        e[50:62] = 2.0  # 12 step（> min_duration）
+        result = detect_persistent(e, threshold=1.0, min_duration=10)
+        assert len(result) == 2
+        assert result[0] == 10
+        assert result[1] == 50
+
+    def test_first_persistent_none(self):
+        e = np.zeros(30)
+        assert first_persistent_detection(e, threshold=1.0, min_duration=5) is None
+
+    def test_first_persistent_index(self):
+        e = np.zeros(60)
+        e[15:30] = 2.0
+        idx = first_persistent_detection(e, threshold=1.0, min_duration=5)
+        assert idx == 15

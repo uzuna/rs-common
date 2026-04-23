@@ -4,11 +4,13 @@ import numpy as np
 import pytest
 
 from esn_anomaly.data_spike import (
+    NOISE_TYPES,
     SCENARIO_SPIKE_MIXED_WITH_SQUARE,
     SCENARIO_SPIKE_SAW_ONLY,
     SCENARIO_SPIKE_SIN_ONLY,
     SCENARIO_SPIKE_SQUARE_ONLY,
     SpikeInfo,
+    _generate_noise,
     generate_spike,
     generate_spike_test_scenario,
     generate_spike_train,
@@ -138,3 +140,55 @@ class TestGenerateSpikeTestScenario:
     def test_invalid_scenario(self):
         with pytest.raises(ValueError):
             generate_spike_test_scenario(99, n_steps=100)
+
+
+class TestGenerateNoise:
+    """_generate_noise の形状・統計特性テスト。"""
+
+    @pytest.mark.parametrize("noise_type", list(NOISE_TYPES))
+    def test_shape(self, noise_type):
+        rng = np.random.default_rng(0)
+        out = _generate_noise(100, noise_type, std=0.1, rng=rng)
+        assert out.shape == (100,)
+        assert out.dtype == np.float64
+
+    @pytest.mark.parametrize("noise_type", list(NOISE_TYPES))
+    def test_std_approx(self, noise_type):
+        """標準偏差が指定値の ±50% 以内であること（ピンクノイズを含む）。"""
+        rng = np.random.default_rng(42)
+        out = _generate_noise(10000, noise_type, std=0.5, rng=rng)
+        assert 0.25 < out.std() < 0.75
+
+    def test_invalid_noise_type(self):
+        rng = np.random.default_rng(0)
+        with pytest.raises(ValueError):
+            _generate_noise(10, "brown", std=0.1, rng=rng)
+
+    @pytest.mark.parametrize("noise_type", list(NOISE_TYPES))
+    def test_noise_type_param_in_generate_spike(self, noise_type):
+        """generate_spike が各ノイズ種類で正常に動作すること。"""
+        rng = np.random.default_rng(0)
+        v = generate_spike("sin", noise_std=0.1, noise_type=noise_type, rng=rng)
+        assert v.shape == (SPIKE_LEN,)
+
+    @pytest.mark.parametrize("noise_type", list(NOISE_TYPES))
+    def test_noise_type_param_in_spike_train(self, noise_type):
+        """generate_spike_train が各ノイズ種類で正常に動作すること。"""
+        rng = np.random.default_rng(0)
+        u, spikes = generate_spike_train(
+            200, ["sin"], rate_hz=1.0, noise_type=noise_type, rng=rng
+        )
+        assert u.shape == (200, 1)
+
+    def test_noise_types_differ(self):
+        """異なるノイズ種類で出力が一致しないこと。"""
+        std = 0.3
+        n = 500
+        outputs = []
+        for nt in NOISE_TYPES:
+            rng = np.random.default_rng(0)
+            outputs.append(_generate_noise(n, nt, std=std, rng=rng))
+        # 少なくとも 1 組は異なるはず
+        pairs = [(outputs[i], outputs[j]) for i in range(len(outputs))
+                 for j in range(i + 1, len(outputs))]
+        assert any(not np.allclose(a, b) for a, b in pairs)

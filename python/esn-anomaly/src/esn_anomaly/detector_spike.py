@@ -64,6 +64,8 @@ def score_spike(
     Returns:
         区間 MAE（float）
     """
+    if start >= end:
+        return 0.0
     return float(errors[start:end].mean())
 
 

@@ -67,6 +67,10 @@ class TestScoreSpike:
         expected = np.mean(np.arange(10, 20, dtype=float))
         assert s == pytest.approx(expected)
 
+    def test_empty_region_returns_zero(self):
+        errors = np.ones(10)
+        assert score_spike(errors, 5, 5) == pytest.approx(0.0)
+
 
 class TestComputeSpikeThreshold:
     def test_3sigma(self):

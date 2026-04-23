@@ -1,4 +1,4 @@
-.PHONY: install test format lint bench run run-multi
+.PHONY: install test format lint bench run run-multi run-spike
 
 install:
 	uv sync --extra dev
@@ -20,3 +20,6 @@ run:
 
 run-multi:
 	uv run python -m esn_anomaly.train_multi
+
+run-spike:
+	uv run python -m esn_anomaly.train_spike

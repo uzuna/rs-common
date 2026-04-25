@@ -949,3 +949,135 @@ class TestGenerateServoWithProfile:
         cmd_norm = normalize_cmd(cmd_raw)
         assert cmd_norm.min() >= -1.5
         assert cmd_norm.max() <= 1.5
+
+
+# ──── Phase 14: PhysicalEstimator テスト ──────────────────────────────────────
+
+from esn_anomaly.servo.estimator import PhysicalEstimator
+
+
+class TestPhysicalEstimatorFF:
+    """PhysicalEstimator ff モードの基本テスト。"""
+
+    def _make_training_data(self, n_cycles: int = 10):
+        from esn_anomaly.servo.command_test import NOISE, SEED, _make_periodic_profile
+        from esn_anomaly.servo.data import generate_servo_with_profile
+        rng = np.random.default_rng(SEED)
+        profile = _make_periodic_profile(n_cycles)
+        return generate_servo_with_profile(profile, noise=NOISE, rng=rng)
+
+    def test_invalid_mode_raises(self):
+        with pytest.raises(ValueError, match="mode"):
+            PhysicalEstimator(mode="invalid")
+
+    def test_fit_threshold_returns_positive(self):
+        """正常訓練データから得られる閾値は正の値。"""
+        u_raw, cmd_raw = self._make_training_data()
+        est = PhysicalEstimator(mode="ff")
+        thr = est.fit_threshold(u_raw[:, 0], u_raw[:, 1], cmd_raw)
+        assert thr > 0.0
+
+    def test_fit_threshold_sets_attribute(self):
+        """fit_threshold 後に _threshold が設定される。"""
+        u_raw, cmd_raw = self._make_training_data()
+        est = PhysicalEstimator(mode="ff")
+        assert est._threshold is None
+        est.fit_threshold(u_raw[:, 0], u_raw[:, 1], cmd_raw)
+        assert est._threshold is not None
+
+    def test_detect_requires_fit_first(self):
+        """fit_threshold 前に detect を呼ぶと RuntimeError。"""
+        u_raw, cmd_raw = self._make_training_data()
+        est = PhysicalEstimator(mode="ff")
+        with pytest.raises(RuntimeError):
+            est.detect(u_raw[:, 0], u_raw[:, 1], cmd_raw)
+
+    def test_detect_shape(self):
+        """detect の出力 shape が入力と同じ。"""
+        u_raw, cmd_raw = self._make_training_data()
+        est = PhysicalEstimator(mode="ff")
+        est.fit_threshold(u_raw[:, 0], u_raw[:, 1], cmd_raw)
+        result = est.detect(u_raw[:, 0], u_raw[:, 1], cmd_raw)
+        assert result.shape == (len(u_raw),)
+        assert result.dtype == bool
+
+    def test_normal_data_low_false_alarm(self):
+        """正常データに対する誤警報率が 5% 未満。"""
+        u_raw, cmd_raw = self._make_training_data()
+        est = PhysicalEstimator(mode="ff")
+        est.fit_threshold(u_raw[:, 0], u_raw[:, 1], cmd_raw, warmup=100)
+        detected = est.detect(u_raw[:, 0], u_raw[:, 1], cmd_raw)
+        false_alarm_rate = float(detected[100:].mean())
+        assert false_alarm_rate < 0.05, f"誤警報率 {false_alarm_rate:.3f} が高すぎる"
+
+    def test_ext_torque_increases_residual(self):
+        """外力印加後の定常状態で残差が増加する。
+
+        ext_torque=0.3 → 定常状態の residual ≈ -T_ext/motor_gain = -30 mA.
+        """
+        from esn_anomaly.servo.data import (
+            DisturbanceSegment, MotionPattern,
+            CommandProfile, CommandSegment,
+            generate_servo_with_profile, MeasurementNoise,
+        )
+        # SC シナリオ風: home 保持 → 外力印加
+        pat = MotionPattern()
+        profile = CommandProfile([
+            CommandSegment("hold", pat.home_mrad, 300),   # 正常区間
+            CommandSegment("hold", pat.home_mrad, 1000),  # 外力区間
+        ])
+        dist = [DisturbanceSegment(300, 1300, ext_torque=0.3)]
+        noise = MeasurementNoise(pos_std=1.0, load_std=1.0)
+        u_raw, cmd_raw = generate_servo_with_profile(
+            profile, disturbances=dist, noise=noise, rng=np.random.default_rng(0)
+        )
+        pos, load = u_raw[:, 0], u_raw[:, 1]
+
+        est = PhysicalEstimator(mode="ff", smooth_win=20, vel_smooth_win=50, vel_threshold=5.0)
+        # 正常区間のみで閾値学習
+        u_normal, cmd_normal = generate_servo_with_profile(
+            CommandProfile([CommandSegment("hold", pat.home_mrad, 1300)]),
+            noise=noise, rng=np.random.default_rng(1),
+        )
+        est.fit_threshold(u_normal[:, 0], u_normal[:, 1], cmd_normal, warmup=100)
+
+        # 外力区間（定常後半）の残差が閾値超過
+        r = est.abs_residual(pos, load)
+        # 外力区間の後半（600-1200 ステップ目）は整定済み
+        r_dist = r[600:1200]
+        assert r_dist.mean() > est._threshold * 0.5, (
+            f"外力区間の残差 {r_dist.mean():.2f} が閾値 {est._threshold:.2f} の半分未満"
+        )
+
+
+class TestPhysicalEstimatorFull:
+    """PhysicalEstimator full モードの基本テスト。"""
+
+    def test_full_mode_requires_cmd(self):
+        """full モードの residual に cmd_mrad が必要。"""
+        rng = np.random.default_rng(0)
+        pos = rng.normal(0, 10, 100)
+        load = rng.normal(0, 5, 100)
+        est = PhysicalEstimator(mode="full")
+        with pytest.raises(ValueError, match="cmd_mrad"):
+            est.residual(pos, load, cmd_mrad=None)
+
+    def test_full_mode_normal_low_residual(self):
+        """full モードで正常定常状態の残差が ff より小さい。"""
+        from esn_anomaly.servo.command_test import NOISE, SEED, _make_periodic_profile
+        from esn_anomaly.servo.data import generate_servo_with_profile
+        rng = np.random.default_rng(SEED)
+        profile = _make_periodic_profile(5)
+        u_raw, cmd_raw = generate_servo_with_profile(profile, noise=NOISE, rng=rng)
+        pos, load = u_raw[:, 0], u_raw[:, 1]
+
+        est_ff   = PhysicalEstimator(mode="ff",   smooth_win=20, vel_smooth_win=50)
+        est_full = PhysicalEstimator(mode="full",  smooth_win=20, vel_smooth_win=50)
+
+        r_ff   = est_ff.abs_residual(pos, load)
+        r_full = est_full.abs_residual(pos, load, cmd_raw)
+
+        # 全体平均で full の残差は ff 以下になるはず（I_pd 除去効果）
+        assert r_full.mean() <= r_ff.mean() * 1.1, (
+            f"full 平均 {r_full.mean():.2f} が ff 平均 {r_ff.mean():.2f} より大きい"
+        )

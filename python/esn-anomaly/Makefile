@@ -1,4 +1,4 @@
-.PHONY: install test format lint bench run run-multi run-spike run-spike-noise run-dual run-dual-ann run-multimode run-servo run-servo-detect run-servo-cmd run-servo-estim run-servo-online
+.PHONY: install test format lint bench run run-multi run-spike run-spike-noise run-dual run-dual-ann run-multimode run-servo run-servo-detect run-servo-cmd run-servo-estim run-servo-online run-individual run-individual-plot
 
 install:
 	uv sync --extra dev
@@ -50,3 +50,9 @@ run-servo-estim:
 
 run-servo-online:
 	uv run python -m esn_anomaly.servo.online_demo
+
+run-individual:
+	uv run python -m esn_anomaly.servo.individual
+
+run-individual-plot:
+	uv run python -m esn_anomaly.servo.individual --plot

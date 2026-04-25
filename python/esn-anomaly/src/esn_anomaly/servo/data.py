@@ -6,14 +6,21 @@
   - 最大電流: 100 mA
   - 最大到達角度: 負方向 -80 度（平衡点から 35 度）、正方向 +20 度（平衡点から 65 度）
 
-物理モデル:
-  非対称ばね＋粘性ダンピング。
+物理モデル（Phase 13 拡張済み）:
+  非対称ばね＋粘性ダンピング＋外力＋クーロン摩擦。
     T_restore(θ) = -K_neg × (θ - θ_eq)  (θ < θ_eq)
     T_restore(θ) = -K_pos × (θ - θ_eq)  (θ ≥ θ_eq)
+    T_net = T_motor + T_restore + T_damp + T_ext + T_coulomb
+    T_coulomb = -coulomb_friction × sign(ω)  （運動に逆らう摩擦）
   最大電流での釣り合い条件:
     T_motor_max = K_neg × 35 = K_pos × 65 = 1.0（正規化）
   これにより K_neg = 1/35、K_pos = 1/65。
-  正方向の剛性が低い（65 度まで届く）、負方向が高い（35 度まで）。
+
+外力の効果:
+  - ext_torque > 0: 正方向外力。制御器が I_cmd を下げて補償（負荷が減って見える）
+  - ext_torque < 0: 負方向外力（付加重力など）。I_cmd が増加（負荷増大）
+クーロン摩擦の効果:
+  - 動作中の追従遅れ増大、I_cmd に摩擦補償電流混入
 """
 
 from __future__ import annotations
@@ -46,6 +53,13 @@ class ServoParams:
     dt: float = 0.01
     # 内部積分ステップ数（1出力ステップあたり）
     substeps: int = 10
+    # ── Phase 13: 外力・クーロン摩擦 ──────────────────────────────
+    # 外力トルク [正規化; T_motor_max = 1.0 に対する比率]
+    # 正 = 正方向（平衡点から離れる）、負 = 負方向（平衡点に向かう）
+    ext_torque: float = 0.0
+    # クーロン摩擦係数 [同正規化単位]
+    # 0.0 = 摩擦なし、0.05〜0.1 ≈ 実機レベル
+    coulomb_friction: float = 0.0
 
 
 class ServoModel:
@@ -92,11 +106,20 @@ class ServoModel:
             return -self.k_neg * delta
 
     def _derivatives(self, theta: float, omega: float, I: float) -> tuple[float, float]:
-        """状態微分 (dθ/dt, dω/dt) を計算する。"""
+        """状態微分 (dθ/dt, dω/dt) を計算する。
+
+        外力 (ext_torque) とクーロン摩擦 (coulomb_friction) を含む。
+        """
         T_motor = self.motor_gain * I
         T_restore = self.restoring_torque(theta)
         T_damp = -self.p.damping * omega
-        alpha = (T_motor + T_restore + T_damp) / self.p.inertia
+        T_ext = self.p.ext_torque
+        # クーロン摩擦: 運動と逆方向（静止時は 0）
+        T_coulomb = (
+            -self.p.coulomb_friction * (1.0 if omega > 0.0 else -1.0)
+            if abs(omega) > 1e-6 else 0.0
+        )
+        alpha = (T_motor + T_restore + T_damp + T_ext + T_coulomb) / self.p.inertia
         return omega, alpha
 
     def _rk4_step(self, theta: float, omega: float, I: float, dt: float) -> tuple[float, float]:
@@ -393,6 +416,185 @@ def generate_servo_periodic(
         load_arr += rng.normal(0.0, noise.load_std, n_steps)
 
     return np.stack([pos_arr, load_arr], axis=1).astype(np.float64)
+
+
+# ------------------------------------------------------------------
+# コマンドプロファイル制御（Phase 13）
+# ------------------------------------------------------------------
+
+@dataclass
+class CommandSegment:
+    """コマンドプロファイルの 1 区間。
+
+    kind:
+      "hold" — target_mrad を duration_steps 間維持
+      "ramp" — 前区間終端から target_mrad まで duration_steps 間で線形補間
+      "step" — target_mrad に即座に切り替え（1 ステップ）
+    """
+
+    kind: str
+    target_mrad: float
+    duration_steps: int = 1  # "step" の場合は 1 固定
+
+
+class CommandProfile:
+    """CommandSegment を連結した目標値プロファイル。
+
+    Usage::
+
+        profile = CommandProfile([
+            CommandSegment("hold", -785.4, 200),
+            CommandSegment("ramp",    0.0, 300),
+            CommandSegment("hold",    0.0, 200),
+        ])
+        targets = profile.build_target_array()  # shape (700,)
+    """
+
+    def __init__(self, segments: list[CommandSegment]) -> None:
+        self.segments = segments
+
+    def build_target_array(self, start_mrad: float | None = None) -> NDArray[np.float64]:
+        """セグメントを展開して目標値配列を返す。
+
+        Args:
+            start_mrad: ramp の補間起点（None なら第 1 セグメントの target_mrad）
+
+        Returns:
+            shape (total_steps,) の目標値 [mrad] 配列
+        """
+        arrays: list[NDArray[np.float64]] = []
+        prev: float | None = start_mrad
+
+        for seg in self.segments:
+            if seg.kind == "hold":
+                arr = np.full(seg.duration_steps, seg.target_mrad)
+            elif seg.kind == "ramp":
+                src = prev if prev is not None else seg.target_mrad
+                arr = np.linspace(src, seg.target_mrad, seg.duration_steps)
+            elif seg.kind == "step":
+                arr = np.array([seg.target_mrad])
+            else:
+                raise ValueError(f"未知の CommandSegment kind: {seg.kind!r}")
+            arrays.append(arr.astype(np.float64))
+            prev = seg.target_mrad
+
+        return np.concatenate(arrays) if arrays else np.array([], dtype=np.float64)
+
+    @property
+    def total_steps(self) -> int:
+        return sum(
+            1 if s.kind == "step" else s.duration_steps
+            for s in self.segments
+        )
+
+
+@dataclass
+class DisturbanceSegment:
+    """外乱（外力・摩擦変化）の適用区間。
+
+    start / end: 配列インデックス（end は exclusive）
+    ext_torque: 区間中の外力トルク [正規化]
+    coulomb_friction: 区間中のクーロン摩擦係数 [正規化]
+    """
+
+    start: int
+    end: int
+    ext_torque: float = 0.0
+    coulomb_friction: float = 0.0
+
+    @property
+    def length(self) -> int:
+        return self.end - self.start
+
+
+def generate_servo_with_profile(
+    profile: CommandProfile,
+    disturbances: list[DisturbanceSegment] | None = None,
+    noise: MeasurementNoise | None = None,
+    base_params: ServoParams | None = None,
+    ctrl: ControllerParams | None = None,
+    rng: np.random.Generator | None = None,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """コマンドプロファイル＋外乱スケジュールでサーボ観測時系列を生成する。
+
+    コマンドプロファイルで目標値を任意に変化させながら、指定区間に
+    外力トルクやクーロン摩擦を動的に印加できる。
+
+    Args:
+        profile: 目標値シーケンスを記述した CommandProfile
+        disturbances: 外乱区間リスト（None ならなし）
+        noise: 観測ノイズ（None ならなし）
+        base_params: ベース ServoParams（外力・摩擦 = 0 のデフォルト値）
+        ctrl: 制御ゲイン
+        rng: 乱数ジェネレータ
+
+    Returns:
+        (u_raw, cmd_array):
+          u_raw     shape (n, 2): [pos_mrad, load_mA]（観測値）
+          cmd_array shape (n,):   各ステップの目標値 [mrad]
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    if disturbances is None:
+        disturbances = []
+
+    base_p = base_params or ServoParams()
+    targets = profile.build_target_array(start_mrad=base_p.theta_eq * DEG_TO_MRAD)
+    n_steps = len(targets)
+
+    # 動的パラメータ変更のためにコピーを使用
+    active_p = ServoParams(
+        theta_min=base_p.theta_min, theta_max=base_p.theta_max,
+        theta_eq=base_p.theta_eq, theta_reach_neg=base_p.theta_reach_neg,
+        theta_reach_pos=base_p.theta_reach_pos, current_max=base_p.current_max,
+        inertia=base_p.inertia, damping=base_p.damping,
+        dt=base_p.dt, substeps=base_p.substeps,
+        ext_torque=base_p.ext_torque, coulomb_friction=base_p.coulomb_friction,
+    )
+    controller = ServoController(active_p, ctrl)
+    if len(targets) > 0:
+        controller.reset(target_mrad=float(targets[0]))
+
+    pos_arr = np.empty(n_steps)
+    load_arr = np.empty(n_steps)
+
+    for i, tgt in enumerate(targets):
+        # アクティブな外乱パラメータを決定（最後にマッチした区間が優先）
+        ext = base_p.ext_torque
+        fric = base_p.coulomb_friction
+        for d in disturbances:
+            if d.start <= i < d.end:
+                ext = d.ext_torque
+                fric = d.coulomb_friction
+        active_p.ext_torque = ext
+        active_p.coulomb_friction = fric
+
+        pos_mrad, load_mA = controller.step_with_target(float(tgt))
+        pos_arr[i] = pos_mrad
+        load_arr[i] = load_mA
+
+    if noise is not None:
+        pos_arr += rng.normal(0.0, noise.pos_std, n_steps)
+        load_arr += rng.normal(0.0, noise.load_std, n_steps)
+
+    return (
+        np.stack([pos_arr, load_arr], axis=1).astype(np.float64),
+        targets,
+    )
+
+
+def normalize_cmd(cmd: NDArray[np.float64]) -> NDArray[np.float64]:
+    """コマンド位置 [mrad] を [-1, 1] に正規化する（pos チャンネルと同スケール）。
+
+    Args:
+        cmd: shape (n,) のコマンド位置配列 [mrad]
+
+    Returns:
+        shape (n,) の正規化済み配列
+    """
+    pos_center = (POS_MRAD_MAX + POS_MRAD_MIN) / 2.0
+    pos_scale = (POS_MRAD_MAX - POS_MRAD_MIN) / 2.0
+    return (cmd - pos_center) / pos_scale
 
 
 # ------------------------------------------------------------------

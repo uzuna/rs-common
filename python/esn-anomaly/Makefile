@@ -1,4 +1,4 @@
-.PHONY: install test format lint bench run run-multi run-spike run-spike-noise run-dual run-dual-ann run-multimode run-servo run-servo-detect
+.PHONY: install test format lint bench run run-multi run-spike run-spike-noise run-dual run-dual-ann run-multimode run-servo run-servo-detect run-servo-cmd
 
 install:
 	uv sync --extra dev
@@ -41,3 +41,6 @@ run-servo:
 
 run-servo-detect:
 	uv run python -m esn_anomaly.servo.detect
+
+run-servo-cmd:
+	uv run python -m esn_anomaly.servo.command_test

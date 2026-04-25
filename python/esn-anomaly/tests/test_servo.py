@@ -731,3 +731,221 @@ class TestGenerateServoAnomalyTest:
                                              rng=np.random.default_rng(7))
         np.testing.assert_array_equal(u1, u2)
         assert len(s1) == len(s2)
+
+
+# ------------------------------------------------------------------
+# Phase 13: 外力・クーロン摩擦の物理挙動
+# ------------------------------------------------------------------
+
+from esn_anomaly.servo.data import (
+    CommandProfile,
+    CommandSegment,
+    DisturbanceSegment,
+    generate_servo_with_profile,
+    normalize_cmd,
+)
+
+
+class TestExtTorque:
+    """外力トルクが物理挙動を正しく変化させること。"""
+
+    def _settled_load(self, ext_torque: float, n_steps: int = 3000) -> float:
+        """home 保持定常時の平均負荷 [mA] を返す。"""
+        from esn_anomaly.servo.data import ServoParams
+        pat = MotionPattern()
+        profile = CommandProfile([CommandSegment("hold", pat.home_mrad, n_steps)])
+        p = ServoParams(ext_torque=ext_torque)
+        u_raw, _ = generate_servo_with_profile(profile, base_params=p)
+        return float(np.mean(u_raw[n_steps * 3 // 4:, 1]))
+
+    def test_zero_ext_torque_load_near_zero_at_home(self):
+        """外力なし: home 保持の定常負荷 ≈ 0 mA"""
+        load = self._settled_load(0.0)
+        assert load == pytest.approx(0.0, abs=5.0)
+
+    def test_positive_ext_torque_decreases_load(self):
+        """正方向外力: home 保持の定常負荷が減少（制御器が電流を下げて補償）"""
+        load_0 = self._settled_load(0.0)
+        load_p = self._settled_load(0.3)
+        assert load_p < load_0 - 5.0
+
+    def test_negative_ext_torque_increases_load(self):
+        """負方向外力: home 保持の定常負荷が増加"""
+        load_0 = self._settled_load(0.0)
+        load_n = self._settled_load(-0.3)
+        assert load_n > load_0 + 5.0
+
+    def test_ext_torque_causes_position_offset(self):
+        """外力はPD制御器の定常偏差を引き起こす（積分項なしのため）。
+        正外力 → target より正方向、負外力 → 負方向に定常偏差が生じる。
+        """
+        from esn_anomaly.servo.data import ServoParams
+        pat = MotionPattern()
+        profile = CommandProfile([CommandSegment("hold", pat.home_mrad, 5000)])
+
+        p_pos = ServoParams(ext_torque=0.3)
+        u_pos, _ = generate_servo_with_profile(profile, base_params=p_pos)
+        pos_pos = float(np.mean(u_pos[-200:, 0]))
+
+        p_neg = ServoParams(ext_torque=-0.3)
+        u_neg, _ = generate_servo_with_profile(profile, base_params=p_neg)
+        pos_neg = float(np.mean(u_neg[-200:, 0]))
+
+        # 正外力: target より大きい（正方向に押される）
+        assert pos_pos > pat.home_mrad + 10.0
+        # 負外力: target より小さい（負方向に押される）
+        assert pos_neg < pat.home_mrad - 10.0
+
+
+class TestCoulombFriction:
+    """クーロン摩擦が物理挙動を正しく変化させること。"""
+
+    def _run_small_move(self, coulomb: float) -> np.ndarray:
+        """小移動（≈10°）で摩擦効果を観察（飽和を避ける）。"""
+        from esn_anomaly.servo.data import ServoParams
+        home = MotionPattern().home_mrad          # -785.4 mrad (-45°)
+        near = home + 185.0                       # ≈ -600 mrad (-34.4°): 10.6° 移動
+        profile = CommandProfile([
+            CommandSegment("hold", home, 800),    # home で安定
+            CommandSegment("hold", near, 800),    # near まで移動・保持
+            CommandSegment("hold", home, 400),    # home に戻る
+        ])
+        p = ServoParams(coulomb_friction=coulomb)
+        u_raw, _ = generate_servo_with_profile(profile, base_params=p)
+        return u_raw
+
+    def test_zero_friction_tracks_target(self):
+        """摩擦なし: 目標位置に収束（保持期間末尾 ±50 mrad）"""
+        u = self._run_small_move(0.0)
+        home = MotionPattern().home_mrad
+        near = home + 185.0
+        final_pos = float(np.mean(u[1400:1600, 0]))   # near 保持の後半
+        assert abs(final_pos - near) < 50.0
+
+    def test_friction_does_not_prevent_reaching_target(self):
+        """摩擦あり: 目標位置に収束（PD が補償し定常誤差なし）"""
+        u = self._run_small_move(0.1)
+        home = MotionPattern().home_mrad
+        near = home + 185.0
+        final_pos = float(np.mean(u[1400:1600, 0]))
+        assert abs(final_pos - near) < 80.0
+
+    def test_friction_changes_load_during_motion(self):
+        """摩擦あり: 動作中の負荷が摩擦なしと異なる（移動開始直後を評価）"""
+        u_0 = self._run_small_move(0.0)
+        u_f = self._run_small_move(0.1)
+        # 移動開始直後（steps 800〜900）を評価
+        load_0 = np.mean(np.abs(u_0[800:900, 1]))
+        load_f = np.mean(np.abs(u_f[800:900, 1]))
+        # 摩擦があると移動中の負荷が変化（0.5 mA 以上の差）
+        assert abs(load_f - load_0) > 0.5
+
+
+class TestCommandProfile:
+    """CommandProfile の target array 生成テスト。"""
+
+    def test_hold_generates_constant_array(self):
+        seg = CommandSegment("hold", -785.4, 100)
+        arr = CommandProfile([seg]).build_target_array()
+        assert arr.shape == (100,)
+        assert np.all(arr == pytest.approx(-785.4))
+
+    def test_ramp_generates_linspace(self):
+        segs = [
+            CommandSegment("hold", -785.4, 1),  # prev = -785.4
+            CommandSegment("ramp",    0.0, 50),
+        ]
+        arr = CommandProfile(segs).build_target_array()
+        # ramp 部分: -785.4 → 0.0 の 50 点
+        assert arr[1] == pytest.approx(-785.4, abs=30.0)
+        assert arr[-1] == pytest.approx(0.0, abs=1e-6)
+
+    def test_step_generates_single_point(self):
+        seg = CommandSegment("step", 349.1, 1)
+        arr = CommandProfile([seg]).build_target_array()
+        assert arr.shape == (1,)
+        assert arr[0] == pytest.approx(349.1)
+
+    def test_total_steps(self):
+        segs = [
+            CommandSegment("hold", 0.0, 100),
+            CommandSegment("ramp", 100.0, 200),
+            CommandSegment("step", 50.0, 1),
+        ]
+        profile = CommandProfile(segs)
+        assert profile.total_steps == 301
+
+    def test_unknown_kind_raises(self):
+        with pytest.raises(ValueError, match="未知の CommandSegment kind"):
+            CommandProfile([CommandSegment("invalid", 0.0, 10)]).build_target_array()
+
+    def test_ramp_start_from_start_mrad(self):
+        seg = CommandSegment("ramp", 0.0, 100)
+        arr = CommandProfile([seg]).build_target_array(start_mrad=-785.4)
+        assert arr[0] == pytest.approx(-785.4, abs=1.0)
+        assert arr[-1] == pytest.approx(0.0, abs=1e-6)
+
+
+class TestGenerateServoWithProfile:
+    """generate_servo_with_profile の出力テスト。"""
+
+    def _simple_profile(self) -> CommandProfile:
+        pat = MotionPattern()
+        return CommandProfile([
+            CommandSegment("hold", pat.home_mrad, 200),
+            CommandSegment("hold", pat.up_mrad,   300),
+            CommandSegment("hold", pat.home_mrad, 200),
+        ])
+
+    def test_output_shapes(self):
+        profile = self._simple_profile()
+        u_raw, cmd_raw = generate_servo_with_profile(profile)
+        assert u_raw.shape == (700, 2)
+        assert cmd_raw.shape == (700,)
+
+    def test_cmd_array_matches_profile(self):
+        """cmd_array が CommandProfile の目標値を反映している。"""
+        pat = MotionPattern()
+        profile = CommandProfile([CommandSegment("hold", pat.home_mrad, 500)])
+        _, cmd = generate_servo_with_profile(profile)
+        assert np.all(cmd == pytest.approx(pat.home_mrad))
+
+    def test_no_disturbance_reproducible(self):
+        """同一シードで同一出力。"""
+        profile = self._simple_profile()
+        u1, c1 = generate_servo_with_profile(profile, noise=MeasurementNoise(),
+                                             rng=np.random.default_rng(0))
+        u2, c2 = generate_servo_with_profile(profile, noise=MeasurementNoise(),
+                                             rng=np.random.default_rng(0))
+        np.testing.assert_array_equal(u1, u2)
+        np.testing.assert_array_equal(c1, c2)
+
+    def test_disturbance_changes_load(self):
+        """外乱あり/なし で load が異なる。"""
+        profile = CommandProfile([CommandSegment("hold", MotionPattern().home_mrad, 1000)])
+        u_clean, _ = generate_servo_with_profile(profile)
+        dist = [DisturbanceSegment(200, 800, ext_torque=0.4)]
+        u_dist, _ = generate_servo_with_profile(profile, disturbances=dist)
+        # 外乱区間で負荷が変化
+        assert not np.allclose(u_clean[200:800, 1], u_dist[200:800, 1], atol=1.0)
+
+    def test_disturbance_outside_segment_unchanged(self):
+        """外乱区間外は変化しない（ノイズなし）。"""
+        profile = CommandProfile([CommandSegment("hold", MotionPattern().home_mrad, 1000)])
+        u_clean, _ = generate_servo_with_profile(profile, noise=None)
+        dist = [DisturbanceSegment(400, 600, ext_torque=0.3)]
+        u_dist, _ = generate_servo_with_profile(profile, disturbances=dist, noise=None)
+        # 外乱前区間はほぼ同一（制御器は同じ初期条件から始まる）
+        np.testing.assert_allclose(u_clean[:400], u_dist[:400], atol=1e-6)
+
+    def test_normalize_cmd_range(self):
+        """normalize_cmd の出力が [-1.5, 1.5] 以内（サーボ動作範囲内）。"""
+        pat = MotionPattern()
+        profile = CommandProfile([
+            CommandSegment("hold", pat.down_mrad, 100),
+            CommandSegment("hold", pat.up_mrad,   100),
+        ])
+        _, cmd_raw = generate_servo_with_profile(profile)
+        cmd_norm = normalize_cmd(cmd_raw)
+        assert cmd_norm.min() >= -1.5
+        assert cmd_norm.max() <= 1.5

@@ -29,10 +29,12 @@ Echo State Network (ESN / リザーバコンピューティング) による時�
 | Phase 13 | 外力・摩擦モデル + コマンドプロファイル制御 | `make run-servo-cmd` |
 | Phase 14 | 物理推定器 vs ESN 比較評価         | `make run-servo-estim` |
 | Phase 15 | 実機向けストリーミングインタフェース | `make run-servo-online` |
+| Phase 16 | 個体差モデリングとしきい値追従       | `make run-individual`   |
+| Phase 17 | オンラインモード追跡（波形切替検知）  | `make run-mode-tracker` |
 
 ```bash
 uv sync --extra dev   # 依存インストール
-make test             # 全テスト（174 件）
+make test             # 全テスト（364 件）
 make lint             # 静的解析
 ```
 
@@ -1074,6 +1076,126 @@ SpectralPeak による未知検出が継続的に発火する区間を「新モ�
 十分な数のサンプルが溜まったとき自動で新しい Head を追加する流れが考えられる。
 ただしラベルなし新モードのクラスタリング（どのサンプルが「同じ未知モード」か）は
 現在の実装では未解決であり、今後の課題として残る。
+
+---
+
+## Phase 17: オンラインモード追跡
+
+波形が動的に切り替わる系で、ESN モデルのライブラリを使いリアルタイムにモードを追跡する。
+サイン波 → ノコギリ波のような既知の切替を検知するだけでなく、未知モードの自動フラグも行う。
+
+### アーキテクチャ
+
+```
+ModeLibrary
+  ├─ sine    : ESNModel（訓練済み）+ select_thr + mode_thr
+  └─ sawtooth: ESNModel（訓練済み）+ select_thr + mode_thr
+
+ModeTracker
+  ├─ 現在モデルを run_step() で 1 ステップ追跡（リザーバ状態を保持）
+  ├─ 移動平均残差 moving_avg（窓 200 steps）を監視
+  └─ 3 段階トリガーでモード変化を検知:
+       ratio ─→ 定期バッチ評価（短窓 61 steps, 間隔 5 steps × k_ratio 回）
+       fast  ─→ moving_avg > thr × 10 が k_fast=50 steps 継続
+       slow  ─→ moving_avg > thr が k_slow=300 steps 継続
+```
+
+### 閾値設定
+
+`ModeLibrary.add_mode()` は訓練後の移動平均残差最大値 `peak` から 2 種類の閾値を自動計算する。
+
+| 閾値 | 計算式 | 用途 |
+|-----|--------|------|
+| `select_threshold` | `peak × 5.0` | `select_mode()` のライブラリ照合（未知判定） |
+| `mode_threshold` | `peak × 3.0` | ModeTracker の変化検知（slow/fast トリガー） |
+
+`mode_threshold < select_threshold` であることで、低い残差がトリガーを発火させ、
+高い閾値が未知モード判定を厳しく制御する 2 段構造になっている。
+
+### 3 段階トリガーの設計根拠
+
+| トリガー | 発火条件 | 設計意図 |
+|---------|---------|---------|
+| **slow** | `moving_avg > thr` × k_slow=300 steps | 安定性最優先。ノイズ耐性が最も高い |
+| **fast** | `moving_avg > thr×10` × k_fast=50 steps | 振幅の大きな急変を素早く検知 |
+| **ratio** | 短窓バッチ評価で新モードが k_ratio 回連続成立 | 残差の絶対値によらず相対的な改善で検知 |
+
+ratio トリガーは全モデルの predict() を定期呼び出しするため評価コストがあるが、
+間隔 `ratio_eval_interval=5` steps でスキップすることで負荷を抑制している。
+
+### 短窓アプローチによる高速検知
+
+ratio トリガーの核心は「短い評価窓」。全バッファ（300+ steps）ではなく
+最近の `warmup_ratio + n_trial_ratio + 1 = 61` ステップのみを評価窓に使う。
+
+```
+lr=0.3 のリーキー積分器: (1-0.3)^15 = 0.7^15 ≈ 0.005
+→ 15 ステップで旧モードの残留状態は 0.5% 未満 → 30 ステップのウォームアップで十分
+→ モード切替後 61 ステップで評価窓が新モードのデータで満たされる
+```
+
+これにより検知遅延を k_ratio × eval_interval + 61 ≈ **34〜54 steps（1〜2 秒）** に短縮できる。
+
+### 検知遅延比較（30 Hz, sine → sawtooth 切替）
+
+| トリガー設定 | 検知遅延 [steps] | 時間換算 | 備考 |
+|-------------|----------------|---------|------|
+| slow のみ（k=300） | ≥ 300 | ≥ 10 s | 最も安全だが遅い |
+| fast（k_fast=50） | ≈ 50〜100 | 1.7〜3.3 s | 振幅大変化で有効 |
+| ratio（k=3, int=5） | ≈ 54 | 1.8 s | sine→sawtooth で有効 |
+| ratio（k=1, int=5） | ≈ 34 | 1.1 s | 最速（デモデフォルト） |
+
+### 偽アラーム対策
+
+2 つの設計判断で偽トリガーを抑制している:
+
+1. **`_steps_since_switch` は実際のモード変化時のみリセット**  
+   起動直後の ESN ウォームアップ期間（残差が高止まり）で誤発火しても、
+   `steps_since_switch` がリセットされないため min_stable_steps の保護が継続する。
+
+2. **ratio 発火時は短窓で確認 (`n_trial=n_trial_ratio`)**  
+   長い n_trial=100 窓は新旧モードのデータが混在すると `None`（未知）を返すことがある。
+   ratio トリガー発火時も短窓で confirm することで正しいモードを返す。
+
+### テストシナリオ（364 件中 22 件が Phase 17 の tests/test_mode_tracker.py）
+
+| シナリオ | 内容 | 期待結果 |
+|---------|------|---------|
+| S1 | sine → sawtooth → sine | sawtooth 区間でモード切替を検知 ✓ |
+| S2 | sine → triangle → sine | triangle 区間で UNKNOWN を検知 ✓ |
+| S3 | sine + 50 step スパイク（振幅 0.8）| モード切替なし・異常フラグ立つ ✓ |
+| S4 | fast トリガー（k_fast=50）検知 | delay < 300 steps ✓ |
+| S5 | ratio トリガー（k_ratio=3, int=5）検知 | delay ≤ 145 steps ✓ |
+
+### デモ実行
+
+```bash
+make run-mode-tracker       # テキスト出力のみ
+make run-mode-tracker-plot  # PNG 保存（output/mode_tracker_*.png）
+```
+
+デモ出力例（k_ratio=1 のデフォルト設定）:
+
+```
+[S1] sine -> sawtooth -> sine (known mode transitions)
+    step 1034: mode -> sawtooth [ratio]
+    First switch: step 1034 (delay 34 steps), mode='sawtooth'
+[S2] sine -> triangle -> sine (unknown mode)
+    step 1100: mode -> UNKNOWN [slow]
+    Unknown mode detected: YES
+[S3] sine with 50-step spike injection (no mode switch expected)
+    Mode changes during spike: 0 (expected 0)
+Summary
+  S1 mode switch detected  : OK
+  S1 correct model selected: OK
+  S2 unknown mode detected : OK
+  S3 no false mode switch  : OK
+```
+
+### 可視化
+
+`output/mode_tracker_scenarios.png`: 各シナリオの信号波形・残差・モード検知の時系列  
+`output/mode_tracker_summary.png`: 検知遅延・モード選択正解率・未知検出率の棒グラフ
 
 ---
 

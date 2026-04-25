@@ -32,6 +32,7 @@ class ModeTrackerState:
     is_anomaly: bool
     mode_changed: bool
     steps_since_switch: int
+    trigger_type: str = ""  # "fast" | "slow" | ""
 
 
 class ModeLibrary:
@@ -172,6 +173,13 @@ class ModeTracker:
         min_stable_steps: int = 500,
         moving_avg_window: int = 200,
         n_trial: int = 100,
+        k_consecutive_fast: int = 50,
+        thr_fast_multiplier: float = 10.0,
+        k_consecutive_ratio: int = 0,
+        ratio_threshold: float = 0.3,
+        ratio_eval_interval: int = 5,
+        n_trial_ratio: int = 30,
+        warmup_ratio: int = 30,
     ) -> None:
         """
         Args:
@@ -179,10 +187,18 @@ class ModeTracker:
             initial_mode: 最初のモード名（library に存在すること）
             thr_mode_change: 移動平均残差のモード変化検知閾値。
                              省略時は library.mode_thresholds[initial_mode] を使用。
-            k_consecutive: 閾値超過が何ステップ連続したらライブラリ照合を起動するか
+            k_consecutive: 閾値超過が何ステップ連続したらライブラリ照合を起動するか（低速）
             min_stable_steps: 前回切替から何ステップ経過しないと再検知しないか
             moving_avg_window: 移動平均ウィンドウ幅
             n_trial: ライブラリ照合に使うウィンドウ幅
+            k_consecutive_fast: 高速トリガーの連続超過ステップ数（thr × multiplier を k_fast 継続）
+            thr_fast_multiplier: 高速トリガーの閾値倍率（thr_mode_change × multiplier）
+            k_consecutive_ratio: 比率トリガーの連続成立回数（各評価は ratio_eval_interval ステップ間隔）
+            ratio_threshold: 比率トリガーの閾値（best_alt_res / current_res < ratio で成立）
+            ratio_eval_interval: 比率評価をスキップするステップ間隔（コスト低減）
+            n_trial_ratio: 比率評価の評価窓幅（短いほど早く検知、デフォルト 30）
+            warmup_ratio: 比率評価後の現在モデル状態復元に使う短いウォームアップ長
+                          lr=0.3 では 30 ステップで初期状態の影響が 0.5% 未満に収束
         """
         if initial_mode not in library.models:
             raise ValueError(f"initial_mode '{initial_mode}' が library にありません")
@@ -199,11 +215,21 @@ class ModeTracker:
         self._min_stable_steps = min_stable_steps
         self._moving_avg_window = moving_avg_window
         self._n_trial = n_trial
+        self._k_consecutive_fast = k_consecutive_fast
+        self._thr_fast_multiplier = thr_fast_multiplier
+        self._k_consecutive_ratio = k_consecutive_ratio
+        self._ratio_threshold = ratio_threshold
+        self._ratio_eval_interval = ratio_eval_interval
+        self._n_trial_ratio = n_trial_ratio
+        self._warmup_ratio = warmup_ratio
 
         buf_size = n_trial + moving_avg_window + 10
         self._res_buf: deque[float] = deque(maxlen=moving_avg_window)
         self._data_buf: deque[float] = deque(maxlen=buf_size)
         self._consecutive_high: int = 0
+        self._consecutive_fast: int = 0
+        self._consecutive_ratio: int = 0
+        self._steps_since_eval: int = 0
         # 0 から始めてカウントアップ: 最初の min_stable_steps は検知しない (warmup 保護)
         self._steps_since_switch: int = 0
         # 1 ステップ先予測を保持（次ステップの残差計算に使用）
@@ -212,7 +238,8 @@ class ModeTracker:
     def step(self, x: float | NDArray[np.float64]) -> ModeTrackerState:
         """1 ステップ処理。
 
-        残差は「前ステップの予測と現在の観測値の差」として計算する。
+        現在のモデルのみ run_step で追跡し、定期バッチ評価で代替モデルとの
+        比率を算出する 3 段階トリガー（ratio / fast / slow）でモード変化を検知する。
 
         Args:
             x: スカラー値または shape (1,) / (1, 1) の入力サンプル
@@ -223,32 +250,64 @@ class ModeTracker:
         x_scalar = float(np.asarray(x).ravel()[0])
         self._data_buf.append(x_scalar)
 
-        # 残差: 前ステップで作った予測と現在の観測値との差
+        # ── 現在モデルの残差（前ステップの予測 vs 現在の観測値）──
         if self._prev_pred is not None:
             residual = float(abs(x_scalar - float(self._prev_pred.ravel()[0])))
         else:
-            residual = 0.0  # 初回は残差なし
+            residual = 0.0
 
-        # 現在の観測値を入力して次ステップの予測を生成
+        # 現在モデルのみ 1 ステップ前進
         x_in = np.array([x_scalar], dtype=np.float64)
         self._prev_pred = self._current_model.run_step(x_in)
 
+        # ── 移動平均残差 + 高速/低速カウンタ ──
         self._res_buf.append(residual)
         moving_avg = float(np.mean(self._res_buf))
-        is_high = moving_avg > self._thr_mode_change
+        is_high_slow = moving_avg > self._thr_mode_change
+        is_high_fast = moving_avg > self._thr_mode_change * self._thr_fast_multiplier
 
-        if is_high:
+        if is_high_fast:
+            self._consecutive_fast += 1
+        else:
+            self._consecutive_fast = 0
+
+        if is_high_slow:
             self._consecutive_high += 1
         else:
             self._consecutive_high = 0
 
+        # ── 比率トリガー: 定期バッチ評価（k_consecutive_ratio > 0 のときのみ実行）──
+        if self._k_consecutive_ratio > 0:
+            self._steps_since_eval += 1
+            if self._steps_since_eval >= self._ratio_eval_interval:
+                self._consecutive_ratio = self._eval_ratio_counter()
+                self._steps_since_eval = 0
+
+        # ── トリガー判定 ──
         mode_changed = False
-        if (
-            self._consecutive_high >= self._k_consecutive
-            and self._steps_since_switch >= self._min_stable_steps
-        ):
+        trigger_type = ""
+        eligible = self._steps_since_switch >= self._min_stable_steps
+
+        ratio_fire = (
+            self._k_consecutive_ratio > 0
+            and eligible
+            and self._consecutive_ratio >= self._k_consecutive_ratio
+        )
+        fast_fire = eligible and self._consecutive_fast >= self._k_consecutive_fast
+        slow_fire = eligible and self._consecutive_high >= self._k_consecutive
+
+        if ratio_fire or fast_fire or slow_fire:
+            trigger_type = "ratio" if ratio_fire else ("fast" if fast_fire else "slow")
             window = np.array(list(self._data_buf), dtype=np.float64)
-            new_mode, _ = self._library.select_mode(window, n_trial=self._n_trial)
+
+            if ratio_fire:
+                # ratio トリガーは短い窓で評価済みなのでそのまま short_window を使う
+                # (長い n_trial 窓は混合データで None を返しやすいため)
+                _total_needed = self._warmup_ratio + self._n_trial_ratio + 1
+                _sw = window[-_total_needed:] if len(window) >= _total_needed else window
+                new_mode, _ = self._library.select_mode(_sw, n_trial=self._n_trial_ratio)
+            else:
+                new_mode, _ = self._library.select_mode(window, n_trial=self._n_trial)
 
             if new_mode != self._current_mode:
                 self._current_mode = new_mode
@@ -257,16 +316,19 @@ class ModeTracker:
                     warmup = window.reshape(-1, 1)
                     self._current_model.reset(warmup_data=warmup)
                     self._thr_mode_change = self._library.mode_thresholds[new_mode]
-                # UNKNOWN への遷移: 前モデルをそのまま使い続け閾値は維持
-                self._prev_pred = None  # モード切替後は前予測をリセット
+                # UNKNOWN: 前モデルをそのまま使い続け閾値は維持
+                self._prev_pred = None
                 mode_changed = True
+                self._steps_since_switch = 0  # 実際にモードが変わったときだけリセット
 
+            # カウンタはトリガー発火時に常にリセット（偽アラームによる連続発火を防ぐ）
+            self._consecutive_ratio = 0
+            self._consecutive_fast = 0
             self._consecutive_high = 0
-            self._steps_since_switch = 0
 
         self._steps_since_switch += 1
 
-        is_anomaly = is_high and not mode_changed
+        is_anomaly = is_high_slow and not mode_changed
 
         return ModeTrackerState(
             mode=self._current_mode,
@@ -274,7 +336,50 @@ class ModeTracker:
             is_anomaly=is_anomaly,
             mode_changed=mode_changed,
             steps_since_switch=self._steps_since_switch,
+            trigger_type=trigger_type,
         )
+
+    def _eval_ratio_counter(self) -> int:
+        """定期バッチ評価で比率カウンタを更新して新しい値を返す。
+
+        最近の warmup_ratio + n_trial_ratio + 1 ステップのみで select_mode を呼ぶ。
+        長い全バッファを使わず短い窓を使うことで、新モードのデータが warmup に
+        すぐ反映され、検知遅延を warmup_ratio + n_trial_ratio ≈ 60 ステップに短縮できる。
+
+        設計根拠:
+          lr=0.3 のリーキー積分器は (1-lr)^k = 0.7^k であり、15 ステップで
+          0.7^15 ≈ 0.005 → 初期状態の影響 0.5% 未満。
+          短い窓の warmup が新モードのデータで満たされれば select_mode が正確な
+          判定を返す（旧モードデータの汚染なし）。
+
+        評価後は現在モデルの状態を短いウォームアップで復元する。
+        """
+        if self._current_mode is None:
+            return 0
+
+        window = np.asarray(list(self._data_buf), dtype=np.float64)
+        # 短い窓: warmup_ratio + n_trial_ratio + 1 ステップだけを使う
+        total_needed = self._warmup_ratio + self._n_trial_ratio + 1
+        if len(window) < total_needed:
+            return 0
+        short_window = window[-total_needed:]
+
+        proposed, _ = self._library.select_mode(short_window, n_trial=self._n_trial_ratio)
+
+        # select_mode が全モデルのリザーバをリセットするため現在モデルを復元する
+        w = self._warmup_ratio
+        if len(window) > w + 1:
+            restore_warmup = window[-w - 1:-1].reshape(-1, 1)
+        else:
+            restore_warmup = window[:-1].reshape(-1, 1)
+        self._current_model.reset(warmup_data=restore_warmup)
+        self._prev_pred = self._current_model.run_step(
+            np.array([window[-1]], dtype=np.float64)
+        )
+
+        if proposed is not None and proposed != self._current_mode:
+            return self._consecutive_ratio + 1
+        return 0
 
     def reset(self, mode: str | None = None) -> None:
         """状態をリセットする。
@@ -294,6 +399,9 @@ class ModeTracker:
         self._res_buf.clear()
         self._data_buf.clear()
         self._consecutive_high = 0
+        self._consecutive_fast = 0
+        self._consecutive_ratio = 0
+        self._steps_since_eval = 0
         self._steps_since_switch = 0
         self._prev_pred = None
 
@@ -304,6 +412,16 @@ class ModeTracker:
     @property
     def thr_mode_change(self) -> float:
         return self._thr_mode_change
+
+    @property
+    def thr_fast(self) -> float:
+        """高速トリガーの閾値（thr_mode_change × thr_fast_multiplier）。"""
+        return self._thr_mode_change * self._thr_fast_multiplier
+
+    @property
+    def ratio_threshold(self) -> float:
+        """並列比較トリガーの比率閾値。"""
+        return self._ratio_threshold
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +434,10 @@ _NOISE_STD = 0.01
 _TRAIN_STEPS = 2000
 _SEG_STEPS = 1000
 _K_CONSECUTIVE = 300
+_K_CONSECUTIVE_FAST = 50
+_K_CONSECUTIVE_RATIO = 1  # ratio トリガー: 1 回成立で即発火 → 遅延 ~34 ステップ (1.1s)
+_THR_FAST_MULTIPLIER = 10.0
+_RATIO_THRESHOLD = 0.3
 _MIN_STABLE = 500
 _SEED = 42
 
@@ -357,9 +479,11 @@ def _run_scenario(
             signal: per-step input values (including spikes)
             residuals: per-step prediction residual
             thr_history: per-step thr_mode_change value
+            thr_fast_history: per-step thr_fast value
             mode_history: per-step current mode label (str | None)
             true_boundaries: segment boundary step indices
             true_modes: mode label for each segment
+            trigger_type_map: {step: "fast" | "slow"} for each mode_changed step
     """
     spike_amp: dict[int, float] = {}
     if spike_segments:
@@ -372,7 +496,9 @@ def _run_scenario(
     signal_hist: list[float] = []
     residual_hist: list[float] = []
     thr_hist: list[float] = []
+    thr_fast_hist: list[float] = []
     mode_hist: list[str | None] = []
+    trigger_type_map: dict[int, str] = {}
 
     all_data = np.concatenate([d for _, d in segments], axis=0).ravel()
     for i, x_val in enumerate(all_data):
@@ -381,12 +507,14 @@ def _run_scenario(
         signal_hist.append(x_in)
         residual_hist.append(state.residual)
         thr_hist.append(tracker.thr_mode_change)
+        thr_fast_hist.append(tracker.thr_fast)
         mode_hist.append(state.mode)
         if state.mode_changed:
             mode_changes.append((i, state.mode))
+            trigger_type_map[i] = state.trigger_type
             if verbose:
                 label = state.mode if state.mode is not None else "UNKNOWN"
-                print(f"    step {i:4d}: mode -> {label}")
+                print(f"    step {i:4d}: mode -> {label} [{state.trigger_type}]")
         if state.is_anomaly:
             anomaly_steps.append(i)
 
@@ -405,9 +533,11 @@ def _run_scenario(
         "signal": np.array(signal_hist),
         "residuals": np.array(residual_hist),
         "thr_history": np.array(thr_hist),
+        "thr_fast_history": np.array(thr_fast_hist),
         "mode_history": mode_hist,
         "true_boundaries": boundaries,
         "true_modes": true_modes,
+        "trigger_type_map": trigger_type_map,
     }
 
 
@@ -465,11 +595,13 @@ def plot_mode_tracker(
         signal = r["signal"]
         residuals = r["residuals"]
         thr_hist = r["thr_history"]
+        thr_fast_hist = r.get("thr_fast_history", thr_hist * 10)
         mode_hist = r["mode_history"]
         mode_changes = r["mode_changes"]
         anomalies = r["anomalies"]
         true_boundaries = r["true_boundaries"]
         true_modes = r["true_modes"]
+        trigger_type_map = r.get("trigger_type_map", {})
 
         n_steps = len(signal)
         steps = np.arange(n_steps) / _FS  # → 秒
@@ -498,13 +630,17 @@ def plot_mode_tracker(
         # 信号波形
         ax_sig.plot(steps, signal, color="#546E7A", lw=0.5, alpha=0.7, label="signal")
 
-        # 検知モード変化を縦線で示す
+        # 検知モード変化を縦線で示す（fast=実線/太, slow=破線/細）
         for chg_step, chg_mode in mode_changes:
             ec = _MODE_EDGE_COLORS.get(chg_mode, "#000000")
-            ax_sig.axvline(chg_step / _FS, color=ec, ls="-", lw=1.5, alpha=0.9)
+            ttype = trigger_type_map.get(chg_step, "slow")
+            lw = 2.2 if ttype == "fast" else 1.3
+            ls = "-" if ttype == "fast" else "--"
+            ax_sig.axvline(chg_step / _FS, color=ec, ls=ls, lw=lw, alpha=0.9)
             label = chg_mode if chg_mode is not None else "UNKNOWN"
+            suffix = " [F]" if ttype == "fast" else ""
             ax_sig.text(
-                chg_step / _FS + 0.05, 1.05, label,
+                chg_step / _FS + 0.05, 1.05, label + suffix,
                 transform=ax_sig.get_xaxis_transform(),
                 fontsize=6.5, color=ec, rotation=45, ha="left", va="bottom",
             )
@@ -547,12 +683,19 @@ def plot_mode_tracker(
 
         # thr_mode_change（ステップ状に変化）
         ax_res.step(steps, thr_hist, where="post", color="crimson",
-                    ls="--", lw=1.2, label="thr_mode_change")
+                    ls="--", lw=1.2, label="thr_slow (mode_change)")
 
-        # 検知モード変化の縦線
+        # thr_fast（10× 高速トリガー閾値）
+        ax_res.step(steps, thr_fast_hist, where="post", color="darkorange",
+                    ls=":", lw=1.2, label="thr_fast (×10)")
+
+        # 検知モード変化の縦線（fast/slow 区別）
         for chg_step, chg_mode in mode_changes:
             ec = _MODE_EDGE_COLORS.get(chg_mode, "#000000")
-            ax_res.axvline(chg_step / _FS, color=ec, ls="-", lw=1.5, alpha=0.9)
+            ttype = trigger_type_map.get(chg_step, "slow")
+            lw = 2.2 if ttype == "fast" else 1.3
+            ls = "-" if ttype == "fast" else "--"
+            ax_res.axvline(chg_step / _FS, color=ec, ls=ls, lw=lw, alpha=0.9)
 
         # 真の境界
         for b in true_boundaries:
@@ -608,7 +751,11 @@ def plot_mode_tracker(
                 ax_delay.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 5,
                               f"{int(val)}", ha="center", va="bottom", fontsize=9)
         ax_delay.axhline(_K_CONSECUTIVE, color="crimson", ls="--", lw=1.2,
-                         label=f"k_consecutive={_K_CONSECUTIVE}")
+                         label=f"k_slow={_K_CONSECUTIVE}")
+        ax_delay.axhline(_K_CONSECUTIVE_FAST, color="darkorange", ls=":", lw=1.2,
+                         label=f"k_fast={_K_CONSECUTIVE_FAST}")
+        ax_delay.axhline(_K_CONSECUTIVE_RATIO, color="green", ls="-.", lw=1.2,
+                         label=f"k_ratio={_K_CONSECUTIVE_RATIO}")
         ax_delay.set_ylabel("Steps")
         ax_delay.legend(fontsize=7)
         ax_delay.grid(True, axis="y", alpha=0.3)
@@ -752,6 +899,10 @@ def run_demo(verbose: bool = True, plot: bool = False, output_dir: str = "output
             initial_mode="sine",
             k_consecutive=_K_CONSECUTIVE,
             min_stable_steps=_MIN_STABLE,
+            k_consecutive_fast=_K_CONSECUTIVE_FAST,
+            thr_fast_multiplier=_THR_FAST_MULTIPLIER,
+            k_consecutive_ratio=_K_CONSECUTIVE_RATIO,
+            ratio_threshold=_RATIO_THRESHOLD,
         )
 
     # S1: sine -> sawtooth -> sine

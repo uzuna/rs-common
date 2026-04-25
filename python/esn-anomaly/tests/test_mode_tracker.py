@@ -156,6 +156,12 @@ class TestModeTracker:
                               k_consecutive=_K_CONSECUTIVE, min_stable_steps=_MIN_STABLE)
         assert tracker.thr_mode_change == pytest.approx(library.mode_thresholds["sine"])
 
+    def test_thr_fast_default(self, library: ModeLibrary):
+        """thr_fast = thr_mode_change × 10（デフォルト）。"""
+        tracker = ModeTracker(library, initial_mode="sine",
+                              k_consecutive=_K_CONSECUTIVE, min_stable_steps=_MIN_STABLE)
+        assert tracker.thr_fast == pytest.approx(library.mode_thresholds["sine"] * 10.0)
+
     def test_no_mode_change_during_normal(self, library: ModeLibrary):
         """正常なサイン波データを流してもモード切替は起きない。"""
         tracker = ModeTracker(library, initial_mode="sine",
@@ -172,6 +178,8 @@ class TestModeTracker:
         tracker.reset(mode="sine")
         assert tracker.current_mode == "sine"
         assert tracker._consecutive_high == 0
+        assert tracker._consecutive_fast == 0
+        assert tracker._consecutive_ratio == 0
         assert len(tracker._res_buf) == 0
         assert tracker._prev_pred is None
 
@@ -294,4 +302,151 @@ class TestScenarios:
         spike_region_anomalies = [s for s in anomalies if 300 <= s < 550]
         assert len(spike_region_anomalies) > 0, (
             "スパイク・残留区間 [300, 550) で異常フラグが一度も立たなかった"
+        )
+
+    def test_s4_fast_trigger_reduces_delay(self, library: ModeLibrary):
+        """S4: k_consecutive_fast=50 の高速トリガーで検知遅延が k_slow より大幅に短縮。"""
+        K_FAST = 50
+        tracker = ModeTracker(
+            library, initial_mode="sine",
+            k_consecutive=_K_CONSECUTIVE, min_stable_steps=_MIN_STABLE,
+            k_consecutive_fast=K_FAST,
+        )
+        segs = [_gen_sine(_SEG_STEPS), _gen_saw(_SEG_STEPS)]
+        changes, _ = self._run(tracker, segs)
+
+        assert len(changes) >= 1, "sawtooth 区間でのモード切替が検知されなかった"
+        delay = changes[0][0] - _SEG_STEPS
+        # fast trigger budget: k_fast + window + 余裕 = 50 + 200 + 50 = 300
+        # k_slow budget: 300 + 200 + 50 = 550
+        # fast が有効なら delay < 300 に収まるはず
+        max_fast_delay = K_FAST + 200 + 50
+        assert delay <= max_fast_delay, (
+            f"fast trigger が遅すぎる: delay={delay}, max={max_fast_delay}"
+        )
+
+    def test_s4_trigger_type_is_fast(self, library: ModeLibrary):
+        """S4: 高速トリガーが発動したとき trigger_type == 'fast'。"""
+        from esn_anomaly.waveform.mode_tracker import _run_scenario
+
+        K_FAST = 50
+        tracker = ModeTracker(
+            library, initial_mode="sine",
+            k_consecutive=_K_CONSECUTIVE, min_stable_steps=_MIN_STABLE,
+            k_consecutive_fast=K_FAST,
+        )
+        segs = [("sine", _gen_sine(_SEG_STEPS).reshape(-1)),
+                ("sawtooth", _gen_saw(_SEG_STEPS).reshape(-1))]
+        result = _run_scenario(tracker, segs, verbose=False)
+
+        changes = result["mode_changes"]
+        tmap = result["trigger_type_map"]
+        assert len(changes) >= 1, "モード切替が検知されなかった"
+        first_step = changes[0][0]
+        assert tmap.get(first_step) == "fast", (
+            f"最初のモード切替 (step={first_step}) が fast でなかった: {tmap.get(first_step)!r}"
+        )
+
+    def test_s3_spike_does_not_trigger_fast(self, library: ModeLibrary):
+        """S3: 50-step スパイク（振幅 0.8）は fast トリガーを起動しない。
+
+        spike 中の moving_avg_peak ≈ (150×0.01 + 50×0.8)/200 = 0.208
+        thr_fast = mode_thr["sine"] × 10 ≈ 0.027 × 10 = 0.27
+        0.208 < 0.27 → fast トリガー発火なし
+        """
+        from esn_anomaly.waveform.mode_tracker import _run_scenario
+
+        tracker = ModeTracker(
+            library, initial_mode="sine",
+            k_consecutive=_K_CONSECUTIVE, min_stable_steps=_MIN_STABLE,
+            k_consecutive_fast=50,
+        )
+        segs = [("sine", _gen_sine(_SEG_STEPS).reshape(-1))]
+        result = _run_scenario(
+            tracker, segs, spike_segments=[(300, 350, 0.8)], verbose=False
+        )
+
+        fast_changes = [
+            step for step, _ in result["mode_changes"]
+            if result["trigger_type_map"].get(step) == "fast"
+        ]
+        assert len(fast_changes) == 0, (
+            f"スパイク中に fast トリガーが発火: steps={fast_changes}"
+        )
+
+    def test_s5_ratio_trigger_fast_detection(self, library: ModeLibrary):
+        """S5: 定期バッチ評価トリガーで sine→sawtooth を素早く検知。"""
+        from esn_anomaly.waveform.mode_tracker import _run_scenario
+
+        K_RATIO = 3
+        EVAL_INTERVAL = 5
+        tracker = ModeTracker(
+            library, initial_mode="sine",
+            k_consecutive=_K_CONSECUTIVE, min_stable_steps=_MIN_STABLE,
+            k_consecutive_ratio=K_RATIO, ratio_eval_interval=EVAL_INTERVAL,
+        )
+        segs = [("sine", _gen_sine(_SEG_STEPS).reshape(-1)),
+                ("sawtooth", _gen_saw(_SEG_STEPS).reshape(-1))]
+        result = _run_scenario(tracker, segs, verbose=False)
+
+        changes = result["mode_changes"]
+        tmap = result["trigger_type_map"]
+        assert len(changes) >= 1, "sawtooth 区間でモード切替が検知されなかった"
+
+        # 最初の切替が ratio トリガー
+        first_step = changes[0][0]
+        assert tmap.get(first_step) == "ratio", (
+            f"最初のトリガーが ratio でなかった: {tmap.get(first_step)!r}"
+        )
+
+        # 検知遅延: k_ratio × eval_interval + n_trial + 余裕
+        delay = first_step - _SEG_STEPS
+        max_delay = K_RATIO * EVAL_INTERVAL + 100 + 30  # k_ratio*interval + n_trial + 余裕
+        assert delay <= max_delay, (
+            f"ratio trigger delay={delay} > max={max_delay}"
+        )
+
+    def test_s5_ratio_trigger_correct_mode(self, library: ModeLibrary):
+        """S5: ratio トリガー後に sawtooth が正しく選択される。"""
+        from esn_anomaly.waveform.mode_tracker import _run_scenario
+
+        tracker = ModeTracker(
+            library, initial_mode="sine",
+            k_consecutive=_K_CONSECUTIVE, min_stable_steps=_MIN_STABLE,
+            k_consecutive_ratio=3, ratio_eval_interval=5,
+        )
+        segs = [("sine", _gen_sine(_SEG_STEPS).reshape(-1)),
+                ("sawtooth", _gen_saw(_SEG_STEPS).reshape(-1))]
+        result = _run_scenario(tracker, segs, verbose=False)
+
+        changes = result["mode_changes"]
+        assert changes, "モード切替が検知されなかった"
+        assert changes[0][1] == "sawtooth", (
+            f"切替後のモードが 'sawtooth' でなかった: {changes[0][1]!r}"
+        )
+
+    def test_s5_ratio_spike_immune(self, library: ModeLibrary):
+        """S5: 50-step スパイク（振幅 0.8）は ratio トリガーを起動しない。
+
+        スパイクは全モデルで同様に高残差 → 比率が改善しない → 発火しない。
+        """
+        from esn_anomaly.waveform.mode_tracker import _run_scenario
+
+        tracker = ModeTracker(
+            library, initial_mode="sine",
+            k_consecutive=_K_CONSECUTIVE, min_stable_steps=_MIN_STABLE,
+            k_consecutive_ratio=3, ratio_eval_interval=5,
+        )
+        # min_stable=500 の後（step 600）にスパイクを注入
+        segs = [("sine", _gen_sine(_SEG_STEPS).reshape(-1))]
+        result = _run_scenario(
+            tracker, segs, spike_segments=[(600, 650, 0.8)], verbose=False
+        )
+
+        ratio_changes = [
+            step for step, _ in result["mode_changes"]
+            if result["trigger_type_map"].get(step) == "ratio"
+        ]
+        assert len(ratio_changes) == 0, (
+            f"スパイク中に ratio トリガーが発火: steps={ratio_changes}"
         )

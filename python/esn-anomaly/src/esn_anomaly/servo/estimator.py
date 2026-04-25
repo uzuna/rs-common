@@ -26,6 +26,8 @@
 
 from __future__ import annotations
 
+from collections import deque
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -250,3 +252,123 @@ class PhysicalEstimator:
         r = self.abs_residual(pos_mrad, load_mA, cmd_mrad)
         steady = self._steady_mask(pos_mrad, load_mA, cmd_mrad)
         return steady & (r > thr)
+
+
+class PhysicalEstimatorOnline:
+    """PhysicalEstimator のストリーミング版（1ステップずつ処理）。
+
+    バッチ版 PhysicalEstimator で閾値を計算してから本クラスを構築する:
+
+        est_batch = PhysicalEstimator(mode="ff", ...)
+        thr = est_batch.fit_threshold(pos_train, load_train, cmd_train)
+        est_online = PhysicalEstimatorOnline(threshold=thr, mode="ff", ...)
+
+    バッチ版との主な差分:
+      - ガードバンドが forward/backward convolution ではなくカウントダウンのみ
+        （過渡後の「戻り」を少し取り逃す可能性があるが、リアルタイム制約上やむを得ない）
+    """
+
+    def __init__(
+        self,
+        threshold: float,
+        mode: str = "ff",
+        smooth_win: int = 20,
+        vel_smooth_win: int = 50,
+        vel_threshold: float = 5.0,
+        sat_fraction: float = 0.90,
+        servo_params: ServoParams | None = None,
+        ctrl_params: ControllerParams | None = None,
+    ) -> None:
+        self._base = PhysicalEstimator(
+            mode=mode,
+            smooth_win=smooth_win,
+            vel_smooth_win=vel_smooth_win,
+            vel_threshold=vel_threshold,
+            sat_fraction=sat_fraction,
+            servo_params=servo_params,
+            ctrl_params=ctrl_params,
+        )
+        self._threshold = threshold
+        self._smooth_win = smooth_win
+        self._vel_smooth_win = vel_smooth_win
+        self._vel_threshold = vel_threshold
+        self._sat_fraction = sat_fraction
+        self._i_max = self._base._servo.p.current_max
+
+        # ring buffers
+        self._pos_buf: deque[float] = deque(maxlen=vel_smooth_win + 1)
+        self._vel_diff_buf: deque[float] = deque(maxlen=vel_smooth_win)
+        self._raw_buf: deque[float] = deque(maxlen=smooth_win)
+
+        # guard band
+        self._guard_count: int = 0
+        self._guard_steps: int = vel_smooth_win
+        self._prev_cmd: float | None = None
+
+    def step(
+        self,
+        pos_mrad: float,
+        load_mA: float,
+        cmd_mrad: float | None = None,
+    ) -> tuple[float, bool, bool]:
+        """1ステップ処理。
+
+        Args:
+            pos_mrad: 位置観測値 [mrad]
+            load_mA:  負荷観測値 [mA]
+            cmd_mrad: コマンド位置 [mrad]（"full" モードまたは guard band 計算で使用）
+
+        Returns:
+            (abs_residual, is_steady, is_anomaly) のタプル
+        """
+        # 速度推定（平均差分）
+        self._pos_buf.append(pos_mrad)
+        if len(self._pos_buf) >= 2:
+            dt = self._base._servo.p.dt
+            diff_deg = (self._pos_buf[-1] - self._pos_buf[-2]) / DEG_TO_MRAD / dt
+        else:
+            diff_deg = 0.0
+        self._vel_diff_buf.append(diff_deg)
+        omega_est = float(np.mean(self._vel_diff_buf)) if self._vel_diff_buf else 0.0
+
+        # guard band: コマンド変化 or 速度超過 or 飽和
+        sat_limit = self._sat_fraction * self._i_max
+        moving = (abs(omega_est) >= self._vel_threshold) or (abs(load_mA) >= sat_limit)
+
+        if cmd_mrad is not None:
+            if self._prev_cmd is None or cmd_mrad != self._prev_cmd:
+                self._guard_count = self._guard_steps
+        elif self._prev_cmd is None:
+            self._guard_count = self._guard_steps
+        self._prev_cmd = cmd_mrad
+
+        if self._guard_count > 0:
+            self._guard_count -= 1
+            moving = True
+
+        is_steady = not moving
+
+        # 残差計算
+        i_ff = float(self._base._i_ff(np.array([pos_mrad]))[0])
+        raw = load_mA - i_ff
+
+        if self._base.mode == "full":
+            if cmd_mrad is None:
+                raise ValueError("full モードには cmd_mrad が必要です")
+            i_pd = float(self._base._i_pd_est(np.array([pos_mrad]), np.array([cmd_mrad]))[0])
+            raw -= i_pd
+
+        self._raw_buf.append(raw)
+        smoothed = float(np.mean(self._raw_buf))
+        abs_res = abs(smoothed)
+
+        is_anomaly = is_steady and (abs_res > self._threshold)
+        return abs_res, is_steady, is_anomaly
+
+    def reset(self) -> None:
+        """内部状態を全リセット。"""
+        self._pos_buf.clear()
+        self._vel_diff_buf.clear()
+        self._raw_buf.clear()
+        self._guard_count = 0
+        self._prev_cmd = None

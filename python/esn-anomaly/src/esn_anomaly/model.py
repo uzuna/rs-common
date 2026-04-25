@@ -116,6 +116,35 @@ class ESNModel:
             self._esn.run(warmup_data)
         return self._esn.run(X)
 
+    def run_step(self, x: NDArray[np.float64]) -> NDArray[np.float64]:
+        """1ステップ推論（リザーバ状態を保持）。
+
+        fit() 後にリザーバ状態を保持したままステップ処理する。
+        逐次推論を行う前に reset() でリザーバを初期化することを推奨する。
+
+        Args:
+            x: shape (d,) の入力ベクトル（1サンプル）
+
+        Returns:
+            shape (d_out,) の予測ベクトル
+        """
+        if not self._fitted:
+            raise RuntimeError("モデルが未学習です。fit() を先に呼び出してください。")
+        return self._esn.run(x.reshape(1, -1))[0]
+
+    def reset(self, warmup_data: NDArray[np.float64] | None = None) -> None:
+        """リザーバ状態をリセット（オプションでウォームアップ）。
+
+        逐次推論（run_step）の開始前に呼び出す。
+
+        Args:
+            warmup_data: shape (m, d) のウォームアップデータ。
+                         指定時はリセット後に run() で状態を安定化する。
+        """
+        self._reservoir.reset()
+        if warmup_data is not None and len(warmup_data) > 0:
+            self._esn.run(warmup_data)
+
     @property
     def is_fitted(self) -> bool:
         return self._fitted

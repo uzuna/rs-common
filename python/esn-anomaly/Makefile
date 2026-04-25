@@ -1,4 +1,4 @@
-.PHONY: install test format lint bench run run-multi run-spike run-spike-noise run-dual run-dual-ann run-multimode run-servo run-servo-detect run-servo-cmd run-servo-estim
+.PHONY: install test format lint bench run run-multi run-spike run-spike-noise run-dual run-dual-ann run-multimode run-servo run-servo-detect run-servo-cmd run-servo-estim run-servo-online
 
 install:
 	uv sync --extra dev
@@ -47,3 +47,6 @@ run-servo-cmd:
 
 run-servo-estim:
 	uv run python -m esn_anomaly.servo.estim_eval
+
+run-servo-online:
+	uv run python -m esn_anomaly.servo.online_demo

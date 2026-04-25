@@ -24,6 +24,11 @@ Echo State Network (ESN / リザーバコンピューティング) による時�
 | Phase 9a | 2ch 同期信号・位相/振幅スイープ    | `make run-dual`        |
 | Phase 9b | アノテーション付き学習比較         | `make run-dual-ann`    |
 | Phase 10 | 6 モード Multi-Head 分類・未知検出 | `make run-multimode`   |
+| Phase 11 | サーボ物理モデル + ESN 1ステップ予測 | `make run-servo`     |
+| Phase 12 | 外力・センサ故障の異常注入と検知評価 | `make run-servo-detect` |
+| Phase 13 | 外力・摩擦モデル + コマンドプロファイル制御 | `make run-servo-cmd` |
+| Phase 14 | 物理推定器 vs ESN 比較評価         | `make run-servo-estim` |
+| Phase 15 | 実機向けストリーミングインタフェース | `make run-servo-online` |
 
 ```bash
 uv sync --extra dev   # 依存インストール
@@ -33,7 +38,428 @@ make lint             # 静的解析
 
 ---
 
-## Phase 7: マルチ波形対応
+## Phase 11〜15: サーボ異常検知
+
+物理サーボモータのシミュレーション環境を構築し、
+外力・摩擦などの異常を ESN と物理推定器の 2 つのアプローチで検知する実験。
+Phase 15 では実機への適用を想定したストリーミングインタフェースを整備した。
+
+### 物理モデル
+
+```
+T_net = T_motor + T_restore(θ) + T_damp + T_ext + T_coulomb
+  T_motor   = motor_gain × I_cmd        (I_cmd ∈ [-100, +100] mA)
+  T_restore = -K × (θ - θ_eq)          (K_neg=1/35 for θ<θ_eq, K_pos=1/65 for θ≥θ_eq)
+  T_ext     = 外力トルク（継続的な外部荷重）
+  T_coulomb = -coulomb_friction × sign(ω)  （クーロン摩擦: 運動に逆らう）
+```
+
+平衡点 θ_eq = -45° で重力・ギア抵抗が釣り合う。非対称ばね（負方向が剛性高）により
+最大電流での到達角が負方向 -80°、正方向 +20° と非対称になる。
+
+制御則（PD + フィードフォワード）:
+```
+I_ff(θ_target) = -T_restore(θ_target) / motor_gain  ← 保持電流
+I_pd = Kp × (θ_target - θ) - Kd × ω
+I_cmd = clip(I_ff + I_pd, -100, +100)
+```
+
+| 保持位置 | I_ff |
+|---------|------|
+| home (-45°) | ≈ 0 mA |
+| up (0°) | ≈ +69.2 mA |
+| down (-70°) | ≈ -71.4 mA |
+
+---
+
+## Phase 11: サーボ ESN 訓練と 1 ステップ予測
+
+### 設定
+
+| 項目 | 値 |
+|-----|----|
+| 入力チャンネル | 2 (pos_norm, load_norm) |
+| 出力 | (pos_{t+1}, load_{t+1}) の正規化値 |
+| 訓練データ | 20 サイクル（home→up→home→down→home を繰り返し） |
+| 検証データ | 5 サイクル（独立した乱数シード） |
+| 観測ノイズ | pos: 2.0 mrad std, load: 3.0 mA std |
+| ESN | units=200, sr=0.9, lr=0.3, ridge=1e-6, warmup=100 |
+| スムージング窓 | 15 steps |
+| 閾値 | 3σ（warmup 除外後の訓練残差から） |
+
+### 観察・知見
+
+- 位置・負荷の両チャンネルを同時予測することで、片方だけでは捉えにくい微妙な挙動変化も検知できる
+- スムージング窓 15 steps は過渡応答の継続時間（∼5 steps）より長く設定し、スパイク的な予測誤差を平滑化してから閾値と比較する
+- 閾値を訓練残差の 3σ で設定したとき、検証データ（正常）の誤警報率は低く抑えられることを確認
+- up/down 方向で I_cmd の絶対値が大きく異なる（非対称ばね + 重力）ため、正規化なしでは load チャンネルの残差スケールが偏る。`normalize_servo_obs` で [-1, 1] 正規化することで両チャンネルを均等に扱えた
+
+---
+
+## Phase 12: 異常注入と検知評価
+
+### 4 種の異常シナリオ
+
+| シナリオ | 異常種別 | 内容 |
+|---------|---------|------|
+| S1_Normal | なし | 正常動作のみ（ベースライン） |
+| S2_Force | 外力 | 一定の外部荷重を負荷チャンネルに加算 |
+| S3_PosSpike | 位置スパイク | 突発的な位置センサ誤差（インパルス的） |
+| S4_PosDrift | 位置ドリフト | 徐々に増大する位置センサ誤差 |
+| S5_LoadStuck | 負荷固着 | センサ値が区間先頭値に固着 |
+
+各シナリオ 10 サイクル、Phase 11 の閾値をそのまま流用して評価する。
+
+### 検知ロジック設計
+
+- **Slack パラメータ (±30 steps):** 異常区間の前後 30 steps 以内に閾値超過があれば「検知」と判定する。ESN の予測遅延と過渡応答のズレを許容するため必要。
+- **False Positive 計算:** ウォームアップ区間・異常 ± slack 領域を除いた純粋な正常区間の超過率を誤警報率とする。
+- **2 チャンネル OR 判定:** pos または load のいずれかが閾値を超えた時点で異常と判定（実機でも故障がどちらに現れるか不明なため）。
+
+### 観察・知見
+
+- 外力（S2）とドリフト（S4）は load チャンネルの残差で検知しやすい。スパイク（S3）は pos チャンネルが主たる検知源となる
+- LoadStuck（S5）は負荷センサが固着してもサーボが制御を続けるため、pos チャンネルの追従誤差として間接的に現れる
+- **コマンド変化時の誤警報が課題:** 目標値が切り替わるたびに pos・load の過渡的な予測誤差が大きくなり、異常注入なしでも閾値を超えることがあった。この問題が Phase 13 での「コマンドを ESN 入力に加える」設計動機となった
+
+---
+
+## Phase 13: 3ch ESN + コマンドプロファイル制御
+
+### 設計の核心: コマンドを第 3 チャンネルとして入力
+
+Phase 12 の誤警報問題（コマンド変化時の過渡残差）を根本解決するため、
+コマンド値を ESN 入力の第 3 チャンネルとして追加した。
+
+```
+Phase 12:  入力 (pos, load)        → ESN → 予測 (pos, load)  ← コマンド変化を知らない
+Phase 13:  入力 (pos, load, cmd)   → ESN → 予測 (pos, load)  ← コマンド変化を既知として予測
+```
+
+ESN が「このコマンドならこの応答が正常」を学習することで、
+コマンド過渡期の予測精度が上がり誤警報が激減する。
+
+### 6 つの評価シナリオ（SA〜SF）
+
+| シナリオ | 指令値 | ext_torque | coulomb | テスト数 |
+|---------|-------|-----------|---------|---------|
+| **SA** 正常基準 | 定期往復 | 0 | 0 | 10 cycles |
+| **SB** コマンドスイープ | ステップ状に多目標変化（12 ターゲット） | 0 | 0 | 30 cycles |
+| **SC** 定常外力 | home 保持 | +0.3 (2000/3000 steps) | 0 | 3000 steps |
+| **SD** 外力ステップ変化 | 定期往復 | 後半 5 cycles に +0.4 | 0 | 10 cycles |
+| **SE** 摩擦増大 | 定期往復 | 0 | 後半 5 cycles に +0.1 | 10 cycles |
+| **SF** 複合外乱 | 定期往復 | 時変 (0.25→0→0.2) | 時変 (0→0.08→0.06) | 10 cycles |
+
+### 実験結果
+
+| シナリオ | ESN 全体超過率 | ESN 外乱区間超過率 | 備考 |
+|---------|-------------|-----------------|------|
+| SA 正常基準 | **2.8%** | — | 誤警報の基準値 |
+| SB コマンドスイープ | **44.3%** | — | コマンド過渡が誤警報源 |
+| SC 定常外力 | 69.7% | **99.2%** | 外乱区間を高精度検知 |
+| SD 外力ステップ | 51.5% | **99.8%** | 外力増大直後を即座に検知 |
+| SE 摩擦増大 | 47.8% | **92.3%** | 運動時の追従遅れを検知 |
+| SF 複合外乱 | 70.9% | **93.0%** | 複数の外乱が混在しても高検知率 |
+
+### 観察・知見
+
+**SB の 44.3% 誤警報について:**  
+コマンドを第 3 チャンネルに加えたにもかかわらず、ステップ指令の直後に大きな残差が残る。  
+ESN の有効記憶長（≈ 1/lr = 3 steps）がステップ応答の整定時間（数 10 steps）より短く、  
+過渡応答パターンを十分に「記憶」して予測できていないことが原因。  
+→ これが Phase 14 で物理推定器（コマンド変化を明示的にモデル化）を導入した動機。
+
+**SC の外乱区間検知率 99.2% について:**  
+定常保持中に外力を加えると I_cmd に一定のオフセットが乗る（I_ext_comp = -T_ext/motor_gain ≈ 30 mA）。  
+ESN は「このコマンドならこの load」と学習しているため、30 mA のシフトを明確に異常と判定する。
+
+**SE（摩擦増大）の特徴:**  
+クーロン摩擦は**静止時にはゼロ**（動摩擦のみ）。そのため定常保持時には検知できず、  
+運動中にのみ残差が増大する。外乱区間検知率 92.3% は運動区間の割合に依存する。
+
+**SD/SF の全体超過率が高い原因:**  
+外乱区間 = データ全体の半分以上を占めるため、外乱区間内の検知が「全体超過率」を押し上げる。  
+「全体超過率」と「外乱区間超過率」を分けて評価することが重要。
+
+---
+
+## Phase 14: 物理推定器 vs ESN 比較評価
+
+### 物理推定器の原理
+
+定常状態（整定済み・速度ゼロ）では PD 制御項が消えるため:
+
+```
+I_cmd ≈ I_ff(θ) + I_ext_comp
+  I_ff(θ)     = -T_restore(θ) / motor_gain  ← 物理モデルから計算
+  I_ext_comp  = -T_ext / motor_gain          ← 推定したい外力の効果
+→ residual = smooth(I_cmd - I_ff(θ_actual)) ≈ I_ext_comp
+```
+
+**定常区間の識別（3 条件 AND）:**
+1. `|ω_est| < vel_threshold` （速度が小さい）
+2. `|I_cmd| < sat_fraction × I_max` （モーター非飽和）
+3. コマンド変化後 `vel_smooth_win` steps が経過
+
+速度推定には大きな窓幅（vel_smooth_win=50）で平滑化し、  
+位置ノイズ起因の偽速度信号（生の差分では std ≈ 11.5 deg/s）を抑制する（抑制後 ≈ 1.6 deg/s）。
+
+### 2 モード
+
+| モード | 残差定義 | 特性 |
+|--------|---------|------|
+| **ff** | `smooth(I_cmd - I_ff(θ))` | 過渡期も含むが計算がシンプル |
+| **full** | `smooth(I_cmd - I_ff(θ) - I_pd_est)` | PD 寄与を除去。誤警報が最小になるが外乱シグナルも弱まる |
+
+### 詳細比較結果（全 6 シナリオ）
+
+| シナリオ | ESN 全体/外乱 | ff 全体/外乱 | full 全体/外乱 |
+|---------|-------------|------------|--------------|
+| SA 正常基準 | 2.8% / — | **0.0%** / — | **0.0%** / — |
+| SB コマンドスイープ | 44.3% / — | **0.1%** / — | **0.0%** / — |
+| SC 定常外力 | 69.7% / **99.2%** | 67.1% / **93.6%** | 10.0% / 14.5% |
+| SD 外力ステップ | 51.5% / **99.8%** | 4.8% / 9.6% | 1.5% / 2.8% |
+| SE 摩擦増大 | 47.8% / **92.3%** | 2.2% / 4.4% | 1.6% / 3.1% |
+| SF 複合外乱 | 70.9% / **93.0%** | 0.8% / 1.0% | 0.4% / 0.5% |
+
+### 観察・知見
+
+**ESN の優位性（SC・SD・SE・SF の外乱検知）:**  
+ESN は「定常/過渡を問わず」残差を出し続けるため、外乱がある限り高い検知率を維持する。  
+特に外力が動的に変化する SD/SF では運動中の残差も検知に貢献し 93〜100% の検知率を達成。
+
+**物理推定器 ff の優位性（SB の誤警報）:**  
+ESN の SB 誤警報率 44.3% に対し、ff は 0.1%。  
+物理推定器は「コマンドが変わっても I_cmd - I_ff(θ) が外力推定値」という関係が常に成立するため、  
+コマンド変化は誤警報の原因にならない。ESN がコマンドを入力してもなお取り除けなかった誤警報を  
+物理ベースで根本解決できている。
+
+**full モードの限界:**  
+I_pd を除去しすぎると外乱シグナルも大部分が打ち消される。  
+SC の外乱区間検知率が 14.5% まで低下しており、実用には ff モードの方が適切。
+
+**sd/SE/SF での物理推定器の限界:**  
+物理推定器は「定常区間」だけで判定する。動的シナリオ（定期往復）では定常区間の割合が少なく、  
+外乱が起きていても判定機会が少ないため検知率が低くなる。  
+→ ESN（移動中でも残差を出す）と組み合わせる補完関係が成立する。
+
+**SE（摩擦）の物理推定器での検知困難:**  
+クーロン摩擦は動摩擦であり、定常状態ではゼロ。ff 残差に摩擦の寄与が現れないため検知率 4.4%。  
+実機で関節抵抗の増大（ベアリング劣化など）を検知したい場合は ESN が有効。
+
+**実用上の推奨組み合わせ:**
+
+| 状況 | 推奨手法 |
+|-----|---------|
+| コマンド変化が多い（誤警報を抑えたい） | 物理推定器 ff |
+| 定常保持が主な動作 | 物理推定器 ff（高感度・低誤警報） |
+| 動作中の外乱も検知したい | ESN |
+| 摩擦増大の検知 | ESN |
+| 最高の検知性能（誤警報許容） | ESN または ESN + 物理推定器 OR |
+
+---
+
+## Phase 15: 実機向けアダプタ構成
+
+### 全体像
+
+実機（ブラックボックス）は「指示値ストリームを受け取り、(pos, load) ストリームを返す」
+インタフェースとして扱う。コマンド送信と計測受信は非同期で動作する。
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         実機利用フロー                           │
+│                                                                  │
+│  [訓練フェーズ]                                                  │
+│   正常動作データを収集 ──→ ServoStreamAdapter.from_training_data() │
+│                             (ESN 学習 + 物理推定器 閾値校正)      │
+│                                                                  │
+│  [推論フェーズ]                                                  │
+│                                                                  │
+│   CommandScheduler ──cmd──→ 実機ドライバ ──→ センサ/シリアル     │
+│          │                                        │              │
+│          ▼                                        ▼              │
+│   adapter.update_cmd(cmd)    adapter.on_measurement(ts, pos, load) │
+│                                        │                         │
+│                                        ▼                         │
+│                                   StepResult                     │
+│                              ┌────────────────┐                 │
+│                              │ esn_anomaly    │ ← ESN 残差超過  │
+│                              │ phys_anomaly   │ ← 定常残差超過  │
+│                              │ phys_is_steady │ ← 判定有効性    │
+│                              │ ts, cmd, pos, load               │
+│                              └────────────────┘                 │
+│                                        │                         │
+│                              adapter.save_csv("log.csv")        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### モジュール構成
+
+| ファイル | クラス / 関数 | 役割 |
+|---------|-------------|------|
+| `servo/online.py` | `ServoAnomalyDetector` | ESN + 物理推定の逐次処理コア |
+| `servo/adapter.py` | `ServoStreamAdapter` | コマンド/計測を分離した上位アダプタ |
+| `servo/adapter.py` | `CommandScheduler` | コマンドプロファイルをステップ単位で供給 |
+| `servo/adapter.py` | `StepResult` | 1ステップの計測・検知結果（dataclass） |
+| `model.py` | `ESNModel.run_step()` | 状態保持のまま 1ステップ推論 |
+| `servo/estimator.py` | `PhysicalEstimatorOnline` | ring buffer による定常外力推定 |
+
+### API リファレンス
+
+#### `ServoStreamAdapter`
+
+```python
+# 訓練データからアダプタを構築
+adapter = ServoStreamAdapter.from_training_data(
+    u_raw_train,   # shape (n, 2): [pos_mrad, load_mA]
+    cmd_raw_train, # shape (n,):   cmd_mrad
+)
+
+# コマンド更新（実機に指令を送るタイミングで呼ぶ）
+adapter.update_cmd(cmd_mrad: float)
+
+# 計測入力（計測周期ごとに呼ぶ）→ StepResult を返す
+result: StepResult = adapter.on_measurement(ts, pos_mrad, load_mA)
+
+# 結果を CSV 保存
+adapter.save_csv("log.csv")
+
+# 結果バッファを取り出してクリア（バッチ転送・ロギング用）
+batch: list[StepResult] = adapter.pop_history()
+```
+
+#### `CommandScheduler`
+
+```python
+from esn_anomaly.servo.data import CommandProfile, CommandSegment
+
+profile = CommandProfile([
+    CommandSegment("hold",  0.0,   500),  # 0 mrad を 500 step 保持
+    CommandSegment("ramp", 500.0,  300),  # 線形補間で 500 mrad へ
+    CommandSegment("hold", 500.0,  200),  # 500 mrad を 200 step 保持
+])
+
+scheduler = CommandScheduler.from_profile(profile)
+
+for cmd in scheduler:                     # 全 1000 step を消費
+    adapter.update_cmd(cmd)
+    ts, pos, load = read_hardware()
+    result = adapter.on_measurement(ts, pos, load)
+    if result.phys_anomaly:
+        handle_alert(result)
+
+# その他の操作
+scheduler.remaining  # 残りステップ数
+scheduler.peek()     # 消費せずに次値を確認
+scheduler.reset()    # 先頭に巻き戻し
+```
+
+#### `StepResult`
+
+| フィールド | 型 | 内容 |
+|-----------|-----|------|
+| `ts` | float | タイムスタンプ [s] |
+| `cmd_mrad` | float | コマンド位置 [mrad] |
+| `pos_mrad` | float | 位置観測値 [mrad] |
+| `load_mA` | float | 負荷観測値 [mA] |
+| `esn_res_pos` | float | ESN 位置残差（正規化・スムージング済み） |
+| `esn_res_load` | float | ESN 負荷残差（同上） |
+| `esn_anomaly` | bool | ESN 残差が閾値超過 |
+| `phys_residual` | float | 物理推定器残差 [mA] |
+| `phys_is_steady` | bool | 定常状態フラグ（False の間は物理判定無効） |
+| `phys_anomaly` | bool | 定常かつ物理残差が閾値超過 |
+
+### 典型的な実装パターン
+
+#### パターン 1: シンプルな同期ループ
+
+コマンド送信と計測受信が同一スレッドで動く場合（最小構成）:
+
+```python
+adapter = ServoStreamAdapter.from_training_data(u_raw_train, cmd_raw_train)
+scheduler = CommandScheduler.from_profile(profile)
+
+for cmd in scheduler:
+    send_to_hardware(cmd)           # コマンド送信（トランスポート層）
+    adapter.update_cmd(cmd)
+
+    ts, pos, load = recv_from_hardware()  # 計測受信・パース
+    result = adapter.on_measurement(ts, pos, load)
+
+    if result.phys_anomaly:
+        trigger_alarm(result)
+
+adapter.save_csv("result.csv")
+```
+
+#### パターン 2: 非同期（コマンドと計測が別スレッド）
+
+コマンドレートと計測レートが異なる場合（例: コマンド 10 Hz、計測 100 Hz）:
+
+```python
+import threading
+
+adapter = ServoStreamAdapter.from_training_data(u_raw_train, cmd_raw_train)
+
+# コマンドスレッド（低頻度）
+def cmd_thread():
+    scheduler = CommandScheduler.from_profile(profile)
+    for cmd in scheduler:
+        send_to_hardware(cmd)
+        adapter.update_cmd(cmd)    # スレッドセーフな代入（GIL により保護）
+        time.sleep(0.1)
+
+# 計測スレッド（高頻度）
+def meas_thread():
+    while True:
+        ts, pos, load = recv_from_hardware()
+        result = adapter.on_measurement(ts, pos, load)  # 最新コマンドを参照
+        if result.phys_anomaly:
+            trigger_alarm(result)
+
+threading.Thread(target=cmd_thread, daemon=True).start()
+meas_thread()
+```
+
+> **注意:** Python の GIL により `float` の代入はアトミックだが、
+> スレッドセーフを厳密に保証したい場合は `threading.Lock` を追加すること。
+
+#### パターン 3: 収集データの事後解析
+
+実機で収集した CSV を後からオフラインで解析する場合:
+
+```python
+# 学習済み detector を別途構築（またはシリアライズして保存）
+detector = ServoAnomalyDetector.from_training_data(u_raw_train, cmd_raw_train)
+
+adapter, results = ServoStreamAdapter.from_csv(
+    "raw_measurement.csv",
+    detector,
+    ts_col="ts", pos_col="pos_mrad", load_col="load_mA", cmd_col="cmd_mrad",
+)
+# results は list[StepResult] — バッチ解析・可視化に使える
+```
+
+### 訓練データ収集ガイドライン
+
+実機での ESN 学習には「正常条件下の十分に多様な動作」が必要。
+
+| プロファイル | 内容 | 目安ステップ数 |
+|------------|------|------------|
+| P1: 往復掃引 | 複数目標を低速往復 | ~4,000 |
+| P2: ステップ応答 | 全可動域をステップ指令で移動 | ~3,000 |
+| P3: 保持安定 | 複数ポジションで各 30 秒保持 | ~6,000 |
+| P4: ランダムウォーク | 小ステップをランダムに積み上げ | ~5,000 |
+
+合計目安: **10,000〜20,000 steps**（100 Hz なら 100〜200 秒）
+
+**安全制約:**
+- 指令値は可動域の **80%** 以内に制限
+- 電流飽和が 5 秒以上継続した場合は停止
+- 訓練中は外力・摩擦の意図的付加なし
+
+---
 
 ### アーキテクチャ
 

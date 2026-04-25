@@ -396,6 +396,164 @@ def generate_servo_periodic(
 
 
 # ------------------------------------------------------------------
+# 異常注入
+# ------------------------------------------------------------------
+
+#: 異常種別定数
+ANOMALY_FORCE = "force"           # 外力: 負荷チャンネルに一定オフセット
+ANOMALY_POS_SPIKE = "pos_spike"   # 位置センサスパイク: 突発的な位置誤差
+ANOMALY_POS_DRIFT = "pos_drift"   # 位置センサドリフト: 徐々に増大する位置誤差
+ANOMALY_LOAD_STUCK = "load_stuck" # 負荷センサ固着: 区間先頭値で固定
+
+
+@dataclass(frozen=True)
+class ServoAnomalySegment:
+    """注入済み異常セグメントのメタデータ。"""
+
+    start: int      # 開始インデックス (inclusive)
+    end: int        # 終了インデックス (exclusive)
+    kind: str       # ANOMALY_* 定数のいずれか
+    magnitude: float  # 異常の大きさ（種別により解釈が異なる）
+
+    @property
+    def length(self) -> int:
+        return self.end - self.start
+
+
+def inject_anomaly_segment(
+    u_raw: NDArray[np.float64],
+    seg: ServoAnomalySegment,
+    rng: np.random.Generator,
+) -> NDArray[np.float64]:
+    """1 つの異常セグメントを生データに注入する。
+
+    Args:
+        u_raw: shape (n, 2) のサーボ観測データ（pos_mrad, load_mA）
+        seg: 注入する異常セグメント情報
+        rng: 乱数ジェネレータ（スパイク位置の決定に使用）
+
+    Returns:
+        shape (n, 2): 異常を注入した新しい配列（コピー）
+    """
+    u = u_raw.copy()
+    s, e = seg.start, seg.end
+    n = e - s
+
+    if seg.kind == ANOMALY_FORCE:
+        # 外力: 負荷チャンネルに一定オフセット
+        u[s:e, 1] += seg.magnitude
+    elif seg.kind == ANOMALY_POS_SPIKE:
+        # 位置センサスパイク: ランダムなタイミングで突発値を追加
+        n_spikes = max(1, n // 20)
+        idx = rng.choice(n, size=n_spikes, replace=False)
+        signs = rng.choice([-1.0, 1.0], size=n_spikes)
+        u[s + idx, 0] += seg.magnitude * signs
+    elif seg.kind == ANOMALY_POS_DRIFT:
+        # 位置センサドリフト: 徐々に増大するオフセット
+        u[s:e, 0] += np.linspace(0.0, seg.magnitude, n)
+    elif seg.kind == ANOMALY_LOAD_STUCK:
+        # 負荷センサ固着: 区間先頭値で全区間を固定
+        u[s:e, 1] = u[s, 1]
+    else:
+        raise ValueError(f"未知の異常種別: {seg.kind!r}")
+
+    return u
+
+
+#: サーボ異常注入のデフォルト強度
+_DEFAULT_MAGNITUDES: dict[str, float] = {
+    ANOMALY_FORCE: 30.0,         # 30 mA（最大の 30%）
+    ANOMALY_POS_SPIKE: 200.0,    # 200 mrad（約 11.5°）
+    ANOMALY_POS_DRIFT: 300.0,    # 300 mrad（約 17°）
+    ANOMALY_LOAD_STUCK: 0.0,     # 未使用（固着値はデータから自動決定）
+}
+
+
+def generate_servo_anomaly_test(
+    n_cycles: int = 10,
+    anomaly_kinds: list[str] | None = None,
+    rate_hz: float = 0.05,
+    seg_len_lo: int = 50,
+    seg_len_hi: int = 200,
+    magnitudes: dict[str, float] | None = None,
+    pattern: MotionPattern | None = None,
+    noise: MeasurementNoise | None = None,
+    params: ServoParams | None = None,
+    ctrl: ControllerParams | None = None,
+    rng: np.random.Generator | None = None,
+) -> tuple[NDArray[np.float64], list[ServoAnomalySegment]]:
+    """Poisson 間隔で異常セグメントを埋め込んだサーボ観測時系列を生成する。
+
+    Args:
+        n_cycles: モーションサイクル繰り返し数
+        anomaly_kinds: 注入する異常種別のリスト（ループで使用）。
+            None または空リストのとき正常データのみ返す。
+        rate_hz: 異常セグメントの平均発生頻度 [Hz]
+        seg_len_lo: セグメント長の下限 [step]
+        seg_len_hi: セグメント長の上限 [step]
+        magnitudes: 種別ごとの強度辞書（None なら _DEFAULT_MAGNITUDES を使用）
+        pattern: モーションパターン
+        noise: 観測ノイズ
+        params: サーボ物理パラメータ
+        ctrl: 制御ゲイン
+        rng: 乱数ジェネレータ
+
+    Returns:
+        (u_anomaly, segments):
+          u_anomaly — shape (n, 2) サーボ観測（異常注入後）
+          segments  — 注入した ServoAnomalySegment のリスト
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    mags = dict(_DEFAULT_MAGNITUDES)
+    if magnitudes is not None:
+        mags.update(magnitudes)
+
+    pat = pattern or MotionPattern()
+    # 基本正常データを生成（ノイズ込み）
+    u_raw = generate_servo_periodic(
+        n_cycles=n_cycles,
+        pattern=pat,
+        noise=noise,
+        params=params,
+        ctrl=ctrl,
+        rng=rng,
+    )
+
+    if not anomaly_kinds:
+        return u_raw, []
+
+    n_steps = len(u_raw)
+    # サンプリング周波数 = 1/dt
+    fs = 1.0 / (params.dt if params is not None else ServoParams().dt)
+    mean_interval = fs / rate_hz  # Poisson 平均間隔 [step]
+
+    segments: list[ServoAnomalySegment] = []
+    kind_idx = 0
+    pos = int(rng.exponential(mean_interval))
+
+    while pos < n_steps:
+        slen = int(rng.integers(seg_len_lo, seg_len_hi + 1))
+        end = min(pos + slen, n_steps)
+        kind = anomaly_kinds[kind_idx % len(anomaly_kinds)]
+        kind_idx += 1
+
+        seg = ServoAnomalySegment(
+            start=pos,
+            end=end,
+            kind=kind,
+            magnitude=mags[kind],
+        )
+        u_raw = inject_anomaly_segment(u_raw, seg, rng)
+        segments.append(seg)
+
+        pos = end + int(rng.exponential(mean_interval))
+
+    return u_raw, segments
+
+
+# ------------------------------------------------------------------
 # データ生成
 # ------------------------------------------------------------------
 

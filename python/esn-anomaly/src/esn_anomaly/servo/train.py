@@ -239,6 +239,16 @@ def _plot_validation(
     print(f"  Saved: {path}")
 
 
+# ──── 外部 API ───────────────────────────────────────────────────────────────
+def build_detector() -> tuple["ESNModel", np.ndarray, float, float]:
+    """学習済みモデルと検知閾値を返す（外部モジュールから利用）。
+
+    Returns:
+        (model, warmup_data, thr_pos, thr_load)
+    """
+    return _train()
+
+
 # ──── メイン ──────────────────────────────────────────────────────────────────
 def run() -> None:
     print("=" * 60)

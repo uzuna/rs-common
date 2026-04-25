@@ -616,3 +616,118 @@ class TestGenerateServoTestScenario:
     def test_unknown_scenario_raises(self):
         with pytest.raises(ValueError, match="未知のシナリオ"):
             generate_servo_test_scenario(scenario="invalid")
+
+
+# ------------------------------------------------------------------
+# 異常注入 (Phase 12)
+# ------------------------------------------------------------------
+
+from esn_anomaly.servo.data import (
+    ANOMALY_FORCE,
+    ANOMALY_LOAD_STUCK,
+    ANOMALY_POS_DRIFT,
+    ANOMALY_POS_SPIKE,
+    ServoAnomalySegment,
+    inject_anomaly_segment,
+    generate_servo_anomaly_test,
+)
+
+
+class TestServoAnomalySegment:
+    def test_length_property(self):
+        seg = ServoAnomalySegment(start=10, end=60, kind=ANOMALY_FORCE, magnitude=30.0)
+        assert seg.length == 50
+
+    def test_frozen(self):
+        seg = ServoAnomalySegment(start=0, end=10, kind=ANOMALY_FORCE, magnitude=1.0)
+        with pytest.raises((AttributeError, TypeError)):
+            seg.start = 5  # type: ignore[misc]
+
+
+class TestInjectAnomalySegment:
+    def _base_data(self) -> np.ndarray:
+        return generate_servo_periodic(n_cycles=1, noise=None)[:100]
+
+    def test_force_modifies_load_only(self):
+        u = self._base_data()
+        seg = ServoAnomalySegment(start=20, end=50, kind=ANOMALY_FORCE, magnitude=30.0)
+        u2 = inject_anomaly_segment(u, seg, np.random.default_rng(0))
+        np.testing.assert_array_equal(u[:, 0], u2[:, 0])
+        assert not np.allclose(u[20:50, 1], u2[20:50, 1])
+        np.testing.assert_allclose(u2[20:50, 1] - u[20:50, 1], 30.0)
+
+    def test_pos_spike_modifies_pos_only(self):
+        u = self._base_data()
+        seg = ServoAnomalySegment(start=10, end=80, kind=ANOMALY_POS_SPIKE, magnitude=200.0)
+        u2 = inject_anomaly_segment(u, seg, np.random.default_rng(1))
+        np.testing.assert_array_equal(u[:, 1], u2[:, 1])
+        assert np.abs(u2[10:80, 0] - u[10:80, 0]).max() > 0
+
+    def test_pos_drift_starts_zero_ends_magnitude(self):
+        u = self._base_data()
+        seg = ServoAnomalySegment(start=5, end=55, kind=ANOMALY_POS_DRIFT, magnitude=300.0)
+        u2 = inject_anomaly_segment(u, seg, np.random.default_rng(2))
+        diff = u2[5:55, 0] - u[5:55, 0]
+        assert abs(diff[0]) < 1e-9
+        assert abs(diff[-1] - 300.0) < 1e-9
+
+    def test_load_stuck_constant_in_segment(self):
+        u = self._base_data()
+        seg = ServoAnomalySegment(start=30, end=70, kind=ANOMALY_LOAD_STUCK, magnitude=0.0)
+        u2 = inject_anomaly_segment(u, seg, np.random.default_rng(3))
+        assert np.all(u2[30:70, 1] == u[30, 1])
+
+    def test_returns_copy(self):
+        u = self._base_data()
+        u_orig = u.copy()
+        seg = ServoAnomalySegment(start=0, end=50, kind=ANOMALY_FORCE, magnitude=20.0)
+        inject_anomaly_segment(u, seg, np.random.default_rng(0))
+        np.testing.assert_array_equal(u, u_orig)
+
+    def test_unknown_kind_raises(self):
+        u = self._base_data()
+        seg = ServoAnomalySegment(start=0, end=10, kind="unknown", magnitude=1.0)
+        with pytest.raises(ValueError, match="未知の異常種別"):
+            inject_anomaly_segment(u, seg, np.random.default_rng(0))
+
+
+class TestGenerateServoAnomalyTest:
+    def test_normal_returns_no_segments(self):
+        u, segs = generate_servo_anomaly_test(n_cycles=2, anomaly_kinds=[],
+                                              rng=np.random.default_rng(0))
+        assert segs == []
+
+    def test_output_shape(self):
+        pat = MotionPattern()
+        u, _ = generate_servo_anomaly_test(n_cycles=3, anomaly_kinds=[ANOMALY_FORCE],
+                                           rng=np.random.default_rng(0))
+        assert u.shape == (3 * pat.steps_per_cycle, 2)
+
+    def test_segments_within_bounds(self):
+        u, segs = generate_servo_anomaly_test(n_cycles=5, anomaly_kinds=[ANOMALY_POS_SPIKE],
+                                              rng=np.random.default_rng(1))
+        n = len(u)
+        for seg in segs:
+            assert 0 <= seg.start < seg.end <= n
+
+    def test_anomaly_kinds_are_assigned(self):
+        kinds = [ANOMALY_FORCE, ANOMALY_POS_DRIFT]
+        _, segs = generate_servo_anomaly_test(n_cycles=5, anomaly_kinds=kinds,
+                                              rng=np.random.default_rng(2))
+        for seg in segs:
+            assert seg.kind in kinds
+
+    def test_all_anomaly_kinds(self):
+        all_kinds = [ANOMALY_FORCE, ANOMALY_POS_SPIKE, ANOMALY_POS_DRIFT, ANOMALY_LOAD_STUCK]
+        u, segs = generate_servo_anomaly_test(n_cycles=3, anomaly_kinds=all_kinds,
+                                              noise=MeasurementNoise(),
+                                              rng=np.random.default_rng(42))
+        assert u.shape[1] == 2
+
+    def test_reproducibility(self):
+        u1, s1 = generate_servo_anomaly_test(n_cycles=2, anomaly_kinds=[ANOMALY_FORCE],
+                                             rng=np.random.default_rng(7))
+        u2, s2 = generate_servo_anomaly_test(n_cycles=2, anomaly_kinds=[ANOMALY_FORCE],
+                                             rng=np.random.default_rng(7))
+        np.testing.assert_array_equal(u1, u2)
+        assert len(s1) == len(s2)

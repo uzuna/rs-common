@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from esn_anomaly.data import generate_train_data
+from esn_anomaly.waveform.data import generate_train_data
 from esn_anomaly.model import ESNConfig, ESNModel
 
 

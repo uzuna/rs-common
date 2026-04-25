@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from reservoirpy.nodes import Reservoir, Ridge
 
-from esn_anomaly.data_multimode import (
+from esn_anomaly.multimode.data import (
     FREQ,
     MODE_NAMES,
     N_MODES,

@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from esn_anomaly.data_multimode import (
+from esn_anomaly.multimode.data import (
     MODE_NAMES,
     MODES,
     N_MODES,

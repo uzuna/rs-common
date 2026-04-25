@@ -1,0 +1,13 @@
+noise_std,segment,mode,metric,value
+0.01,known,sin-sin,false_alarm_rate,0.0000
+0.01,unknown,-1,detection_rate,1.0000
+0.01,known,sin-saw,false_alarm_rate,0.0100
+0.01,unknown,-1,detection_rate,1.0000
+0.01,known,saw-squ,false_alarm_rate,0.0000
+0.01,unknown,-1,detection_rate,1.0000
+0.30,known,sin-sin,false_alarm_rate,0.0000
+0.30,unknown,-1,detection_rate,1.0000
+0.30,known,sin-saw,false_alarm_rate,0.0089
+0.30,unknown,-1,detection_rate,1.0000
+0.30,known,saw-squ,false_alarm_rate,0.0000
+0.30,unknown,-1,detection_rate,1.0000

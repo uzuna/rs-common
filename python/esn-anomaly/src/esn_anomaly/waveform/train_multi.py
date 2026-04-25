@@ -10,7 +10,7 @@
 
 import numpy as np
 
-from esn_anomaly.data import (
+from esn_anomaly.waveform.data import (
     SCENARIO_SAWTOOTH_ONLY,
     SCENARIO_SAWTOOTH_TO_SQUARE,
     SCENARIO_SINE_ONLY,

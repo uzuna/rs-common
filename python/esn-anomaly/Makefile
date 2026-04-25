@@ -1,4 +1,4 @@
-.PHONY: install test format lint bench run run-multi run-spike run-spike-noise run-dual run-dual-ann run-multimode
+.PHONY: install test format lint bench run run-multi run-spike run-spike-noise run-dual run-dual-ann run-multimode run-servo
 
 install:
 	uv sync --extra dev
@@ -16,22 +16,25 @@ bench:
 	uv run python benchmarks/bench_infer.py
 
 run:
-	uv run python -m esn_anomaly.train
+	uv run python -m esn_anomaly.waveform.train
 
 run-multi:
-	uv run python -m esn_anomaly.train_multi
+	uv run python -m esn_anomaly.waveform.train_multi
 
 run-spike:
-	uv run python -m esn_anomaly.train_spike
+	uv run python -m esn_anomaly.spike.train
 
 run-spike-noise:
-	uv run python -m esn_anomaly.train_spike_noise
+	uv run python -m esn_anomaly.spike.train_noise
 
 run-dual:
-	uv run python -m esn_anomaly.train_dual
+	uv run python -m esn_anomaly.multichannel.train
 
 run-dual-ann:
-	uv run python -m esn_anomaly.train_dual_annotated
+	uv run python -m esn_anomaly.multichannel.train_annotated
 
 run-multimode:
-	uv run python -m esn_anomaly.train_multimode
+	uv run python -m esn_anomaly.multimode.train
+
+run-servo:
+	uv run python -m esn_anomaly.servo.train

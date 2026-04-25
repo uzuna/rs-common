@@ -21,7 +21,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-from esn_anomaly.data_dual import (
+from esn_anomaly.multichannel.data import (
     KIND_AMPLITUDE,
     KIND_MIXED,
     KIND_PHASE,

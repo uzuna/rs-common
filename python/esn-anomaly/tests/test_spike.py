@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from esn_anomaly.data_spike import (
+from esn_anomaly.spike.data import (
     NOISE_TYPES,
     SCENARIO_SPIKE_MIXED_WITH_SQUARE,
     SCENARIO_SPIKE_SAW_ONLY,

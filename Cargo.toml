@@ -7,7 +7,7 @@ members = [
     "pycrates/*",
     "safety-plugin/*",
 ]
-exclude = ["wasm-comp/moonbit-control"]
+exclude = ["wasm-comp/moonbit-control", "examples/sqlite-blackboard"]
 resolver = "2"
 
 [workspace.package]
@@ -18,6 +18,8 @@ rust-version = "1.93"
 
 [workspace.dependencies]
 anyhow = "1.0.102"
+faer = "0.21"
+rustfft = "6"
 approx = "0.5.1"
 axum = "0.8.8"
 bytemuck = "1.25.0"
@@ -42,6 +44,7 @@ nalgebra = "0.34.1"
 ndarray = "0.17.2"
 num-traits = "0.2.19"
 rand = "0.10.0"
+rand_distr = "0.4"
 rawproc = { path = "crates/rawproc" }
 rhythm-core = { path = "crates/rhythm-core" }
 serde = "1.0.228"

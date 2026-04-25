@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from esn_anomaly.data_dual import (
+from esn_anomaly.multichannel.data import (
     AMP_B_NORMAL,
     KIND_AMPLITUDE,
     KIND_MIXED,

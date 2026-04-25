@@ -1,0 +1,7 @@
+true\pred,sin-sin,sin-saw,sin-squ,saw-saw,saw-squ,squ-squ
+sin-sin,547,22,157,60,16,98
+sin-saw,0,900,0,0,0,0
+sin-squ,0,0,900,0,0,0
+saw-saw,0,0,0,900,0,0
+saw-squ,0,0,0,0,900,0
+squ-squ,0,0,0,0,0,900

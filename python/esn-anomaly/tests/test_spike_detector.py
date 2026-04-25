@@ -3,12 +3,12 @@
 import numpy as np
 import pytest
 
-from esn_anomaly.data_spike import (
+from esn_anomaly.spike.data import (
     generate_spike_train,
     spike_length,
 )
 from esn_anomaly.detector import compute_residual
-from esn_anomaly.detector_spike import (
+from esn_anomaly.spike.detector import (
     classify_spike,
     collect_train_spike_scores,
     compute_spike_threshold,

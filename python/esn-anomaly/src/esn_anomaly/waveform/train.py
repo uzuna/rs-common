@@ -7,7 +7,7 @@
 
 import numpy as np
 
-from esn_anomaly.data import generate_test_data, generate_train_data
+from esn_anomaly.waveform.data import generate_test_data, generate_train_data
 from esn_anomaly.detector import (
     compute_residual,
     compute_threshold,

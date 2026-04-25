@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 from matplotlib import pyplot as plt
 
-from esn_anomaly.data_spike import (
+from esn_anomaly.spike.data import (
     SCENARIO_SPIKE_MIXED_WITH_SQUARE,
     SCENARIO_SPIKE_SAW_ONLY,
     SCENARIO_SPIKE_SIN_ONLY,
@@ -23,7 +23,7 @@ from esn_anomaly.data_spike import (
     generate_spike_train,
 )
 from esn_anomaly.detector import compute_residual
-from esn_anomaly.detector_spike import (
+from esn_anomaly.spike.detector import (
     collect_train_spike_scores,
     compute_spike_threshold,
     evaluate_spikes,

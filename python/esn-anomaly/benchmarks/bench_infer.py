@@ -18,7 +18,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from esn_anomaly.data import generate_train_data
+from esn_anomaly.waveform.data import generate_train_data
 from esn_anomaly.model import ESNConfig, ESNModel
 
 REALTIME_BUDGET_MS = 1000.0 / 30.0  # 33.33 ms（30 Hz 予算）

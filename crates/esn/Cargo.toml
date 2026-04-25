@@ -1,0 +1,16 @@
+[package]
+name = "esn"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+faer = { workspace = true }
+rand = { workspace = true }
+rustfft = { workspace = true }
+thiserror = { workspace = true }
+
+[[example]]
+name = "multimode"

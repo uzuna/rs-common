@@ -230,6 +230,33 @@ def generate_test_scenario(
     return u[:-1], u[1:], labels
 
 
+def generate_triangle(
+    n_steps: int,
+    fs: float = 30.0,
+    freq: float = 2.0,
+    noise_std: float = 0.01,
+    rng: np.random.Generator | None = None,
+) -> NDArray[np.float64]:
+    """三角波を生成する（振幅±1、width=0.5 のノコギリ波）。
+
+    Args:
+        n_steps: ステップ数
+        fs: サンプリング周波数 [Hz]
+        freq: 三角波周波数 [Hz]
+        noise_std: ガウスノイズの標準偏差
+        rng: 乱数ジェネレータ（再現性のために指定）
+
+    Returns:
+        shape (n_steps, 1) の配列
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    t = np.arange(n_steps) / fs
+    u = signal.sawtooth(2 * np.pi * freq * t, width=0.5).astype(np.float64)
+    u += rng.normal(0.0, noise_std, n_steps)
+    return u.reshape(-1, 1)
+
+
 def scale_to_unit(x: NDArray[np.float64]) -> NDArray[np.float64]:
     """[-1, 1] へ min-max スケーリングする。
 

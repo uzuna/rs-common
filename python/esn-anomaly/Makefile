@@ -1,4 +1,4 @@
-.PHONY: install test format lint bench run run-multi run-spike run-spike-noise run-dual run-dual-ann run-multimode run-servo run-servo-detect run-servo-cmd run-servo-estim run-servo-online run-individual run-individual-plot
+.PHONY: install test format lint bench run run-multi run-spike run-spike-noise run-dual run-dual-ann run-multimode run-servo run-servo-detect run-servo-cmd run-servo-estim run-servo-online run-individual run-individual-plot run-mode-tracker run-mode-tracker-plot
 
 install:
 	uv sync --extra dev
@@ -56,3 +56,9 @@ run-individual:
 
 run-individual-plot:
 	uv run python -m esn_anomaly.servo.individual --plot
+
+run-mode-tracker:
+	uv run python -m esn_anomaly.waveform.mode_tracker
+
+run-mode-tracker-plot:
+	uv run python -m esn_anomaly.waveform.mode_tracker --plot
